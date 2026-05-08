@@ -1,25 +1,25 @@
-print("=== PDF文本提取脚本开始运行 ===")
-
-import os
 from pathlib import Path
 import fitz
-
-print("当前工作目录:", os.getcwd())
+from tqdm import tqdm
 
 pdf_path = Path("data/raw/制造工艺学.pdf")
-print("PDF完整路径:", pdf_path.absolute())
-print("PDF文件是否存在:", pdf_path.exists())
+output_dir = Path("data/processed")
+output_dir.mkdir(parents=True, exist_ok=True)
 
-if pdf_path.exists():
-    print("PDF文件已找到，正在打开...")
-    doc = fitz.open(pdf_path)
-    print(f"PDF打开成功！共 {len(doc)} 页")
-    
-    # 提取前100字符预览
-    if len(doc) > 0:
-        preview = doc[0].get_text("text")[:200]
-        print("第一页文本预览（前200字符）:\n", preview)
-else:
-    print("❌ 未找到PDF文件！请检查路径")
+print(f"正在处理: {pdf_path.name}")
+doc = fitz.open(pdf_path)
 
-print("=== 脚本运行结束 ===")
+full_text = []
+print(f"PDF 共 {len(doc)} 页，开始提取...")
+
+for page_num in tqdm(range(len(doc))):
+    text = doc[page_num].get_text("text")
+    if text.strip():
+        full_text.append(f"--- 第 {page_num+1} 页 ---\n{text}\n")
+
+# 保存全文
+with open(output_dir / "全书_raw_text.txt", "w", encoding="utf-8") as f:
+    f.write("\n".join(full_text))
+
+print(f"\n✅ 全文提取完成！共 {len(full_text)} 页")
+print(f"保存位置: {output_dir / '全书_raw_text.txt'}")
