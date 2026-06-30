@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>智学网 — 智随记</title>
+<!-- Tailwind CSS -->
+<script src="https://modao.cc/agent-py/static/source/js/tailwindcss.js"></script>
+<!-- Iconify -->
+<script src="https://modao.cc/agent-py/static/source/js/iconify-icon.min.js"></script>
+<style>
+        @font-face {
+            font-family: 'PingFang SC';
+            src: local('PingFang SC');
+        }
+        body {
+            font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background-color: #F5F6FA;
+        }
+        .sidebar-icon {
+            @apply text-gray-400 hover:text-[#2ECC71] transition-colors cursor-pointer text-2xl;
+        }
+        .active-tab {
+            @apply border-b-2 border-[#2ECC71] text-[#2ECC71];
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #E2E8F0;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body class="h-screen flex overflow-hidden">
+<!-- 左侧侧边栏 (深蓝色) -->
+<aside class="w-20 bg-[#1A2A4A] flex flex-col items-center py-6 flex-shrink-0">
+<!-- 顶部 Logo 区域 -->
+<div class="mb-10">
+<iconify-icon class="text-white text-3xl" icon="lucide:book-open"></iconify-icon>
+</div>
+<!-- 功能图标列表 -->
+<nav class="flex flex-col items-center space-y-8 flex-1">
+<iconify-icon class="sidebar-icon text-white" icon="lucide:home"></iconify-icon>
+<iconify-icon class="sidebar-icon" icon="lucide:folder"></iconify-icon>
+<iconify-icon class="sidebar-icon" icon="lucide:car"></iconify-icon>
+<iconify-icon class="sidebar-icon" icon="lucide:user"></iconify-icon>
+<iconify-icon class="sidebar-icon" icon="lucide:settings"></iconify-icon>
+<!-- 当前活跃状态指示器 -->
+<div class="pt-4">
+<div class="w-2 h-2 rounded-full bg-[#2ECC71]"></div>
+</div>
+</nav>
+<!-- 底部添加按钮 -->
+<button class="mt-auto w-10 h-10 rounded-full bg-[#2ECC71] flex items-center justify-center text-white hover:bg-opacity-90 transition-all shadow-lg">
+<iconify-icon class="text-2xl" icon="lucide:plus"></iconify-icon>
+</button>
+</aside>
+<!-- 右侧主容器 -->
+<main class="flex-1 flex flex-col overflow-hidden">
+<!-- 顶部导航栏 -->
+<header class="h-16 bg-white border-b border-gray-100 flex items-center justify-between px-8 flex-shrink-0">
+<!-- 左侧 Logo & 名称 -->
+<div class="flex items-center space-x-2">
+<iconify-icon class="text-2xl" icon="lucide:book-open"></iconify-icon>
+<span class="text-xl font-bold text-gray-900">智学网</span>
+</div>
+<!-- 中间功能选项卡 -->
+<nav class="flex items-center space-x-12 h-full">
+<a class="h-full flex items-center text-gray-500 font-medium px-2 hover:text-gray-900 transition-colors" href="#">智学网</a>
+<a class="h-full flex items-center text-[#2ECC71] font-bold px-2 border-b-2 border-[#2ECC71]" href="#">智随记</a>
+<a class="h-full flex items-center text-gray-500 font-medium px-2 hover:text-gray-900 transition-colors" href="#">智研圈</a>
+</nav>
+<!-- 右侧用户头像 -->
+<div class="flex items-center space-x-2 cursor-pointer group">
+<div class="w-9 h-9 rounded-full overflow-hidden bg-gray-200 border border-gray-100">
+<img alt="User avatar" class="w-full h-full object-cover" src="https://modao.cc/agent-py/media/generated_images/2026-06-01/8c2080be3ceb44d0841ca8ff37fc9b1a.jpg"/>
+</div>
+<iconify-icon class="text-gray-400 group-hover:text-gray-600" icon="lucide:chevron-down"></iconify-icon>
+</div>
+</header>
+<!-- 内容区域容器 -->
+<div class="flex-1 p-6 flex gap-6 overflow-hidden">
+<!-- 左侧列表卡片 -->
+<section class="w-80 bg-white rounded-2xl shadow-sm border border-gray-50 flex flex-col flex-shrink-0">
+<div class="p-6">
+<h2 class="text-2xl font-bold text-gray-900 mb-6">XX学科知识库</h2>
+<!-- 列表项 -->
+<div class="space-y-1 overflow-y-auto custom-scrollbar pr-1" style="max-height: calc(100vh - 320px);">
+<!-- 活跃项 -->
+<div class="flex items-center justify-between p-3 rounded-xl bg-gray-50 group cursor-pointer border border-transparent hover:border-gray-100 transition-all">
+<div class="flex items-center space-x-3">
+<div class="w-2 h-2 rounded-full bg-[#2ECC71]"></div>
+<iconify-icon class="text-gray-400 group-hover:text-[#2ECC71]" icon="lucide:file-text"></iconify-icon>
+<span class="text-gray-700 font-medium">第三章 函数与导数</span>
+</div>
+<iconify-icon class="text-gray-300" icon="lucide:chevron-right"></iconify-icon>
+</div>
+<!-- 普通项 -->
+<div class="flex items-center justify-between p-3 rounded-xl hover:bg-gray-50 group cursor-pointer transition-all">
+<div class="flex items-center space-x-3">
+<div class="w-2 h-2 rounded-full bg-[#2ECC71]"></div>
+<iconify-icon class="text-gray-400 group-hover:text-[#2ECC71]" icon="lucide:file-text"></iconify-icon>
+<span class="text-gray-600">实验报告模板</span>
+</div>
+<iconify-icon class="text-gray-300" icon="lucide:chevron-right"></iconify-icon>
+</div>
+<div class="flex items-center justify-between p-3 rounded-xl hover:bg-gray-50 group cursor-pointer transition-all">
+<div class="flex items-center space-x-3">
+<div class="w-2 h-2 rounded-full bg-[#2ECC71]"></div>
+<iconify-icon class="text-gray-400 group-hover:text-[#2ECC71]" icon="lucide:file-text"></iconify-icon>
+<span class="text-gray-600">实验报告模板</span>
+</div>
+<iconify-icon class="text-gray-300" icon="lucide:chevron-right"></iconify-icon>
+</div>
+<div class="flex items-center justify-between p-3 rounded-xl hover:bg-gray-50 group cursor-pointer transition-all">
+<div class="flex items-center space-x-3">
+<div class="w-2 h-2 rounded-full bg-[#2ECC71]"></div>
+<iconify-icon class="text-gray-400 group-hover:text-[#2ECC71]" icon="lucide:file-text"></iconify-icon>
+<span class="text-gray-600">期中复习要点</span>
+</div>
+<iconify-icon class="text-gray-300" icon="lucide:chevron-right"></iconify-icon>
+</div>
+<div class="flex items-center justify-between p-3 rounded-xl hover:bg-gray-50 group cursor-pointer transition-all">
+<div class="flex items-center space-x-3">
+<div class="w-2 h-2 rounded-full bg-[#2ECC71]"></div>
+<iconify-icon class="text-gray-400 group-hover:text-[#2ECC71]" icon="lucide:file-text"></iconify-icon>
+<span class="text-gray-600">期中复习要点</span>
+</div>
+<iconify-icon class="text-gray-300" icon="lucide:chevron-right"></iconify-icon>
+</div>
+</div>
+</div>
+<!-- 底部添加文档按钮 -->
+<div class="mt-auto p-6 border-t border-gray-50">
+<button class="w-full py-3 rounded-xl border-2 border-[#2ECC71] border-dashed text-[#2ECC71] font-bold flex items-center justify-center space-x-2 hover:bg-green-50 transition-colors">
+<iconify-icon icon="lucide:plus"></iconify-icon>
+<span>添加文档</span>
+</button>
+</div>
+</section>
+<!-- 右侧详情面板 -->
+<section class="flex-1 bg-white rounded-2xl shadow-sm border border-gray-50 flex flex-col overflow-hidden relative">
+<!-- 关闭按钮 -->
+<button class="absolute top-6 right-6 text-gray-300 hover:text-gray-500 transition-colors">
+<iconify-icon class="text-2xl" icon="lucide:x"></iconify-icon>
+</button>
+<div class="p-8">
+<!-- 标题区域 -->
+<div class="mb-8">
+<h1 class="text-2xl font-bold text-gray-900 mb-1">XX学科知识库</h1>
+<p class="text-gray-400 text-sm">第三章 函数与导数</p>
+</div>
+<!-- 标签栏 -->
+<div class="flex items-center space-x-8 border-b border-gray-100 mb-8">
+<button class="pb-3 px-1 text-[#2ECC71] font-bold border-b-2 border-[#2ECC71]">摘要</button>
+<button class="pb-3 px-1 text-gray-400 hover:text-gray-600 transition-colors">目录</button>
+<button class="pb-3 px-1 text-gray-400 hover:text-gray-600 transition-colors">笔记</button>
+</div>
+<!-- 文本内容区域 -->
+<article class="prose prose-slate max-w-none overflow-y-auto custom-scrollbar pr-4" style="max-height: calc(100vh - 380px);">
+<div class="space-y-6 text-gray-700 leading-relaxed">
+<section>
+<h3 class="text-lg font-bold text-gray-800 mb-3 flex items-center">
+<span class="w-1.5 h-6 bg-[#2ECC71] rounded-full mr-3"></span>
+                                    一、函数的基本概念
+                                </h3>
+<p>函数是研究变量之间依赖关系的核心工具。在数学中，如果对于集合A中的每一个元素x，按照某种确定的对应关系f，在集合B中都有唯一的元素y与之对应，则称f为从集合A到集合B的一个函数。</p>
+<ul class="list-disc pl-5 space-y-2 mt-2 text-gray-600">
+<li>定义域：自变量x的取值范围。</li>
+<li>值域：对应因变量y的取值集合。</li>
+<li>对应法则：连接自变量与因变量的数学逻辑。</li>
+</ul>
+</section>
+<section>
+<h3 class="text-lg font-bold text-gray-800 mb-3 flex items-center">
+<span class="w-1.5 h-6 bg-[#2ECC71] rounded-full mr-3"></span>
+                                    二、导数的几何意义
+                                </h3>
+<p>导数反映了函数在某一点处的变化率。从几何角度看，函数y=f(x)在点P(x0, f(x0))处的导数，就是曲线在该点处切线的斜率k。</p>
+<div class="bg-gray-50 p-4 rounded-xl border border-gray-100 italic text-gray-600 my-4">
+                                    "导数是微积分中的重要概念，它描述了函数输出值的变化随输入值变化的快慢程度。"
+                                </div>
+</section>
+<section>
+<h3 class="text-lg font-bold text-gray-800 mb-3 flex items-center">
+<span class="w-1.5 h-6 bg-[#2ECC71] rounded-full mr-3"></span>
+                                    三、学习要点总结
+                                </h3>
+<div class="grid grid-cols-2 gap-4">
+<div class="p-4 rounded-xl bg-green-50 border border-green-100">
+<h4 class="font-bold text-[#2ECC71] mb-2">重点</h4>
+<p class="text-sm text-gray-600">熟练掌握基本初等函数的导数公式，理解导数与单调性的关系。</p>
+</div>
+<div class="p-4 rounded-xl bg-blue-50 border border-blue-100">
+<h4 class="font-bold text-blue-500 mb-2">难点</h4>
+<p class="text-sm text-gray-600">复合函数求导法则的应用，以及利用导数解决极值与最值问题。</p>
+</div>
+</div>
+</section>
+</div>
+</article>
+</div>
+</section>
+</div>
+</main>
+<script>
+        // 模拟切换交互
+        document.querySelectorAll('.group').forEach(item => {
+            item.addEventListener('click', function() {
+                // 可以在这里添加切换逻辑
+            });
+        });
+    </script>
+</body>
+</html>
