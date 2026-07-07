@@ -216,3 +216,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 临时处理脚本 / 测试文件
+data/raw/batch_pdf_to_word.py
+data/raw/ChaiFen.py
+data/raw/batch_process_log.json
+data/raw/ocr_prompt.txt
+data/raw/test_doubao_api.py
+data/raw/test_env.py
+data/raw/test_one_pdf_to_word.py
+data/raw/*word_files.py
+
+# 临时拆分脚本
+scripts/split_pdf_by_pages.py
+
+# 本地任务文档
+ZhuHai/任务完成情况.docx
