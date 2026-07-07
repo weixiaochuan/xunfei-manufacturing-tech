@@ -226,6 +226,8 @@ data/raw/test_doubao_api.py
 data/raw/test_env.py
 data/raw/test_one_pdf_to_word.py
 data/raw/*word_files.py
+data/raw/logs/batch_process_log.json
+data/raw/制造工艺学-word/create_empty_word_files.py
 
 # 临时拆分脚本
 scripts/split_pdf_by_pages.py
