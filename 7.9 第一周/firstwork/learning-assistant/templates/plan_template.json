@@ -1,0 +1,20 @@
+{
+  "understanding": {
+    "summary": "",
+    "current_gap": "",
+    "strategy": "",
+    "closed_loop": "Goal analysis -> plan generation -> stage tasks -> resource recommendation -> outcome check -> progress record -> plan adjustment"
+  },
+  "stages": [
+    {
+      "name": "",
+      "time_range": "",
+      "goal": "",
+      "learning_tasks": [],
+      "resource_tasks": [],
+      "practice_tasks": [],
+      "check_tasks": [],
+      "completion_criteria": []
+    }
+  ]
+}

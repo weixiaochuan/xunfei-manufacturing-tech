@@ -1,0 +1,434 @@
+/**
+ * Deepseek-TUI 终端样式
+ *
+ * 使用主窗口 --kb-* CSS 变量，自动跟随应用主题切换。
+ */
+
+/* ─── 容器 ─── */
+.dt-root {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  background: var(--kb-bg-app, #0a0a12);
+  color: var(--kb-text-primary, #e8e6f0);
+  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "Consolas", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow: hidden;
+}
+
+/* ─── 左侧会话列表 ─── */
+.dt-sidebar {
+  width: 200px;
+  min-width: 200px;
+  background: var(--kb-bg-sidebar, #0e0e18);
+  border-right: 1px solid var(--kb-border, rgba(139,92,246,0.12));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.dt-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--kb-border, rgba(139,92,246,0.12));
+}
+
+.dt-sidebar-title {
+  font-size: 12px;
+  color: var(--kb-text-secondary, #a5a2c8);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.dt-sidebar-new-btn {
+  background: var(--kb-bg-hover, rgba(167,139,250,0.08));
+  border: 1px solid var(--kb-border-card, rgba(139,92,246,0.15));
+  color: var(--kb-primary, #a78bfa);
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.dt-sidebar-new-btn:hover {
+  background: var(--kb-bg-active, rgba(167,139,250,0.14));
+  color: var(--kb-primary, #c4b5fd);
+}
+
+.dt-sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.dt-conv-item {
+  padding: 7px 12px;
+  font-size: 12px;
+  color: var(--kb-text-secondary, #a5a2c8);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-left: 2px solid transparent;
+  transition: background 0.15s;
+}
+
+.dt-conv-item:hover {
+  background: var(--kb-bg-card, #12121e);
+  color: var(--kb-text-primary, #e8e6f0);
+}
+
+.dt-conv-active {
+  background: var(--kb-bg-card, #12121e);
+  color: var(--kb-text-primary, #e8e6f0);
+  border-left-color: var(--kb-primary, #a78bfa);
+}
+
+/* ─── 右侧主区域 ─── */
+.dt-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* ─── 输出区 ─── */
+.dt-output {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  scroll-behavior: smooth;
+}
+
+.dt-output::-webkit-scrollbar {
+  width: 6px;
+}
+
+.dt-output::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dt-output::-webkit-scrollbar-thumb {
+  background: var(--kb-scrollbar-thumb, rgba(139,92,246,0.2));
+  border-radius: 3px;
+}
+
+.dt-output::-webkit-scrollbar-thumb:hover {
+  background: var(--kb-scrollbar-hover, rgba(167,139,250,0.35));
+}
+
+/* ─── 消息块 ─── */
+.dt-msg {
+  margin-bottom: 10px;
+  padding: 6px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dt-msg-user {
+  color: var(--kb-accent, #67e8f9);
+}
+
+.dt-msg-ai {
+  color: var(--kb-text-primary, #e8e6f0);
+}
+
+.dt-user-prefix {
+  color: var(--kb-primary, #a78bfa);
+  margin-right: 4px;
+  user-select: none;
+}
+
+.dt-user-text {
+  color: var(--kb-accent, #67e8f9);
+}
+
+/* ─── AI 前缀 ─── */
+.dt-ai-prefix {
+  color: var(--kb-text-tertiary, #6b6890);
+  font-size: 12px;
+  margin-bottom: 4px;
+  user-select: none;
+}
+
+.dt-ai-text {
+  color: var(--kb-text-primary, #e8e6f0);
+  line-height: 1.7;
+}
+
+/* ─── 光标闪烁 ─── */
+.dt-cursor {
+  color: var(--kb-primary, #a78bfa);
+  animation: dt-blink 1s step-end infinite;
+}
+
+@keyframes dt-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* ─── Provider 信息 ─── */
+.dt-provider-info {
+  font-size: 11px;
+  color: var(--kb-text-tertiary, #6b7280);
+  opacity: 0.8;
+}
+
+/* ─── 错误 ─── */
+.dt-error {
+  color: #ef4444;
+  font-style: italic;
+}
+
+/* ─── 系统消息 ─── */
+.dt-system-msg {
+  color: var(--kb-text-tertiary, #6b6890);
+  font-size: 12px;
+  text-align: center;
+  margin: 8px 0;
+  user-select: none;
+}
+
+/* ─── 代码块 ─── */
+.dt-code-block {
+  background: var(--kb-bg-card, #12121e);
+  border: 1px solid var(--kb-border, rgba(139,92,246,0.12));
+  border-radius: 6px;
+  margin: 10px 0;
+  overflow: hidden;
+}
+
+.dt-code-lang {
+  display: block;
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--kb-text-secondary, #a5a2c8);
+  background: var(--kb-bg-hover, rgba(167,139,250,0.08));
+  border-bottom: 1px solid var(--kb-border, rgba(139,92,246,0.12));
+}
+
+.dt-code-block pre {
+  margin: 0;
+  padding: 12px;
+  overflow-x: auto;
+  color: var(--kb-text-primary, #e8e6f0);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  background: transparent;
+}
+
+.dt-code-block code {
+  font-family: inherit;
+}
+
+/* ─── 行内代码 ─── */
+.dt-inline-code {
+  background: var(--kb-bg-hover, rgba(167,139,250,0.08));
+  color: var(--kb-accent, #67e8f9);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+/* ─── 输入区 ─── */
+.dt-input-wrapper {
+  display: flex;
+  align-items: flex-start;
+  padding: 10px 16px;
+  border-top: 1px solid var(--kb-border, rgba(139,92,246,0.12));
+  background: var(--kb-bg-card, #12121e);
+}
+
+.dt-prompt {
+  color: var(--kb-primary, #a78bfa);
+  margin-right: 6px;
+  padding-top: 6px;
+  font-size: 14px;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.dt-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--kb-text-primary, #e8e6f0);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: none;
+  padding: 6px 0;
+  min-height: 28px;
+  max-height: 200px;
+}
+
+.dt-input::placeholder {
+  color: var(--kb-text-tertiary, #6b6890);
+}
+
+.dt-input:focus {
+  outline: none;
+}
+
+/* ─── v1.1 工具栏行 ─── */
+.dt-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: var(--kb-bg-card, #12121e);
+  border-bottom: 1px solid var(--kb-border, rgba(139,92,246,0.12));
+  user-select: none;
+}
+
+.dt-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dt-toolbar-label {
+  font-size: 11px;
+  color: var(--kb-text-tertiary, #6b6890);
+  white-space: nowrap;
+}
+
+/* ─── 统一选择器 ─── */
+.dt-select {
+  background: var(--kb-bg-hover, rgba(167,139,250,0.06));
+  border: 1px solid var(--kb-border-card, rgba(139,92,246,0.15));
+  border-radius: 4px;
+  color: var(--kb-text-primary, #e8e6f0);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 2px 6px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.dt-select:hover {
+  border-color: var(--kb-primary, #a78bfa);
+}
+
+.dt-select:focus {
+  border-color: var(--kb-primary, #a78bfa);
+}
+
+.dt-select option {
+  background: var(--kb-bg-card, #12121e);
+  color: var(--kb-text-primary, #e8e6f0);
+}
+
+/* ─── 上下文进度条 ─── */
+.dt-context-group {
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.dt-context-label {
+  font-size: 10px;
+  color: var(--kb-text-tertiary, #6b6890);
+  white-space: nowrap;
+}
+
+.dt-context-bar {
+  width: 100px;
+  height: 12px;
+  background: var(--kb-bg-hover, rgba(167,139,250,0.08));
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.dt-context-fill {
+  height: 100%;
+  border-radius: 6px;
+  transition: width 0.3s ease, background 0.3s ease;
+}
+
+.dt-context-fill.low {
+  background: #22c55e;
+}
+
+.dt-context-fill.medium {
+  background: #eab308;
+}
+
+.dt-context-fill.high {
+  background: #ef4444;
+}
+
+/* ─── Git 信息 ─── */
+.dt-git-info {
+  font-size: 11px;
+  color: var(--kb-accent, #67e8f9);
+  white-space: nowrap;
+}
+
+/* ─── 状态栏 ─── */
+.dt-statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 16px;
+  font-size: 11px;
+  color: var(--kb-text-tertiary, #6b6890);
+  background: var(--kb-bg-card, #12121e);
+  border-top: 1px solid var(--kb-border, rgba(139,92,246,0.12));
+  user-select: none;
+  gap: 12px;
+}
+
+.dt-statusbar span {
+  white-space: nowrap;
+}
+
+.dt-shortcuts {
+  color: var(--kb-text-tertiary, #6b6890);
+}
+
+/* ─── Markdown 标题 (AI 回复中) ─── */
+.dt-ai-text h1,
+.dt-ai-text h2,
+.dt-ai-text h3 {
+  color: var(--kb-primary, #a78bfa);
+  margin: 12px 0 4px;
+  font-weight: 600;
+}
+
+.dt-ai-text h1 { font-size: 18px; }
+.dt-ai-text h2 { font-size: 15px; border-bottom: 1px solid var(--kb-border, rgba(139,92,246,0.12)); padding-bottom: 4px; }
+.dt-ai-text h3 { font-size: 14px; }
+
+.dt-ai-text strong {
+  color: var(--kb-text-primary, #e8e6f0);
+  font-weight: 600;
+}
+
+.dt-ai-text a {
+  color: var(--kb-primary, #a78bfa);
+  text-decoration: underline;
+}
+
+.dt-ai-text ul,
+.dt-ai-text ol {
+  padding-left: 20px;
+  margin: 4px 0;
+}
+
+.dt-ai-text li {
+  margin: 2px 0;
+}
