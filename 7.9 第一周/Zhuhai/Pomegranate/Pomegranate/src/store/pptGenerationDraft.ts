@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import type {
+  PptChunkUnderstandingDraft,
   PptMasterGenerateResult,
+  PptMaterialAnalysisProgress,
+  PptMaterialAnalysisStatus,
+  PptMaterialChunkPlan,
+  PptMaterialProcessingMode,
   PptUnderstandingDraft,
   ResolvedPptMaterialSource,
 } from "@/types";
@@ -38,6 +43,15 @@ interface PptGenerationDraftState {
   materialRevision: number;
   understandingRevision: number | null;
   materialUnderstandingStale: boolean;
+  materialProcessingMode: PptMaterialProcessingMode;
+  materialChunkPlan: PptMaterialChunkPlan | null;
+  chunkUnderstandingDrafts: PptChunkUnderstandingDraft[];
+  failedChunkIndexes: number[];
+  materialAnalysisStatus: PptMaterialAnalysisStatus;
+  materialAnalysisProgress: PptMaterialAnalysisProgress | null;
+  materialAnalysisError: string | null;
+  chunkAnalysisRevision: number | null;
+  materialAnalysisRunId: number;
 
   understandingDraft: PptUnderstandingDraft | null;
   understandingDraftDirty: boolean;
@@ -65,6 +79,35 @@ interface PptGenerationDraftState {
   setInternalSourcesOnly: (sources: ResolvedPptMaterialSource[]) => void;
   setMergedMaterialText: (text: string, edited: boolean) => void;
   clearInternalMaterial: () => void;
+  beginMaterialAnalysis: (
+    mode: Exclude<PptMaterialProcessingMode, null>,
+    materialRevision: number,
+    preserveArtifacts?: boolean,
+  ) => number;
+  setMaterialChunkPlan: (
+    plan: PptMaterialChunkPlan,
+    materialRevision: number,
+    runId: number,
+  ) => void;
+  setMaterialAnalysisStage: (
+    status: PptMaterialAnalysisStatus,
+    progress: PptMaterialAnalysisProgress,
+    materialRevision: number,
+    runId: number,
+  ) => void;
+  cacheChunkUnderstandingDraft: (
+    draft: PptChunkUnderstandingDraft,
+    materialRevision: number,
+    runId: number,
+  ) => void;
+  setMaterialAnalysisError: (
+    error: string,
+    failedChunkIndexes: number[],
+    materialRevision: number,
+    runId: number,
+  ) => void;
+  finishMaterialAnalysis: (materialRevision: number, runId: number) => void;
+  cancelMaterialAnalysis: () => void;
   setUnderstandingDraft: (draft: PptUnderstandingDraft, materialRevision: number) => void;
   updateUnderstandingField: (field: keyof PptUnderstandingDraft, value: string) => void;
   setUnderstandingStatus: (status: PptDraftRequestStatus, error?: string | null) => void;
@@ -108,6 +151,15 @@ function materialChangedPatch(state: PptGenerationDraftState) {
     understandingStatus: "idle" as const,
     understandingError: null,
     materialUnderstandingStale: state.materialUnderstandingStale || hadUnderstanding,
+    materialProcessingMode: null,
+    materialChunkPlan: null,
+    chunkUnderstandingDrafts: [],
+    failedChunkIndexes: [],
+    materialAnalysisStatus: "idle" as const,
+    materialAnalysisProgress: null,
+    materialAnalysisError: null,
+    chunkAnalysisRevision: null,
+    materialAnalysisRunId: state.materialAnalysisRunId + 1,
     activeStep: 0,
     generationError: null,
     updatedAt: Date.now(),
@@ -132,6 +184,15 @@ export const usePptGenerationDraftStore = create<PptGenerationDraftState>((set, 
   materialRevision: 0,
   understandingRevision: null,
   materialUnderstandingStale: false,
+  materialProcessingMode: null,
+  materialChunkPlan: null,
+  chunkUnderstandingDrafts: [],
+  failedChunkIndexes: [],
+  materialAnalysisStatus: "idle",
+  materialAnalysisProgress: null,
+  materialAnalysisError: null,
+  chunkAnalysisRevision: null,
+  materialAnalysisRunId: 0,
 
   understandingDraft: null,
   understandingDraftDirty: false,
@@ -220,6 +281,120 @@ export const usePptGenerationDraftStore = create<PptGenerationDraftState>((set, 
         ...materialChangedPatch(state),
       };
     }),
+  beginMaterialAnalysis: (materialProcessingMode, materialAnalysisRevision, preserveArtifacts = false) => {
+    let nextRunId = get().materialAnalysisRunId;
+    set((state) => {
+      if (state.materialRevision !== materialAnalysisRevision) return state;
+      nextRunId = state.materialAnalysisRunId + 1;
+      const canPreserve = preserveArtifacts && state.chunkAnalysisRevision === materialAnalysisRevision;
+      const materialAnalysisStatus = materialProcessingMode === "direct" ? "analyzing" : "planning";
+      return {
+        materialProcessingMode,
+        materialAnalysisStatus,
+        materialAnalysisProgress: {
+          current: 0,
+          total: materialProcessingMode === "direct"
+            ? 1
+            : canPreserve
+              ? state.materialChunkPlan?.chunks.length ?? 0
+              : 0,
+          stage: materialProcessingMode === "direct" ? "analyzing" : "planning",
+        },
+        materialAnalysisError: null,
+        failedChunkIndexes: [],
+        chunkAnalysisRevision: materialAnalysisRevision,
+        materialAnalysisRunId: nextRunId,
+        ...(canPreserve
+          ? {}
+          : {
+              materialChunkPlan: null,
+              chunkUnderstandingDrafts: [],
+            }),
+        updatedAt: Date.now(),
+      };
+    });
+    return nextRunId;
+  },
+  setMaterialChunkPlan: (materialChunkPlan, materialAnalysisRevision, runId) =>
+    set((state) => {
+      if (
+        state.materialRevision !== materialAnalysisRevision ||
+        state.materialAnalysisRunId !== runId
+      ) return state;
+      return {
+        materialChunkPlan,
+        chunkAnalysisRevision: materialAnalysisRevision,
+        materialAnalysisStatus: "planning",
+        materialAnalysisProgress: {
+          current: 0,
+          total: materialChunkPlan.chunks.length,
+          stage: "planning",
+        },
+        updatedAt: Date.now(),
+      };
+    }),
+  setMaterialAnalysisStage: (materialAnalysisStatus, materialAnalysisProgress, materialAnalysisRevision, runId) =>
+    set((state) => {
+      if (
+        state.materialRevision !== materialAnalysisRevision ||
+        state.materialAnalysisRunId !== runId
+      ) return state;
+      return {
+        materialAnalysisStatus,
+        materialAnalysisProgress,
+        updatedAt: Date.now(),
+      };
+    }),
+  cacheChunkUnderstandingDraft: (draft, materialAnalysisRevision, runId) =>
+    set((state) => {
+      if (
+        state.materialRevision !== materialAnalysisRevision ||
+        state.materialAnalysisRunId !== runId
+      ) return state;
+      const chunkUnderstandingDrafts = state.chunkUnderstandingDrafts
+        .filter((item) => item.chunkId !== draft.chunkId)
+        .concat(draft)
+        .sort((left, right) => left.chunkIndex - right.chunkIndex);
+      return { chunkUnderstandingDrafts, updatedAt: Date.now() };
+    }),
+  setMaterialAnalysisError: (materialAnalysisError, failedChunkIndexes, materialAnalysisRevision, runId) =>
+    set((state) => {
+      if (
+        state.materialRevision !== materialAnalysisRevision ||
+        state.materialAnalysisRunId !== runId
+      ) return state;
+      return {
+        materialAnalysisStatus: "error",
+        materialAnalysisProgress: null,
+        materialAnalysisError,
+        failedChunkIndexes: [...failedChunkIndexes].sort((left, right) => left - right),
+        updatedAt: Date.now(),
+      };
+    }),
+  finishMaterialAnalysis: (materialAnalysisRevision, runId) =>
+    set((state) => {
+      if (
+        state.materialRevision !== materialAnalysisRevision ||
+        state.materialAnalysisRunId !== runId
+      ) return state;
+      return {
+        materialAnalysisStatus: "success",
+        materialAnalysisProgress: null,
+        materialAnalysisError: null,
+        failedChunkIndexes: [],
+        updatedAt: Date.now(),
+      };
+    }),
+  cancelMaterialAnalysis: () =>
+    set((state) => ({
+      materialProcessingMode: null,
+      materialAnalysisStatus: "idle",
+      materialAnalysisProgress: null,
+      materialAnalysisError: null,
+      failedChunkIndexes: [],
+      materialAnalysisRunId: state.materialAnalysisRunId + 1,
+      updatedAt: Date.now(),
+    })),
   setUnderstandingDraft: (understandingDraft, understandingRevision) =>
     set({
       understandingDraft,
@@ -279,6 +454,15 @@ export const usePptGenerationDraftStore = create<PptGenerationDraftState>((set, 
       materialRevision: 0,
       understandingRevision: null,
       materialUnderstandingStale: false,
+      materialProcessingMode: null,
+      materialChunkPlan: null,
+      chunkUnderstandingDrafts: [],
+      failedChunkIndexes: [],
+      materialAnalysisStatus: "idle",
+      materialAnalysisProgress: null,
+      materialAnalysisError: null,
+      chunkAnalysisRevision: null,
+      materialAnalysisRunId: state.materialAnalysisRunId + 1,
       understandingDraft: null,
       understandingDraftDirty: false,
       understandingStatus: "idle",

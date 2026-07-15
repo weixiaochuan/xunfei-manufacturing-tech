@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Alert,
   Button,
@@ -42,6 +43,35 @@ import {
   mergePptMaterialSources,
   normalizePptMaterialText,
 } from "@/lib/pptMaterial";
+import {
+  calculatePptContextBudget,
+  resolvePptReservedOutputTokens,
+} from "@/lib/pptContextBudget";
+import {
+  buildPptChunkUnderstandingPrompt,
+  buildPptUnderstandingMergePrompt,
+  parsePptChunkUnderstandingResponse,
+  parsePptUnderstandingMergeResponse,
+  type PptChunkUnderstandingContext,
+} from "@/lib/pptChunkUnderstandingPrompt";
+import { executePptChunkUnderstandingWorkflow } from "@/lib/pptChunkUnderstandingWorkflow";
+import {
+  formatPptAnalysisProgress,
+  formatPptFailedParts,
+  formatPptFeeIntroduction,
+  PPT_UNDERSTANDING_UI_COPY,
+  PPT_UNDERSTANDING_FIELD_DESCRIPTIONS,
+} from "@/lib/pptUnderstandingUi";
+import { preparePptUnderstandingDraftForDisplay } from "@/lib/pptUnderstandingFormatting";
+import {
+  planPptMaterialChunks,
+  resolvePptMaterialRequestPlan,
+} from "@/lib/pptMaterialChunking";
+import {
+  buildAiUnderstandingPrompt,
+  buildAiUnderstandingPromptParts,
+  type PptUnderstandingPromptInput,
+} from "@/lib/pptUnderstandingPrompt";
 import { buildPptUnderstandingMarkdown } from "@/lib/pptUnderstandingExport";
 import { useTabsStore } from "@/store/tabs";
 import {
@@ -61,6 +91,7 @@ import type {
   PptMasterCheckResult,
   PptMasterExportResult,
   PptMasterGenerateInput,
+  PptMaterialChunkPlan,
   PptMaterialSourceRef,
   PptMaterialSourceType,
   PptUnderstandingDraft,
@@ -84,6 +115,7 @@ interface AdvancedFormValues {
 }
 
 type SmartFormValues = PptSmartDraftFields;
+type FinalSmartValues = PptUnderstandingPromptInput;
 
 type MaterialPickerFilter = "all" | PptMaterialSourceType;
 
@@ -153,15 +185,6 @@ async function getConfigOrEmpty(key: string): Promise<string> {
   }
 }
 
-interface FinalSmartValues {
-  topic: string;
-  sourceMaterial: string;
-  audience: string;
-  pageCount: string;
-  style: string;
-  extraRequirements: string;
-}
-
 const understandingFieldDefinitions: Array<{
   key: keyof PptUnderstandingDraft;
   title: string;
@@ -196,7 +219,7 @@ const understandingFieldDefinitions: Array<{
   {
     key: "suggestedPageStructure",
     title: "建议页面结构",
-    description: "逐页或分章节的内容安排。",
+    description: PPT_UNDERSTANDING_FIELD_DESCRIPTIONS.suggestedPageStructure,
     minRows: 7,
     maxRows: 18,
     required: true,
@@ -204,81 +227,18 @@ const understandingFieldDefinitions: Array<{
   {
     key: "visualExpressionAdvice",
     title: "视觉与表达建议",
-    description: "页面风格、信息密度、图表、图片和表达方式。",
+    description: PPT_UNDERSTANDING_FIELD_DESCRIPTIONS.visualExpressionAdvice,
     minRows: 4,
     maxRows: 10,
   },
   {
     key: "openQuestions",
     title: "仍需确认的问题",
-    description: "AI 认为尚不明确、需要用户补充的信息。",
+    description: PPT_UNDERSTANDING_FIELD_DESCRIPTIONS.openQuestions,
     minRows: 3,
     maxRows: 8,
   },
 ];
-
-function buildAiUnderstandingPrompt(values: FinalSmartValues): string {
-  return `你是一名 PPT 策划专家和比赛汇报教练。用户会提供 PPT 主题、原始语料、汇报对象、页数、风格和额外要求。你的任务不是复述资料，而是判断这份 PPT 应该如何组织，生成一份“用户可确认的 PPT 制作理解结果”。
-
-请输出中文，结构清晰，尽量精简。不要大段复制原始语料。重点回答：
-
-1. 这份 PPT 的核心目标是什么？
-2. 应该讲给谁听？听众最关心什么？
-3. 这份材料里最值得突出的 3-5 个重点是什么？
-4. 哪些内容应该弱化或合并？
-5. 推荐的叙事主线是什么？
-6. 建议页面结构，每页一句话说明。
-7. 推荐视觉风格和版式倾向。
-8. 如果语料不足，指出还缺哪些信息。
-
-用户输入如下：
-【主题】
-${values.topic}
-
-【汇报对象】
-${values.audience}
-
-【页数】
-${values.pageCount}
-
-【风格】
-${values.style}
-
-【额外要求】
-${values.extraRequirements}
-
-【原始语料】
-${values.sourceMaterial}
-
-输出格式必须是：
-
-【AI理解摘要】
-用 2-4 句话概括你认为这份 PPT 应该做成什么样。
-
-【重点取舍】
-* 应突出：
-  1.
-  2.
-  3.
-* 应弱化/合并：
-  1.
-  2.
-
-【叙事主线】
-一句话说明推荐的讲述逻辑。
-
-【建议页面结构】
-1. xxx：一句话说明
-2. xxx：一句话说明
-...
-
-【视觉与表达建议】
-用 2-4 条短句说明风格、版式、图文比例。
-
-【仍需确认的问题】
-如果没有明显问题，写“暂无，当前信息足够生成初版 PPT。”
-如果有问题，列出 1-3 个问题。`;
-}
 
 function extractSection(raw: string, title: string): string {
   const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -322,14 +282,14 @@ function getDisplayFolderLabel(path?: string | null): string {
 
 function parseAiUnderstanding(raw: string): PptUnderstandingDraft {
   const understandingSummary = cleanAiMarkdown(extractSection(raw, "AI理解摘要"));
-  return {
+  return preparePptUnderstandingDraftForDisplay({
     understandingSummary: understandingSummary || cleanAiMarkdown(raw),
     keyPriorities: cleanAiMarkdown(extractSection(raw, "重点取舍")),
     narrativeMainline: cleanAiMarkdown(extractSection(raw, "叙事主线")),
     suggestedPageStructure: cleanAiMarkdown(extractSection(raw, "建议页面结构")),
     visualExpressionAdvice: cleanAiMarkdown(extractSection(raw, "视觉与表达建议")),
     openQuestions: cleanAiMarkdown(extractSection(raw, "仍需确认的问题")),
-  };
+  });
 }
 
 function buildPlanningContext(draft: PptUnderstandingDraft): string {
@@ -369,6 +329,63 @@ function confirmMaterialOverwrite(): Promise<boolean> {
       onCancel: () => resolve(false),
     });
   });
+}
+
+function confirmChunkedMaterialAnalysis(totalChunks: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    Modal.confirm({
+      title: PPT_UNDERSTANDING_UI_COPY.feeTitle,
+      content: (
+        <div className="space-y-3">
+          <p>{formatPptFeeIntroduction(totalChunks)}</p>
+          <p>{PPT_UNDERSTANDING_UI_COPY.feeProtection}</p>
+          <p>{PPT_UNDERSTANDING_UI_COPY.feeExplanation}</p>
+          <details className="text-sm text-slate-500">
+            <summary className="cursor-pointer">{PPT_UNDERSTANDING_UI_COPY.feeDetailsTitle}</summary>
+            <div className="mt-2 space-y-1 pl-4">
+              <div>分段阅读：预计 {totalChunks} 次</div>
+              <div>最终整理：预计 1 次</div>
+            </div>
+          </details>
+        </div>
+      ),
+      okText: PPT_UNDERSTANDING_UI_COPY.feeConfirm,
+      cancelText: PPT_UNDERSTANDING_UI_COPY.feeCancel,
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    });
+  });
+}
+
+function resolveSmartValuesForBudget(
+  values: PptSmartDraftFields,
+  sourceMaterial: string,
+): FinalSmartValues {
+  return {
+    topic: values.topic?.trim() ?? "",
+    sourceMaterial,
+    audience:
+      values.audience === "自定义"
+        ? values.customAudience?.trim() ?? ""
+        : values.audience ?? "",
+    pageCount:
+      values.pageCount === "自定义"
+        ? values.customPageCount
+          ? `${values.customPageCount} 页`
+          : ""
+        : values.pageCount ?? "",
+    style:
+      values.style === "自定义"
+        ? values.customStyle?.trim() ?? ""
+        : values.style ?? "",
+    extraRequirements: values.extraRequirements?.trim() || "无",
+  };
+}
+
+function formatTokenCount(value: number | null): string {
+  return value === null || !Number.isFinite(value)
+    ? "未知"
+    : Math.round(value).toLocaleString("zh-CN");
 }
 
 function confirmStaleUnderstandingExport(): Promise<boolean> {
@@ -465,6 +482,7 @@ function chooseInitialModelId(models: AiModel[], savedId: string): number | null
 }
 
 export default function PptGenerationPage() {
+  const navigate = useNavigate();
   const [advancedForm] = Form.useForm<AdvancedFormValues>();
   const [smartForm] = Form.useForm<SmartFormValues>();
   const [checking, setChecking] = useState(false);
@@ -510,6 +528,20 @@ export default function PptGenerationPage() {
   const materialRevision = usePptGenerationDraftStore((state) => state.materialRevision);
   const understandingRevision = usePptGenerationDraftStore((state) => state.understandingRevision);
   const materialUnderstandingStale = usePptGenerationDraftStore((state) => state.materialUnderstandingStale);
+  const materialProcessingMode = usePptGenerationDraftStore((state) => state.materialProcessingMode);
+  const materialChunkPlan = usePptGenerationDraftStore((state) => state.materialChunkPlan);
+  const chunkUnderstandingDrafts = usePptGenerationDraftStore((state) => state.chunkUnderstandingDrafts);
+  const failedChunkIndexes = usePptGenerationDraftStore((state) => state.failedChunkIndexes);
+  const materialAnalysisStatus = usePptGenerationDraftStore((state) => state.materialAnalysisStatus);
+  const materialAnalysisProgress = usePptGenerationDraftStore((state) => state.materialAnalysisProgress);
+  const materialAnalysisError = usePptGenerationDraftStore((state) => state.materialAnalysisError);
+  const beginMaterialAnalysis = usePptGenerationDraftStore((state) => state.beginMaterialAnalysis);
+  const setMaterialChunkPlan = usePptGenerationDraftStore((state) => state.setMaterialChunkPlan);
+  const setMaterialAnalysisStage = usePptGenerationDraftStore((state) => state.setMaterialAnalysisStage);
+  const cacheChunkUnderstandingDraft = usePptGenerationDraftStore((state) => state.cacheChunkUnderstandingDraft);
+  const setMaterialAnalysisError = usePptGenerationDraftStore((state) => state.setMaterialAnalysisError);
+  const finishMaterialAnalysis = usePptGenerationDraftStore((state) => state.finishMaterialAnalysis);
+  const cancelMaterialAnalysis = usePptGenerationDraftStore((state) => state.cancelMaterialAnalysis);
   const understandingDraft = usePptGenerationDraftStore((state) => state.understandingDraft);
   const understandingDraftDirty = usePptGenerationDraftStore((state) => state.understandingDraftDirty);
   const understandingStatus = usePptGenerationDraftStore((state) => state.understandingStatus);
@@ -526,6 +558,9 @@ export default function PptGenerationPage() {
   const currentStep = usePptGenerationDraftStore((state) => state.activeStep);
   const resetPptDraft = usePptGenerationDraftStore((state) => state.resetPptDraft);
   const understanding = understandingStatus === "loading";
+  const materialAnalysisBusy = ["planning", "analyzing", "merging"].includes(
+    materialAnalysisStatus,
+  );
   const generating = generationStatus === "loading";
   const selectedAudience = Form.useWatch("audience", smartForm);
   const selectedPageCount = Form.useWatch("pageCount", smartForm);
@@ -589,6 +624,25 @@ export default function PptGenerationPage() {
   const engineConfigured = !!watchedPptMasterRoot?.trim() && !!watchedPythonPath?.trim();
   const selectedDebugProjectIsExample = isLinHuiyinExampleProject(watchedProjectPath);
   const effectiveRawMaterial = materialInputMode === "internal" ? mergedMaterialText : manualRawMaterial;
+  const budgetPromptValues = useMemo(
+    () => resolveSmartValuesForBudget(smartFields, effectiveRawMaterial),
+    [effectiveRawMaterial, smartFields],
+  );
+  const understandingPromptParts = useMemo(
+    () => buildAiUnderstandingPromptParts(budgetPromptValues),
+    [budgetPromptValues],
+  );
+  const reservedOutputTokens = resolvePptReservedOutputTokens(selectedModel?.max_output_tokens);
+  const contextBudget = useMemo(
+    () => calculatePptContextBudget({
+      modelMaxContextTokens: selectedModel?.max_context ?? null,
+      rawMaterial: understandingPromptParts.rawMaterial,
+      promptText: understandingPromptParts.promptText,
+      metadataText: understandingPromptParts.metadataText,
+      reservedOutputTokens,
+    }),
+    [reservedOutputTokens, selectedModel?.max_context, understandingPromptParts],
+  );
   const filteredMaterialCandidates = useMemo(() => {
     const keyword = materialSearch.trim().toLowerCase();
     return materialCandidates.filter((candidate) => {
@@ -609,6 +663,21 @@ export default function PptGenerationPage() {
   }, [checkResult, exportResult]);
   const generationPptPath = generationResult?.finalPptxPath || generationResult?.pptxPath || null;
   const generationOutputFolder = getDisplayFolderLabel(generationPptPath);
+
+  useEffect(() => {
+    console.info("[PPT Context Budget]", {
+      modelId: selectedModelId,
+      maxContextTokens: contextBudget.maxContextTokens,
+      estimatedMaterialTokens: contextBudget.estimatedMaterialTokens,
+      estimatedPromptTokens: contextBudget.estimatedPromptTokens,
+      estimatedMetadataTokens: contextBudget.estimatedMetadataTokens,
+      estimatedInputTokens: contextBudget.estimatedInputTokens,
+      reservedOutputTokens: contextBudget.reservedOutputTokens,
+      effectiveInputBudget: contextBudget.effectiveInputBudget,
+      remainingTokens: contextBudget.remainingTokens,
+      status: contextBudget.status,
+    });
+  }, [contextBudget, selectedModelId]);
 
   async function saveConfig(values: AdvancedFormValues) {
     await Promise.all([
@@ -850,7 +919,7 @@ export default function PptGenerationPage() {
     const topic = values.topic?.trim();
     const sourceMaterial = getEffectivePptRawMaterial(
       usePptGenerationDraftStore.getState(),
-    ).trim();
+    );
     const audience =
       values.audience === "自定义" ? values.customAudience?.trim() : values.audience;
     const pageCount =
@@ -861,7 +930,7 @@ export default function PptGenerationPage() {
         : values.pageCount;
     const style = values.style === "自定义" ? values.customStyle?.trim() : values.style;
 
-    if (!topic || !sourceMaterial || !audience || !pageCount || !style) {
+    if (!topic || !sourceMaterial.trim() || !audience || !pageCount || !style) {
       message.warning("请完整填写主题、素材、汇报对象、页数和风格");
       return null;
     }
@@ -891,6 +960,172 @@ export default function PptGenerationPage() {
   function getCurrentStylePreset(values: SmartFormValues) {
     const style = getCurrentStyle(values);
     return style ? stylePresets[style] : undefined;
+  }
+
+  function materialAnalysisIsCurrent(requestedMaterialRevision: number, runId: number): boolean {
+    const state = usePptGenerationDraftStore.getState();
+    return (
+      state.materialRevision === requestedMaterialRevision &&
+      state.materialAnalysisRunId === runId
+    );
+  }
+
+  function chunkUnderstandingContext(finalValues: FinalSmartValues): PptChunkUnderstandingContext {
+    return {
+      topic: finalValues.topic,
+      audience: finalValues.audience,
+      pageCount: finalValues.pageCount,
+      style: finalValues.style,
+      extraRequirements: finalValues.extraRequirements,
+    };
+  }
+
+  async function executeChunkedMaterialUnderstanding(
+    finalValues: FinalSmartValues,
+    plan: PptMaterialChunkPlan,
+    requestedMaterialRevision: number,
+    runId: number,
+  ): Promise<void> {
+    const context = chunkUnderstandingContext(finalValues);
+    const cachedDrafts = usePptGenerationDraftStore.getState().chunkUnderstandingDrafts;
+    const pendingCount = plan.chunks.filter(
+      (chunk) => !cachedDrafts.some((draft) => draft.chunkId === chunk.id),
+    ).length;
+    console.info("[PPT Understanding]", {
+      mode: "chunked",
+      materialRevision: requestedMaterialRevision,
+      chunkCount: plan.chunks.length,
+      expectedRequestCount: pendingCount + 1,
+    });
+    try {
+      const result = await executePptChunkUnderstandingWorkflow({
+        chunks: plan.chunks,
+        cachedDrafts,
+        isCancelled: () => !materialAnalysisIsCurrent(requestedMaterialRevision, runId),
+        analyzeChunk: async (chunk) => {
+          const raw = await aiWriteApi.understandPptChunk({
+            prompt: buildPptChunkUnderstandingPrompt(context, chunk),
+            modelId: selectedModelId!,
+          });
+          return parsePptChunkUnderstandingResponse(raw, chunk);
+        },
+        mergeDrafts: async (drafts) => {
+          const prompt = buildPptUnderstandingMergePrompt({
+            ...context,
+            chunks: plan.chunks.map((chunk) => ({
+              chunkId: chunk.id,
+              chunkIndex: chunk.index,
+              sourceTitles: chunk.sourceTitles,
+              headingContext: chunk.headingContext,
+              draft: drafts.find((draft) => draft.chunkId === chunk.id)!,
+            })),
+          });
+          const raw = await aiWriteApi.mergePptUnderstanding({
+            prompt,
+            modelId: selectedModelId!,
+          });
+          return parsePptUnderstandingMergeResponse(raw);
+        },
+        onChunkStarted: (chunk) => {
+          setMaterialAnalysisStage(
+            "analyzing",
+            { current: chunk.index, total: plan.chunks.length, stage: "analyzing" },
+            requestedMaterialRevision,
+            runId,
+          );
+          console.info("[PPT Chunk Understanding]", {
+            chunkIndex: chunk.index,
+            status: "started",
+          });
+        },
+        onChunkSucceeded: (draft) => {
+          cacheChunkUnderstandingDraft(draft, requestedMaterialRevision, runId);
+          console.info("[PPT Chunk Understanding]", {
+            chunkIndex: draft.chunkIndex,
+            status: "success",
+          });
+        },
+        onChunkFailed: (chunk) => {
+          console.info("[PPT Chunk Understanding]", {
+            chunkIndex: chunk.index,
+            status: "failed",
+          });
+        },
+        onMergeStarted: () => {
+          setMaterialAnalysisStage(
+            "merging",
+            { current: plan.chunks.length, total: plan.chunks.length, stage: "merging" },
+            requestedMaterialRevision,
+            runId,
+          );
+          console.info("[PPT Understanding Merge]", {
+            chunkCount: plan.chunks.length,
+            status: "started",
+          });
+        },
+      });
+      if (!materialAnalysisIsCurrent(requestedMaterialRevision, runId) || result.cancelled) return;
+      if (result.failedChunkIndexes.length > 0 || !result.finalDraft) {
+        const indexes = result.failedChunkIndexes.length > 0
+          ? result.failedChunkIndexes
+          : plan.chunks
+              .filter((chunk) => !result.drafts.some((draft) => draft.chunkId === chunk.id))
+              .map((chunk) => chunk.index);
+        const detail = formatPptFailedParts(indexes);
+        setMaterialAnalysisError(detail, indexes, requestedMaterialRevision, runId);
+        setUnderstandingStatus("error", detail);
+        message.error(detail);
+        return;
+      }
+      setUnderstandingDraft(result.finalDraft, requestedMaterialRevision);
+      finishMaterialAnalysis(requestedMaterialRevision, runId);
+      console.info("[PPT Understanding Merge]", {
+        chunkCount: plan.chunks.length,
+        status: "success",
+      });
+      message.success(PPT_UNDERSTANDING_UI_COPY.success);
+    } catch (error) {
+      if (!materialAnalysisIsCurrent(requestedMaterialRevision, runId)) return;
+      const messageText = `最终整理未能完成：${String(error)}`;
+      setMaterialAnalysisError(messageText, [], requestedMaterialRevision, runId);
+      setUnderstandingStatus("error", messageText);
+      console.info("[PPT Understanding Merge]", {
+        chunkCount: plan.chunks.length,
+        status: "failed",
+      });
+      message.error(messageText);
+    }
+  }
+
+  async function executeDirectMaterialUnderstanding(
+    finalValues: FinalSmartValues,
+    requestedMaterialRevision: number,
+  ): Promise<void> {
+    const runId = beginMaterialAnalysis("direct", requestedMaterialRevision);
+    setUnderstandingStatus("loading");
+    console.info("[PPT Understanding]", {
+      mode: "direct",
+      materialRevision: requestedMaterialRevision,
+      chunkCount: 0,
+      expectedRequestCount: 1,
+    });
+    try {
+      const raw = await aiWriteApi.understandPpt({
+        prompt: buildAiUnderstandingPrompt(finalValues),
+        modelId: selectedModelId,
+      });
+      if (!materialAnalysisIsCurrent(requestedMaterialRevision, runId)) return;
+      const parsed = parseAiUnderstanding(raw);
+      setUnderstandingDraft(parsed, requestedMaterialRevision);
+      finishMaterialAnalysis(requestedMaterialRevision, runId);
+      message.success("AI 已完成需求理解");
+    } catch (error) {
+      if (!materialAnalysisIsCurrent(requestedMaterialRevision, runId)) return;
+      const messageText = String(error);
+      setMaterialAnalysisError(messageText, [], requestedMaterialRevision, runId);
+      setUnderstandingStatus("error", messageText);
+      message.error(messageText);
+    }
   }
 
   async function handleUnderstandNeeds() {
@@ -927,25 +1162,89 @@ export default function PptGenerationPage() {
     }
 
     const requestedMaterialRevision = usePptGenerationDraftStore.getState().materialRevision;
-    setUnderstandingStatus("loading");
-    try {
-      const raw = await aiWriteApi.understandPpt({
-        prompt: buildAiUnderstandingPrompt(finalValues),
-        modelId: selectedModelId,
+    const livePromptParts = buildAiUnderstandingPromptParts(finalValues);
+    const liveBudget = calculatePptContextBudget({
+      modelMaxContextTokens: selectedModel?.max_context ?? null,
+      rawMaterial: livePromptParts.rawMaterial,
+      promptText: livePromptParts.promptText,
+      metadataText: livePromptParts.metadataText,
+      reservedOutputTokens,
+    });
+    if (liveBudget.status === "unknown") {
+      Modal.confirm({
+        title: "需要完善模型设置",
+        content: "当前模型信息不完整，暂时无法判断应一次阅读还是分段阅读。请先完善模型配置。",
+        okText: "前往模型配置",
+        cancelText: "留在当前页",
+        onOk: () => navigate("/settings"),
       });
-      const parsed = parseAiUnderstanding(raw);
-      if (usePptGenerationDraftStore.getState().materialRevision !== requestedMaterialRevision) {
-        message.warning("素材在 AI 理解期间发生了变化，请重新理解需求。");
-        setUnderstandingStatus("idle");
+      return;
+    }
+    const requestPlan = resolvePptMaterialRequestPlan({ contextStatus: liveBudget.status });
+    if (requestPlan.mode === "direct") {
+      await executeDirectMaterialUnderstanding(finalValues, requestedMaterialRevision);
+      return;
+    }
+
+    const existing = usePptGenerationDraftStore.getState();
+    const canReusePlan =
+      existing.chunkAnalysisRevision === requestedMaterialRevision &&
+      existing.materialChunkPlan !== null;
+    const runId = beginMaterialAnalysis("chunked", requestedMaterialRevision, canReusePlan);
+    let plan: PptMaterialChunkPlan;
+    try {
+      plan = canReusePlan
+        ? existing.materialChunkPlan!
+        : planPptMaterialChunks({
+            rawMaterial: finalValues.sourceMaterial,
+            modelMaxContextTokens: selectedModel?.max_context ?? null,
+            reservedOutputTokens,
+            promptContext: chunkUnderstandingContext(finalValues),
+          });
+      setMaterialChunkPlan(plan, requestedMaterialRevision, runId);
+      const cachedIds = new Set(
+        usePptGenerationDraftStore.getState().chunkUnderstandingDrafts.map((draft) => draft.chunkId),
+      );
+      const chunksToRequest = plan.chunks.filter((chunk) => !cachedIds.has(chunk.id)).length;
+      const chunkedRequestPlan = resolvePptMaterialRequestPlan({
+        contextStatus: liveBudget.status,
+        totalChunks: plan.chunks.length,
+        cachedChunks: plan.chunks.length - chunksToRequest,
+      });
+      console.info("[PPT Understanding]", {
+        mode: "chunked",
+        materialRevision: requestedMaterialRevision,
+        chunkCount: plan.chunks.length,
+        expectedRequestCount: chunksToRequest + 1,
+      });
+      if (
+        chunkedRequestPlan.requiresFeeConfirmation &&
+        !(await confirmChunkedMaterialAnalysis(plan.chunks.length))
+      ) {
+        cancelMaterialAnalysis();
         return;
       }
-      setUnderstandingDraft(parsed, requestedMaterialRevision);
-      message.success("AI 已完成需求理解");
-    } catch (e) {
-      const error = String(e);
-      setUnderstandingStatus("error", error);
-      message.error(error);
+    } catch (error) {
+      if (!materialAnalysisIsCurrent(requestedMaterialRevision, runId)) return;
+      const messageText = String(error);
+      setMaterialAnalysisError(messageText, [], requestedMaterialRevision, runId);
+      setUnderstandingStatus("error", messageText);
+      message.error(messageText);
+      return;
     }
+    setUnderstandingStatus("loading");
+    await executeChunkedMaterialUnderstanding(
+      finalValues,
+      plan,
+      requestedMaterialRevision,
+      runId,
+    );
+  }
+
+  function handleCancelMaterialAnalysis() {
+    cancelMaterialAnalysis();
+    setUnderstandingStatus("idle");
+    message.info("已停止分析。已经完成的部分会被保留，下次可以继续。");
   }
 
   function handleClearSmartForm() {
@@ -1450,13 +1749,109 @@ export default function PptGenerationPage() {
             </div>
           )}
 
-          {effectiveRawMaterial.length > 30000 && (
+          {effectiveRawMaterial.trim() && contextBudget.status === "exceeded" && (
+            <Alert
+              className="mb-4"
+              type="info"
+              showIcon
+              message={PPT_UNDERSTANDING_UI_COPY.longMaterialTitle}
+              description={
+                <div className="space-y-1">
+                  <div>{PPT_UNDERSTANDING_UI_COPY.longMaterialDescription}</div>
+                  <div>{PPT_UNDERSTANDING_UI_COPY.originalMaterialProtection}</div>
+                </div>
+              }
+            />
+          )}
+
+          {effectiveRawMaterial.trim() && contextBudget.status === "unknown" && (
             <Alert
               className="mb-4"
               type="warning"
               showIcon
-              message={`当前素材约 ${effectiveRawMaterial.length} 字符，内容较长`}
-              description={`建议删减与 PPT 无关的段落。当前模型上下文配置为 ${selectedModel?.max_context ?? "未知"} tokens，系统不会静默截断素材。`}
+              message="当前模型信息不完整"
+              description="暂时无法判断这份材料应一次阅读还是分段阅读，请先完善模型设置。"
+            />
+          )}
+
+          {effectiveRawMaterial.trim() && (
+            <details className="mb-4 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+              <summary className="cursor-pointer text-slate-600">查看技术详情</summary>
+              <div className="mt-3 grid gap-x-6 gap-y-1 text-xs text-slate-500 sm:grid-cols-2">
+                <span>当前模型：{selectedModel?.name ?? "未选择"}</span>
+                <span>最大上下文：{formatTokenCount(contextBudget.maxContextTokens)}</span>
+                <span>预计输入 token：{formatTokenCount(contextBudget.estimatedInputTokens)}</span>
+                <span>输出预留：{formatTokenCount(contextBudget.reservedOutputTokens)}</span>
+                <span>可用输入预算：{formatTokenCount(contextBudget.effectiveInputBudget)}</span>
+                <span>分段数量：{materialChunkPlan?.chunks.length ?? (contextBudget.status === "exceeded" ? "开始前计算" : 1)}</span>
+                <span>
+                  预计模型调用次数：
+                  {materialChunkPlan
+                    ? materialChunkPlan.chunks.filter(
+                        (chunk) => !chunkUnderstandingDrafts.some((draft) => draft.chunkId === chunk.id),
+                      ).length + 1
+                    : contextBudget.status === "exceeded"
+                      ? "开始前计算"
+                      : 1}
+                </span>
+              </div>
+            </details>
+          )}
+
+          {materialAnalysisBusy && materialAnalysisProgress && (
+            <Alert
+              className="mb-4"
+              type="info"
+              showIcon
+              message={
+                materialAnalysisStatus === "planning"
+                  ? PPT_UNDERSTANDING_UI_COPY.progressPlanning
+                  : materialAnalysisStatus === "analyzing"
+                    ? materialProcessingMode === "direct"
+                      ? PPT_UNDERSTANDING_UI_COPY.progressDirect
+                      : formatPptAnalysisProgress(
+                          materialAnalysisProgress.current,
+                          materialAnalysisProgress.total,
+                        )
+                    : PPT_UNDERSTANDING_UI_COPY.progressMerging
+              }
+              description={PPT_UNDERSTANDING_UI_COPY.progressDescription}
+              action={
+                <Button size="small" onClick={handleCancelMaterialAnalysis}>
+                  {PPT_UNDERSTANDING_UI_COPY.progressCancel}
+                </Button>
+              }
+            />
+          )}
+
+          {materialAnalysisStatus === "success" && materialProcessingMode === "chunked" && (
+            <Alert
+              className="mb-4"
+              type="success"
+              showIcon
+              message={PPT_UNDERSTANDING_UI_COPY.success}
+              description={PPT_UNDERSTANDING_UI_COPY.successDescription}
+            />
+          )}
+
+          {materialAnalysisStatus === "error" && materialAnalysisError && (
+            <Alert
+              className="mb-4"
+              type="error"
+              showIcon
+              message={
+                failedChunkIndexes.length > 0
+                  ? formatPptFailedParts(failedChunkIndexes)
+                  : PPT_UNDERSTANDING_UI_COPY.failure
+              }
+              description={PPT_UNDERSTANDING_UI_COPY.failureDescription}
+              action={
+                <Button size="small" onClick={handleUnderstandNeeds}>
+                  {failedChunkIndexes.length > 0
+                    ? PPT_UNDERSTANDING_UI_COPY.retryFailedPart
+                    : PPT_UNDERSTANDING_UI_COPY.retry}
+                </Button>
+              }
             />
           )}
 
@@ -1469,7 +1864,7 @@ export default function PptGenerationPage() {
             />
           )}
 
-          {understandingStatus === "error" && understandingError && (
+          {understandingStatus === "error" && understandingError && !materialAnalysisError && (
             <Alert
               className="mb-4"
               type="error"

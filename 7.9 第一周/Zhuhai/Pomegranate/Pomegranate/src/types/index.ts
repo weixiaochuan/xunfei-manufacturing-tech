@@ -64,6 +64,52 @@ export interface PptMaterialSelection {
   totalCharacters: number;
 }
 
+export type PptMaterialProcessingMode = "direct" | "chunked" | null;
+
+export type PptMaterialAnalysisStatus =
+  | "idle"
+  | "planning"
+  | "analyzing"
+  | "merging"
+  | "success"
+  | "error";
+
+export type PptMaterialAnalysisStage = "planning" | "analyzing" | "merging";
+
+export interface PptMaterialAnalysisProgress {
+  current: number;
+  total: number;
+  stage: PptMaterialAnalysisStage;
+}
+
+export interface PptMaterialChunk {
+  id: string;
+  index: number;
+  total: number;
+  text: string;
+  sourceTitles: string[];
+  headingContext: string[];
+  startCharacter: number;
+  endCharacter: number;
+  estimatedTokens: number;
+}
+
+export interface PptMaterialChunkPlan {
+  chunks: PptMaterialChunk[];
+  totalCharacters: number;
+  totalEstimatedTokens: number;
+  chunkTokenBudget: number;
+  promptOverheadTokens: number;
+  metadataReserveTokens: number;
+  outputReserveTokens: number;
+  modelMaxContextTokens: number;
+}
+
+export interface PptChunkUnderstandingDraft extends PptUnderstandingDraft {
+  chunkId: string;
+  chunkIndex: number;
+}
+
 export interface PptMaterialSourceMetadata {
   id: number;
   sourceType: PptMaterialSourceType;
