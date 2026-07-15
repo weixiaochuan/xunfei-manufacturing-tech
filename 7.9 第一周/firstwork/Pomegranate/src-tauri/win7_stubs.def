@@ -1,0 +1,10 @@
+EXPORTS
+    WakeByAddressSingle
+    WakeByAddressAll
+    WaitOnAddress
+    CoIncrementMTAUsage
+    CoTaskMemAlloc
+    CoTaskMemFree
+    CoCreateFreeThreadedMarshaler
+    ProcessPrng
+    GetSystemTimePreciseAsFileTime
