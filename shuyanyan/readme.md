@@ -1,2 +1,1 @@
-print
-[界面设计.docx](https://github.com/user-attachments/files/28681612/default.docx)
+调整了首页界面布局，用上传的src内文件代替软件中对应名称文件即可

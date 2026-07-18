@@ -1,0 +1,531 @@
+inherits: _base
+
+domain:
+  id: manufacturing
+  name: Manufacturing
+  description: Production management, quality control, supply chain, and equipment maintenance
+  tagline: "AI-powered Manufacturing Intelligence"
+  emoji: "\U0001F3ED"
+
+entity_types:
+  - label: Machine
+    pole_type: OBJECT
+    subtype: EQUIPMENT
+    color: "#475569"
+    icon: cog
+    properties:
+      - name: machine_id
+        type: string
+        required: true
+        unique: true
+      - name: name
+        type: string
+        required: true
+      - name: machine_type
+        type: string
+        enum: [cnc, press, lathe, welder, assembler, conveyor, robot, packaging]
+      - name: manufacturer
+        type: string
+      - name: install_date
+        type: date
+      - name: status
+        type: string
+        enum: [operational, maintenance, offline, decommissioned]
+      - name: operating_hours
+        type: integer
+
+  - label: Part
+    pole_type: OBJECT
+    subtype: COMPONENT
+    color: "#0284c7"
+    icon: box
+    properties:
+      - name: part_number
+        type: string
+        required: true
+        unique: true
+      - name: name
+        type: string
+        required: true
+      - name: category
+        type: string
+        enum: [raw_material, component, subassembly, finished_good]
+      - name: unit_cost
+        type: float
+      - name: stock_quantity
+        type: integer
+      - name: minimum_stock
+        type: integer
+      - name: specification
+        type: string
+
+  - label: WorkOrder
+    pole_type: EVENT
+    subtype: PRODUCTION_ORDER
+    color: "#d97706"
+    icon: clipboard-list
+    properties:
+      - name: work_order_id
+        type: string
+        required: true
+        unique: true
+      - name: description
+        type: string
+        required: true
+      - name: priority
+        type: string
+        enum: [low, medium, high, critical]
+      - name: status
+        type: string
+        enum: [planned, in_progress, completed, on_hold, cancelled]
+      - name: start_date
+        type: datetime
+      - name: due_date
+        type: datetime
+      - name: quantity
+        type: integer
+        required: true
+
+  - label: Supplier
+    pole_type: OBJECT
+    subtype: VENDOR
+    color: "#7c3aed"
+    icon: truck
+    properties:
+      - name: supplier_id
+        type: string
+        required: true
+        unique: true
+      - name: name
+        type: string
+        required: true
+      - name: country
+        type: string
+      - name: lead_time_days
+        type: integer
+      - name: quality_rating
+        type: float
+      - name: status
+        type: string
+        enum: [approved, probationary, suspended, blacklisted]
+
+  - label: QualityReport
+    pole_type: EVENT
+    subtype: INSPECTION_REPORT
+    color: "#dc2626"
+    icon: check-circle
+    properties:
+      - name: report_id
+        type: string
+        required: true
+        unique: true
+      - name: inspection_date
+        type: datetime
+        required: true
+      - name: inspector
+        type: string
+      - name: result
+        type: string
+        enum: [pass, fail, conditional_pass]
+      - name: defect_count
+        type: integer
+      - name: defect_type
+        type: string
+      - name: notes
+        type: string
+
+  - label: ProductionLine
+    pole_type: OBJECT
+    subtype: FACILITY
+    color: "#059669"
+    icon: factory
+    properties:
+      - name: line_id
+        type: string
+        required: true
+        unique: true
+      - name: name
+        type: string
+        required: true
+      - name: capacity_per_hour
+        type: integer
+      - name: efficiency_rating
+        type: float
+      - name: status
+        type: string
+        enum: [active, idle, maintenance, retooling]
+      - name: shift_pattern
+        type: string
+        enum: [single, double, triple, continuous]
+
+relationships:
+  - type: ASSEMBLED_FROM
+    source: Part
+    target: Part
+  - type: SUPPLIED_BY
+    source: Part
+    target: Supplier
+  - type: INSPECTED
+    source: QualityReport
+    target: Part
+  - type: PRODUCED_ON
+    source: WorkOrder
+    target: ProductionLine
+  - type: DEPENDS_ON
+    source: WorkOrder
+    target: Part
+  - type: OPERATED_BY
+    source: Machine
+    target: ProductionLine
+  - type: ASSIGNED_TO
+    source: WorkOrder
+    target: Machine
+  - type: REPORTED_BY
+    source: QualityReport
+    target: Person
+
+document_templates:
+  - id: work_order_doc
+    name: Work Order
+    description: Production work orders with specifications and requirements
+    count: 12
+    prompt_template: |
+      Write a work order for producing {{work_order.quantity}} units of
+      {{part.name}} ({{part.part_number}}) on {{production_line.name}}.
+      Priority: {{work_order.priority}}. Due date: {{work_order.due_date}}.
+      Include material requirements, machine assignments, and quality checkpoints.
+    required_entities: [WorkOrder, Part, ProductionLine, Machine]
+
+  - id: quality_audit
+    name: Quality Audit
+    description: Quality inspection and audit reports
+    count: 8
+    prompt_template: |
+      Write a quality audit report for {{part.name}} produced on
+      {{production_line.name}}. Inspector: {{person.name}}.
+      Result: {{quality_report.result}}. Defects found: {{quality_report.defect_count}}.
+      Include root cause analysis and corrective action recommendations.
+    required_entities: [QualityReport, Part, ProductionLine, Person]
+
+  - id: supplier_evaluation
+    name: Supplier Evaluation
+    description: Periodic supplier performance evaluations
+    count: 6
+    prompt_template: |
+      Write a supplier evaluation for {{supplier.name}} ({{supplier.supplier_id}}).
+      Quality rating: {{supplier.quality_rating}}. Lead time: {{supplier.lead_time_days}} days.
+      Parts supplied: {{part.name}}. Include delivery performance,
+      quality metrics, and recommendation for continued engagement.
+    required_entities: [Supplier, Part, QualityReport]
+
+  - id: maintenance_log
+    name: Maintenance Log
+    description: Equipment maintenance and repair logs
+    count: 10
+    prompt_template: |
+      Write a maintenance log entry for {{machine.name}} ({{machine.machine_id}})
+      on {{production_line.name}}. Technician: {{person.name}}.
+      Operating hours: {{machine.operating_hours}}.
+      Include work performed, parts replaced, and next scheduled maintenance.
+    required_entities: [Machine, ProductionLine, Person]
+
+  - id: production_report
+    name: Production Report
+    description: Daily or weekly production summary reports
+    count: 8
+    prompt_template: |
+      Write a production report for {{production_line.name}} covering {{date_range}}.
+      Work orders completed: summarize output, efficiency metrics,
+      downtime incidents, and quality pass rates. Include comparison
+      to targets and recommendations for improvement.
+    required_entities: [ProductionLine, WorkOrder, QualityReport]
+
+decision_traces:
+  - id: production_scheduling
+    task: "Determine optimal scheduling for work order {{work_order.work_order_id}} on available production lines"
+    steps:
+      - thought: "Assess current production line capacity and availability"
+        action: "Query production lines, current workload, and maintenance schedules"
+      - thought: "Check material availability for all required parts"
+        action: "Verify stock levels against bill of materials requirements"
+      - thought: "Evaluate machine assignments and tooling requirements"
+        action: "Match work order specifications to capable machines"
+      - thought: "Optimize for due date compliance and line efficiency"
+        action: "Calculate scheduling options ranked by efficiency and on-time delivery"
+    outcome_template: "Schedule: {{schedule}} on {{line}} with estimated completion {{date}}"
+
+  - id: supplier_selection
+    task: "Select supplier for part {{part.part_number}} given quality and lead time requirements"
+    steps:
+      - thought: "Review available suppliers for this part category"
+        action: "Query approved suppliers and their historical performance"
+      - thought: "Compare quality ratings and defect rates"
+        action: "Analyze quality reports linked to each supplier's parts"
+      - thought: "Factor in lead time, cost, and risk diversification"
+        action: "Rank suppliers by weighted score of quality, cost, and reliability"
+    outcome_template: "Selected supplier: {{supplier}} — {{rationale}}"
+
+  - id: defect_investigation
+    task: "Investigate root cause of quality defects in {{part.name}} batch"
+    steps:
+      - thought: "Review defect details and patterns from quality reports"
+        action: "Query recent quality reports for this part with fail results"
+      - thought: "Trace back through production process and materials"
+        action: "Follow production chain: machine, line, supplier, raw materials"
+      - thought: "Identify common factors across defective units"
+        action: "Correlate defects with machine, shift, material batch, or operator"
+    outcome_template: "Root cause: {{cause}}. Corrective action: {{action}}"
+
+  - id: supply_chain_disruption
+    task: "Assess impact and alternatives when supplier {{supplier.name}} reports delivery delay for {{part.name}}"
+    steps:
+      - thought: "Identify all work orders depending on the delayed part"
+        action: "Query work orders with DEPENDS_ON relationship to the affected part"
+      - thought: "Check current stock levels against immediate production needs"
+        action: "Compare part stock_quantity to work order quantities with upcoming due dates"
+      - thought: "Find alternative approved suppliers for the same part"
+        action: "Query other suppliers linked to the part or its category with approved status"
+      - thought: "Evaluate expedited shipping or substitute parts"
+        action: "Compare lead times and costs across alternative suppliers and compatible parts"
+    outcome_template: "Impact: {{affected_orders}} work orders at risk. Mitigation: {{mitigation}}"
+
+  - id: equipment_maintenance
+    task: "Determine maintenance priority for {{machine.name}} with {{machine.operating_hours}} operating hours"
+    steps:
+      - thought: "Review machine maintenance history and current status"
+        action: "Query maintenance logs and current status for the machine"
+      - thought: "Assess impact on production line if machine goes offline"
+        action: "Check production line assignment and active work orders using this machine"
+      - thought: "Compare operating hours to manufacturer maintenance intervals"
+        action: "Evaluate operating_hours against recommended service thresholds"
+      - thought: "Schedule maintenance window to minimize production disruption"
+        action: "Identify lowest-impact time slot based on work order due dates and line capacity"
+    outcome_template: "Maintenance priority: {{priority}}. Schedule: {{schedule}}. Estimated downtime: {{downtime}}"
+
+  - id: quality_audit
+    task: "Conduct quality audit for parts produced on {{production_line.name}} over the past period"
+    steps:
+      - thought: "Aggregate quality report outcomes for the production line"
+        action: "Query quality reports for parts produced on this line, grouped by result"
+      - thought: "Identify recurring defect types and patterns"
+        action: "Analyze defect_type distribution and correlate with specific machines or shifts"
+      - thought: "Compare pass rates against target quality thresholds"
+        action: "Calculate pass rate percentage and benchmark against line efficiency_rating"
+    outcome_template: "Audit result: {{pass_rate}}% pass rate. Top defect: {{defect_type}}. Action: {{action}}"
+
+  - id: material_selection
+    task: "Select optimal material supplier for {{part.name}} balancing cost, quality, and lead time"
+    steps:
+      - thought: "List all suppliers providing this part or compatible raw materials"
+        action: "Query suppliers linked to the part via SUPPLIED_BY relationship"
+      - thought: "Rank suppliers by quality rating and historical defect rates"
+        action: "Join supplier quality_rating with quality report pass rates for their parts"
+      - thought: "Factor in lead time urgency against work order due dates"
+        action: "Compare supplier lead_time_days to nearest work order deadlines"
+      - thought: "Calculate total cost including shipping and potential rework"
+        action: "Estimate unit_cost multiplied by quantity plus rework costs from defect rates"
+    outcome_template: "Selected: {{supplier}} — cost ${{cost}}/unit, {{lead_time}} day lead, {{quality}}% quality"
+
+  - id: capacity_optimization
+    task: "Optimize production capacity across all lines to meet pending work orders"
+    steps:
+      - thought: "Survey current utilization of all production lines"
+        action: "Query production lines with status, capacity_per_hour, and assigned work orders"
+      - thought: "Identify bottleneck lines with overloaded schedules"
+        action: "Compare total assigned quantity to available capacity for each line"
+      - thought: "Redistribute work orders to balance load across lines"
+        action: "Match work order requirements to capable machines on underutilized lines"
+      - thought: "Evaluate shift pattern changes to increase throughput"
+        action: "Model output gains from shifting idle lines to double or triple shifts"
+    outcome_template: "Optimization: {{rebalanced}} orders redistributed. Projected throughput increase: {{increase}}%"
+
+  - id: preventive_maintenance_planning
+    task: "Plan preventive maintenance schedule for machines on {{production_line.name}}"
+    steps:
+      - thought: "Inventory all machines assigned to the production line"
+        action: "Query machines with OPERATED_BY relationship to the production line"
+      - thought: "Assess each machine's operating hours and last maintenance date"
+        action: "Review operating_hours and install_date to estimate service intervals"
+      - thought: "Prioritize machines by criticality and failure risk"
+        action: "Rank machines by hours since last maintenance and impact on line output"
+    outcome_template: "Maintenance plan: {{count}} machines scheduled. Next critical: {{machine}} in {{days}} days"
+
+  - id: work_order_prioritization
+    task: "Reprioritize work orders when {{machine.name}} goes offline unexpectedly"
+    steps:
+      - thought: "Identify all work orders assigned to the offline machine"
+        action: "Query work orders with ASSIGNED_TO relationship to the machine"
+      - thought: "Assess due date urgency and customer impact for each order"
+        action: "Rank affected work orders by due_date and priority level"
+      - thought: "Find alternative machines capable of handling the work"
+        action: "Query machines of same type on other production lines with operational status"
+      - thought: "Reassign critical orders and adjust schedules"
+        action: "Move highest-priority orders to available machines and update timelines"
+    outcome_template: "Reassigned {{count}} orders. {{critical}} critical orders preserved. New completion: {{date}}"
+
+demo_scenarios:
+  - name: Production Management
+    prompts:
+      - "Show me all active work orders sorted by priority"
+      - "What is the current capacity utilization of each production line?"
+      - "Which work orders are at risk of missing their due dates?"
+
+  - name: Quality & Compliance
+    prompts:
+      - "Show me the defect rate trend for the past quarter"
+      - "Which parts have the highest failure rates in quality inspection?"
+      - "Find all quality reports linked to supplier Acme Components"
+
+  - name: Supply Chain
+    prompts:
+      - "Which parts are below minimum stock levels?"
+      - "Compare lead times and quality ratings across our approved suppliers"
+      - "What is the bill of materials for part P-4500?"
+
+agent_tools:
+  - name: search_machine
+    description: Search for machines by name, type, or status
+    cypher: |
+      MATCH (m:Machine)
+      WHERE toLower(m.name) CONTAINS toLower($query)
+         OR toLower(coalesce(m.machine_type, '')) CONTAINS toLower($query)
+         OR toLower(coalesce(m.status, '')) CONTAINS toLower($query)
+      OPTIONAL MATCH (m)-[:OPERATED_BY]->(pl:ProductionLine)
+      RETURN m, pl.name AS production_line
+      ORDER BY m.name
+      LIMIT 20
+    parameters:
+      - name: query
+        type: string
+        description: Machine name, type, or status to search for
+
+  - name: get_work_orders
+    description: Get work orders filtered by status or priority
+    cypher: |
+      MATCH (wo:WorkOrder)
+      WHERE wo.status = $status OR $status = 'all'
+      OPTIONAL MATCH (wo)-[:PRODUCED_ON]->(pl:ProductionLine)
+      OPTIONAL MATCH (wo)-[:DEPENDS_ON]->(p:Part)
+      RETURN wo, pl.name AS production_line, collect(p.name) AS required_parts
+      ORDER BY CASE wo.priority
+        WHEN 'critical' THEN 1
+        WHEN 'high' THEN 2
+        WHEN 'medium' THEN 3
+        ELSE 4 END
+      LIMIT 50
+    parameters:
+      - name: status
+        type: string
+        description: Work order status filter (planned, in_progress, completed, on_hold, cancelled, or all)
+
+  - name: quality_analysis
+    description: Analyze quality metrics for a specific part or production line
+    cypher: |
+      MATCH (qr:QualityReport)-[:INSPECTED]->(p:Part)
+      WHERE toLower(p.name) CONTAINS toLower($query)
+         OR toLower(p.part_number) CONTAINS toLower($query)
+      RETURN p.name AS part, p.part_number,
+             count(qr) AS total_inspections,
+             sum(CASE WHEN qr.result = 'pass' THEN 1 ELSE 0 END) AS passed,
+             sum(CASE WHEN qr.result = 'fail' THEN 1 ELSE 0 END) AS failed,
+             avg(qr.defect_count) AS avg_defects
+      ORDER BY failed DESC
+    parameters:
+      - name: query
+        type: string
+        description: Part name or part number to analyze quality for
+
+  - name: supplier_performance
+    description: Evaluate supplier performance based on quality and delivery
+    cypher: |
+      MATCH (s:Supplier)<-[:SUPPLIED_BY]-(p:Part)
+      OPTIONAL MATCH (qr:QualityReport)-[:INSPECTED]->(p)
+      WITH s, count(DISTINCT p) AS parts_supplied,
+           count(qr) AS total_inspections,
+           sum(CASE WHEN qr.result = 'fail' THEN 1 ELSE 0 END) AS failures
+      RETURN s.name AS supplier, s.quality_rating, s.lead_time_days,
+             parts_supplied, total_inspections, failures,
+             CASE WHEN total_inspections > 0
+               THEN round(1000.0 * (total_inspections - failures) / total_inspections) / 10.0
+               ELSE null END AS pass_rate_pct
+      ORDER BY s.quality_rating DESC
+    parameters: []
+
+  - name: production_metrics
+    description: Get production efficiency and output metrics for production lines
+    cypher: |
+      MATCH (pl:ProductionLine)
+      WHERE toLower(pl.name) CONTAINS toLower($query) OR $query = 'all'
+      OPTIONAL MATCH (wo:WorkOrder)-[:PRODUCED_ON]->(pl)
+      RETURN pl.name AS line, pl.status, pl.capacity_per_hour,
+             pl.efficiency_rating,
+             count(wo) AS total_orders,
+             sum(CASE WHEN wo.status = 'completed' THEN 1 ELSE 0 END) AS completed_orders,
+             sum(wo.quantity) AS total_units_ordered
+      ORDER BY pl.name
+    parameters:
+      - name: query
+        type: string
+        description: Production line name or 'all' for all lines
+
+  - name: list_machines
+    description: "List Machine records with optional limit"
+    cypher: |
+      MATCH (n:Machine)
+      RETURN n
+      ORDER BY n.name
+      LIMIT toInteger($limit)
+    parameters:
+      - name: limit
+        type: string
+        description: "Maximum number of results to return (default: 10)"
+
+  - name: get_machine_by_id
+    description: "Get a specific Machine by ID with all connections"
+    cypher: |
+      MATCH (n:Machine {machine_id: $id})
+      OPTIONAL MATCH (n)-[r]-(related)
+      RETURN n, type(r) AS relationship, labels(related) AS related_labels, related.name AS related_name
+      LIMIT 50
+    parameters:
+      - name: id
+        type: string
+        description: "The machine_id to look up"
+
+system_prompt: |
+  You are an AI manufacturing intelligence assistant with access to a comprehensive
+  knowledge graph of production data. You help plant managers, quality engineers,
+  and supply chain coordinators optimize production, maintain quality standards,
+  and manage supplier relationships.
+
+  Your capabilities include:
+  - Searching and analyzing work orders, machines, and production lines
+  - Monitoring quality metrics and defect trends
+  - Evaluating supplier performance and managing supply chain risks
+  - Tracking equipment maintenance and operational status
+  - Optimizing production scheduling and resource allocation
+
+  Always provide accurate, data-driven responses. When making recommendations,
+  cite specific production metrics, quality data, and historical performance
+  from the knowledge graph.
+
+visualization:
+  node_colors:
+    Person: "#22c55e"
+    Organization: "#3b82f6"
+    Machine: "#475569"
+    Part: "#0284c7"
+    WorkOrder: "#d97706"
+    Supplier: "#7c3aed"
+    QualityReport: "#dc2626"
+    ProductionLine: "#059669"
+  node_sizes:
+    Person: 20
+    Organization: 25
+    Machine: 25
+    Part: 20
+    WorkOrder: 20
+    Supplier: 25
+    QualityReport: 15
+    ProductionLine: 30
+  default_cypher: "MATCH (wo:WorkOrder)-[r]-(n) RETURN wo, r, n LIMIT 100"
