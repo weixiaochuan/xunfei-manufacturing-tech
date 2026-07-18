@@ -1,6 +1,8 @@
 use futures::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::watch;
 
@@ -86,6 +88,214 @@ struct NoopAiEmitter;
 impl AiEventEmitter for NoopAiEmitter {
     fn emit_token(&self, _content: &str) {}
     fn emit_error(&self, _error: &str) {}
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AiRequestProgressSnapshot {
+    pub response_headers_received: bool,
+    pub first_response_received: bool,
+    pub partial_response_received: bool,
+    pub stream_completed: bool,
+    pub first_response_after_ms: Option<u128>,
+    pub partial_response_after_ms: Option<u128>,
+    pub finish_reason: Option<String>,
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub response_characters: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AiRequestProgress {
+    started: Instant,
+    state: Arc<Mutex<AiRequestProgressSnapshot>>,
+}
+
+impl Default for AiRequestProgress {
+    fn default() -> Self {
+        Self {
+            started: Instant::now(),
+            state: Arc::new(Mutex::new(AiRequestProgressSnapshot::default())),
+        }
+    }
+}
+
+impl AiRequestProgress {
+    pub(crate) fn snapshot(&self) -> AiRequestProgressSnapshot {
+        self.state
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or_default()
+    }
+
+    fn mark_response_headers(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.response_headers_received = true;
+        }
+    }
+
+    fn mark_first_response(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            if !state.first_response_received {
+                state.first_response_received = true;
+                state.first_response_after_ms = Some(self.started.elapsed().as_millis());
+            }
+        }
+    }
+
+    fn mark_partial_response(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            if !state.partial_response_received {
+                state.partial_response_received = true;
+                state.partial_response_after_ms = Some(self.started.elapsed().as_millis());
+            }
+        }
+    }
+
+    fn mark_stream_completed(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.stream_completed = true;
+        }
+    }
+
+    fn record_openai_metadata(&self, data: &Value, response_characters: Option<usize>) {
+        if let Ok(mut state) = self.state.lock() {
+            if let Some(reason) = data["choices"][0]["finish_reason"].as_str() {
+                state.finish_reason = Some(reason.to_string());
+            }
+            if let Some(usage) = data.get("usage") {
+                state.prompt_tokens = usage["prompt_tokens"].as_u64().or(state.prompt_tokens);
+                state.completion_tokens = usage["completion_tokens"]
+                    .as_u64()
+                    .or(state.completion_tokens);
+                state.total_tokens = usage["total_tokens"].as_u64().or(state.total_tokens);
+            }
+            if response_characters.is_some() {
+                state.response_characters = response_characters;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct OpenAiStreamMetadata {
+    finish_reason: Option<String>,
+    reasoning_chars: usize,
+}
+
+#[cfg(test)]
+fn consume_openai_sse_line(
+    line: &str,
+    full_response: &mut String,
+    emitter: &dyn AiEventEmitter,
+    progress: Option<&AiRequestProgress>,
+) -> bool {
+    consume_openai_sse_line_with_metadata(
+        line,
+        full_response,
+        emitter,
+        progress,
+        &mut OpenAiStreamMetadata::default(),
+    )
+}
+
+fn consume_openai_sse_line_with_metadata(
+    line: &str,
+    full_response: &mut String,
+    emitter: &dyn AiEventEmitter,
+    progress: Option<&AiRequestProgress>,
+    metadata: &mut OpenAiStreamMetadata,
+) -> bool {
+    let line = line.trim();
+    if line.is_empty() {
+        return false;
+    }
+    let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+        return false;
+    };
+    if data == "[DONE]" {
+        if let Some(progress) = progress {
+            progress.mark_stream_completed();
+        }
+        return true;
+    }
+    let Ok(data) = serde_json::from_str::<Value>(data) else {
+        return false;
+    };
+    if let Some(reason) = data["choices"][0]["finish_reason"].as_str() {
+        metadata.finish_reason = Some(reason.to_string());
+    }
+    if let Some(progress) = progress {
+        progress.record_openai_metadata(&data, None);
+    }
+    if let Some(reasoning) = data["choices"][0]["delta"]["reasoning_content"].as_str() {
+        metadata.reasoning_chars += reasoning.chars().count();
+    }
+    if let Some(content) = data["choices"][0]["delta"]["content"].as_str() {
+        full_response.push_str(content);
+        emitter.emit_token(content);
+        if !content.is_empty() {
+            if let Some(progress) = progress {
+                progress.mark_partial_response();
+            }
+        }
+    }
+    false
+}
+
+fn finalize_openai_generic_response(
+    full_response: String,
+    metadata: &OpenAiStreamMetadata,
+) -> Result<String, AppError> {
+    if metadata.finish_reason.as_deref() == Some("length") {
+        return Err(AppError::Custom(format!(
+            "AI 输出达到 token 上限，未完成最终正文：contentChars={}，reasoningChars={}",
+            full_response.chars().count(),
+            metadata.reasoning_chars
+        )));
+    }
+    if full_response.trim().is_empty() && metadata.reasoning_chars > 0 {
+        return Err(AppError::Custom(format!(
+            "AI 流仅返回 reasoning_content，未返回最终正文：reasoningChars={}",
+            metadata.reasoning_chars
+        )));
+    }
+    Ok(full_response)
+}
+
+fn apply_openai_thinking_policy(body: &mut Value, provider: &str, disable_thinking: bool) {
+    if disable_thinking && provider.eq_ignore_ascii_case("deepseek") {
+        body["thinking"] = json!({ "type": "disabled" });
+    }
+}
+
+fn apply_openai_response_format(body: &mut Value, force_json_output: bool) {
+    if force_json_output {
+        body["response_format"] = json!({ "type": "json_object" });
+        // Structured planning is consumed only after the complete object is available.
+        // A non-stream response prevents an OpenAI-compatible provider from ending the
+        // SSE transport between JSON tokens while still preserving normal SVG streaming.
+        body["stream"] = json!(false);
+    }
+}
+
+fn extract_openai_non_stream_content(
+    body: &str,
+    progress: Option<&AiRequestProgress>,
+) -> Result<String, AppError> {
+    let data: Value = serde_json::from_str(body).map_err(|error| {
+        AppError::Custom(format!("OpenAI JSON response parse failed: {}", error))
+    })?;
+    let content = data["choices"][0]["message"]["content"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| {
+            AppError::Custom("OpenAI JSON response did not contain message content".into())
+        })?;
+    if let Some(progress) = progress {
+        progress.record_openai_metadata(&data, Some(content.chars().count()));
+    }
+    Ok(content)
 }
 
 pub struct AiService;
@@ -398,7 +608,10 @@ impl AiService {
         }
         for msg in &input.messages {
             if !matches!(msg.role.as_str(), "system" | "user" | "assistant") {
-                return Err(AppError::InvalidInput(format!("不支持的 AI 消息角色: {}", msg.role)));
+                return Err(AppError::InvalidInput(format!(
+                    "不支持的 AI 消息角色: {}",
+                    msg.role
+                )));
             }
             if msg.content.trim().is_empty() {
                 return Err(AppError::InvalidInput("AI 消息内容不能为空".into()));
@@ -418,8 +631,16 @@ impl AiService {
             event_name: event_name.clone(),
         };
         let full = match model.provider.as_str() {
-            "ollama" => Self::stream_ollama_generic(&emitter, &model, &messages, cancel_rx).await?,
-            _ => Self::stream_openai_generic(&emitter, &model, &messages, cancel_rx).await?,
+            "ollama" => {
+                Self::stream_ollama_generic(&emitter, &model, &messages, cancel_rx, None, None)
+                    .await?
+            }
+            _ => {
+                Self::stream_openai_generic(
+                    &emitter, &model, &messages, cancel_rx, None, None, false, false,
+                )
+                .await?
+            }
         };
         let _ = app.emit(
             event_name.as_str(),
@@ -439,12 +660,27 @@ impl AiService {
         input: PluginAiChatInput,
         cancel_rx: watch::Receiver<bool>,
     ) -> Result<String, AppError> {
+        Self::plugin_chat_sync_with_options(db, input, cancel_rx, None, None, false, false).await
+    }
+
+    pub(crate) async fn plugin_chat_sync_with_options(
+        db: &Database,
+        input: PluginAiChatInput,
+        cancel_rx: watch::Receiver<bool>,
+        max_output_tokens: Option<i64>,
+        progress: Option<&AiRequestProgress>,
+        disable_thinking: bool,
+        force_json_output: bool,
+    ) -> Result<String, AppError> {
         if input.messages.is_empty() {
             return Err(AppError::InvalidInput("AI 消息不能为空".into()));
         }
         for msg in &input.messages {
             if !matches!(msg.role.as_str(), "system" | "user" | "assistant") {
-                return Err(AppError::InvalidInput(format!("不支持的 AI 消息角色: {}", msg.role)));
+                return Err(AppError::InvalidInput(format!(
+                    "不支持的 AI 消息角色: {}",
+                    msg.role
+                )));
             }
             if msg.content.trim().is_empty() {
                 return Err(AppError::InvalidInput("AI 消息内容不能为空".into()));
@@ -461,8 +697,30 @@ impl AiService {
             .collect();
         let emitter = NoopAiEmitter;
         match model.provider.as_str() {
-            "ollama" => Self::stream_ollama_generic(&emitter, &model, &messages, cancel_rx).await,
-            _ => Self::stream_openai_generic(&emitter, &model, &messages, cancel_rx).await,
+            "ollama" => {
+                Self::stream_ollama_generic(
+                    &emitter,
+                    &model,
+                    &messages,
+                    cancel_rx,
+                    max_output_tokens,
+                    progress,
+                )
+                .await
+            }
+            _ => {
+                Self::stream_openai_generic(
+                    &emitter,
+                    &model,
+                    &messages,
+                    cancel_rx,
+                    max_output_tokens,
+                    progress,
+                    disable_thinking,
+                    force_json_output,
+                )
+                .await
+            }
         }
     }
 
@@ -569,10 +827,16 @@ impl AiService {
 
         let _full = match model.provider.as_str() {
             "ollama" => {
-                Self::stream_ollama_generic(&write_app, &model, &messages, cancel_rx).await?
+                Self::stream_ollama_generic(&write_app, &model, &messages, cancel_rx, None, None)
+                    .await?
             }
             // T-012: 默认走 OpenAI 兼容（含 LM Studio / 自定义 baseUrl）
-            _ => Self::stream_openai_generic(&write_app, &model, &messages, cancel_rx).await?,
+            _ => {
+                Self::stream_openai_generic(
+                    &write_app, &model, &messages, cancel_rx, None, None, false, false,
+                )
+                .await?
+            }
         };
 
         let _ = app.emit("ai-write:done", "");
@@ -854,19 +1118,28 @@ impl AiService {
         model: &AiModel,
         messages: &[Value],
         mut cancel_rx: watch::Receiver<bool>,
+        max_output_tokens: Option<i64>,
+        progress: Option<&AiRequestProgress>,
     ) -> Result<String, AppError> {
         let url = format!("{}/api/chat", model.api_url.trim_end_matches('/'));
         let client = build_ollama_client();
+        let mut body = json!({
+            "model": model.model_id,
+            "messages": messages,
+            "stream": true
+        });
+        if let Some(max_output_tokens) = max_output_tokens {
+            body["options"] = json!({ "num_predict": max_output_tokens });
+        }
         let response = client
             .post(&url)
-            .json(&json!({
-                "model": model.model_id,
-                "messages": messages,
-                "stream": true
-            }))
+            .json(&body)
             .send()
             .await
             .map_err(|e| AppError::Custom(format_ollama_send_error(&e, &url)))?;
+        if let Some(progress) = progress {
+            progress.mark_response_headers();
+        }
 
         if !response.status().is_success() {
             let status = response.status();
@@ -884,6 +1157,9 @@ impl AiService {
                 chunk = stream.next() => {
                     match chunk {
                         Some(Ok(bytes)) => {
+                            if let Some(progress) = progress {
+                                progress.mark_first_response();
+                            }
                             let text = String::from_utf8_lossy(&bytes);
                             for line in text.lines() {
                                 if line.is_empty() { continue; }
@@ -891,8 +1167,16 @@ impl AiService {
                                     if let Some(content) = data["message"]["content"].as_str() {
                                         full_response.push_str(content);
                                         emitter.emit_token(content);
+                                        if !content.is_empty() {
+                                            if let Some(progress) = progress {
+                                                progress.mark_partial_response();
+                                            }
+                                        }
                                     }
                                     if data["done"].as_bool() == Some(true) {
+                                        if let Some(progress) = progress {
+                                            progress.mark_stream_completed();
+                                        }
                                         return Ok(full_response);
                                     }
                                 }
@@ -912,6 +1196,9 @@ impl AiService {
                 }
             }
         }
+        if let Some(progress) = progress {
+            progress.mark_stream_completed();
+        }
         Ok(full_response)
     }
 
@@ -921,17 +1208,27 @@ impl AiService {
         model: &AiModel,
         messages: &[Value],
         mut cancel_rx: watch::Receiver<bool>,
+        max_output_tokens: Option<i64>,
+        progress: Option<&AiRequestProgress>,
+        disable_thinking: bool,
+        force_json_output: bool,
     ) -> Result<String, AppError> {
         let client = crate::services::http_client::shared();
         let url = build_openai_chat_url(&model.api_url);
+        let mut body = json!({
+            "model": model.model_id,
+            "messages": messages,
+            "stream": true
+        });
+        if let Some(max_output_tokens) = max_output_tokens {
+            body["max_tokens"] = json!(max_output_tokens);
+        }
+        apply_openai_thinking_policy(&mut body, &model.provider, disable_thinking);
+        apply_openai_response_format(&mut body, force_json_output);
         let mut request = client
             .post(&url)
             .header("Content-Type", "application/json")
-            .json(&json!({
-                "model": model.model_id,
-                "messages": messages,
-                "stream": true
-            }));
+            .json(&body);
         if let Some(key) = &model.api_key {
             if !key.is_empty() {
                 request = request.header("Authorization", format!("Bearer {}", key));
@@ -941,32 +1238,117 @@ impl AiService {
             .send()
             .await
             .map_err(|e| AppError::Custom(format!("API 请求失败: {}", e)))?;
+        if let Some(progress) = progress {
+            progress.mark_response_headers();
+        }
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(AppError::Custom(format_openai_api_error(status, &body)));
         }
 
+        let is_non_stream_json = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.to_ascii_lowercase().contains("application/json"));
+        if is_non_stream_json {
+            let body = response.text().await.map_err(|error| {
+                AppError::Custom(format!("OpenAI response read failed: {}", error))
+            })?;
+            if let Some(progress) = progress {
+                progress.mark_first_response();
+            }
+            let content = extract_openai_non_stream_content(&body, progress)?;
+            if !content.is_empty() {
+                emitter.emit_token(&content);
+                if let Some(progress) = progress {
+                    progress.mark_partial_response();
+                }
+            }
+            if let Some(progress) = progress {
+                progress.mark_stream_completed();
+            }
+            return Ok(content);
+        }
+
         let mut stream = response.bytes_stream();
         let mut full_response = String::new();
-        let mut buffer = String::new();
+        // Network chunks are arbitrary byte boundaries. A Chinese UTF-8 code point may be
+        // split across two chunks, so decoding each chunk with from_utf8_lossy would inject
+        // U+FFFD into otherwise valid model output. Keep raw bytes until a complete SSE line
+        // is available and decode that line strictly.
+        let mut buffer: Vec<u8> = Vec::new();
+        let mut metadata = OpenAiStreamMetadata::default();
         loop {
             tokio::select! {
                 chunk = stream.next() => {
                     match chunk {
                         Some(Ok(bytes)) => {
-                            buffer.push_str(&String::from_utf8_lossy(&bytes));
-                            while let Some(pos) = buffer.find('\n') {
-                                let line = buffer[..pos].trim().to_string();
-                                buffer = buffer[pos + 1..].to_string();
-                                if line.is_empty() || line == "data: [DONE]" { continue; }
-                                if let Some(json_str) = line.strip_prefix("data: ") {
-                                    if let Ok(data) = serde_json::from_str::<Value>(json_str) {
-                                        if let Some(content) = data["choices"][0]["delta"]["content"].as_str() {
-                                            full_response.push_str(content);
-                                            emitter.emit_token(content);
+                            if let Some(progress) = progress {
+                                progress.mark_first_response();
+                            }
+                            buffer.extend_from_slice(&bytes);
+                            for line in drain_openai_utf8_lines(&mut buffer)? {
+                                if consume_openai_sse_line_with_metadata(
+                                    &line,
+                                    &mut full_response,
+                                    emitter,
+                                    progress,
+                                    &mut metadata,
+                                ) {
+                                    return finalize_openai_generic_response(
+                                        full_response,
+                                        &metadata,
+                                    );
+                                }
+                            }
+                            // A few OpenAI-compatible servers send the terminal marker
+                            // without a trailing newline and keep the HTTP connection alive.
+                            // Finish as soon as that complete marker is present.
+                            match std::str::from_utf8(&buffer) {
+                                Ok(pending) => {
+                                    if consume_openai_sse_line_with_metadata(
+                                        pending.trim(),
+                                        &mut full_response,
+                                        emitter,
+                                        progress,
+                                        &mut metadata,
+                                    ) {
+                                        return finalize_openai_generic_response(
+                                            full_response,
+                                            &metadata,
+                                        );
+                                    }
+                                    // Some compatible APIs return a normal JSON object while
+                                    // omitting or mislabelling Content-Type. Once the object is
+                                    // complete, consume it instead of waiting for connection close.
+                                    if pending.trim_start().starts_with('{') {
+                                        if let Ok(content) =
+                                            extract_openai_non_stream_content(pending.trim(), progress)
+                                        {
+                                            if !content.is_empty() {
+                                                emitter.emit_token(&content);
+                                                if let Some(progress) = progress {
+                                                    progress.mark_partial_response();
+                                                }
+                                            }
+                                            if let Some(progress) = progress {
+                                                progress.mark_stream_completed();
+                                            }
+                                            return Ok(content);
                                         }
                                     }
+                                }
+                                Err(error) if error.error_len().is_none() => {
+                                    // The pending bytes end in a partial UTF-8 code point. Wait for
+                                    // the next network chunk instead of corrupting it.
+                                }
+                                Err(error) => {
+                                    return Err(AppError::Custom(format!(
+                                        "OpenAI stream returned invalid UTF-8 at byte {}",
+                                        error.valid_up_to()
+                                    )));
                                 }
                             }
                         }
@@ -984,7 +1366,25 @@ impl AiService {
                 }
             }
         }
-        Ok(full_response)
+        let remaining = String::from_utf8(buffer).map_err(|error| {
+            AppError::Custom(format!(
+                "OpenAI stream ended with invalid UTF-8 at byte {}",
+                error.utf8_error().valid_up_to()
+            ))
+        })?;
+        if !remaining.trim().is_empty() {
+            let _ = consume_openai_sse_line_with_metadata(
+                remaining.trim(),
+                &mut full_response,
+                emitter,
+                progress,
+                &mut metadata,
+            );
+        }
+        if let Some(progress) = progress {
+            progress.mark_stream_completed();
+        }
+        finalize_openai_generic_response(full_response, &metadata)
     }
 
     /// 流式聊天：发送消息 → 检索笔记 → 调用 AI → 流式返回
@@ -1789,6 +2189,24 @@ impl AiService {
 
         (Ok(content), Some(tool_calls))
     }
+}
+
+fn drain_openai_utf8_lines(buffer: &mut Vec<u8>) -> Result<Vec<String>, AppError> {
+    let mut lines = Vec::new();
+    while let Some(position) = buffer.iter().position(|byte| *byte == b'\n') {
+        let mut bytes: Vec<u8> = buffer.drain(..=position).collect();
+        while matches!(bytes.last(), Some(b'\n' | b'\r')) {
+            bytes.pop();
+        }
+        let line = String::from_utf8(bytes).map_err(|error| {
+            AppError::Custom(format!(
+                "OpenAI SSE line contains invalid UTF-8 at byte {}",
+                error.utf8_error().valid_up_to()
+            ))
+        })?;
+        lines.push(line.trim().to_string());
+    }
+    Ok(lines)
 }
 
 /// 解析单行 OpenAI SSE 流数据，累加内容并更新 tool_calls 状态。
@@ -3190,5 +3608,153 @@ mod strip_pseudo_tool_calls_tests {
         // 不应留下连续 3+ 空行
         assert!(!out.contains("\n\n\n"), "残留连续空行：{:?}", out);
         assert!(out.contains('A') && out.contains('B'));
+    }
+}
+
+#[cfg(test)]
+mod openai_stream_completion_tests {
+    use super::*;
+
+    #[test]
+    fn utf8_line_buffer_preserves_chinese_split_across_network_chunks() {
+        let complete = "data: {\"choices\":[{\"delta\":{\"content\":\"大跃进\"}}]}\n";
+        let bytes = complete.as_bytes();
+        let split = complete.find('跃').expect("Chinese character exists") + 1;
+        let mut buffer = bytes[..split].to_vec();
+        assert!(drain_openai_utf8_lines(&mut buffer).unwrap().is_empty());
+        buffer.extend_from_slice(&bytes[split..]);
+        let lines = drain_openai_utf8_lines(&mut buffer).unwrap();
+        assert_eq!(lines, vec![complete.trim()]);
+        assert!(!lines[0].contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn utf8_line_buffer_rejects_truly_invalid_bytes_instead_of_inserting_replacement_text() {
+        let mut buffer = b"data: bad ".to_vec();
+        buffer.extend_from_slice(&[0xFF, b'\n']);
+        let error = drain_openai_utf8_lines(&mut buffer).unwrap_err();
+        assert!(error.to_string().contains("invalid UTF-8"));
+    }
+
+    #[test]
+    fn done_event_finishes_stream_without_waiting_for_connection_close() {
+        let progress = AiRequestProgress::default();
+        let emitter = NoopAiEmitter;
+        let mut response = String::new();
+        let content = r#"data: {"choices":[{"delta":{"content":"<svg />"}}]}"#;
+
+        assert!(!consume_openai_sse_line(
+            content,
+            &mut response,
+            &emitter,
+            Some(&progress),
+        ));
+        assert!(consume_openai_sse_line(
+            "data: [DONE]",
+            &mut response,
+            &emitter,
+            Some(&progress),
+        ));
+        assert_eq!(response, "<svg />");
+        let snapshot = progress.snapshot();
+        assert!(snapshot.partial_response_received);
+        assert!(snapshot.stream_completed);
+    }
+
+    #[test]
+    fn compact_done_event_is_also_accepted() {
+        let emitter = NoopAiEmitter;
+        let mut response = String::new();
+        assert!(consume_openai_sse_line(
+            "data:[DONE]",
+            &mut response,
+            &emitter,
+            None,
+        ));
+    }
+
+    #[test]
+    fn non_stream_json_response_finishes_with_message_content() {
+        let body = r#"{"choices":[{"message":{"content":"<svg><rect /></svg>"},"finish_reason":"stop"}],"usage":{"prompt_tokens":101,"completion_tokens":23,"total_tokens":124}}"#;
+        let progress = AiRequestProgress::default();
+        let content = extract_openai_non_stream_content(body, Some(&progress))
+            .expect("valid non-stream OpenAI response should be consumed");
+        assert_eq!(content, "<svg><rect /></svg>");
+        let snapshot = progress.snapshot();
+        assert_eq!(snapshot.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(snapshot.prompt_tokens, Some(101));
+        assert_eq!(snapshot.completion_tokens, Some(23));
+        assert_eq!(snapshot.total_tokens, Some(124));
+        assert_eq!(snapshot.response_characters, Some(content.chars().count()));
+    }
+
+    #[test]
+    fn reasoning_only_length_finish_is_reported_as_token_exhaustion() {
+        let emitter = NoopAiEmitter;
+        let mut response = String::new();
+        let mut metadata = OpenAiStreamMetadata::default();
+        assert!(!consume_openai_sse_line_with_metadata(
+            r#"data: {"choices":[{"delta":{"reasoning_content":"long reasoning"},"finish_reason":null}]}"#,
+            &mut response,
+            &emitter,
+            None,
+            &mut metadata,
+        ));
+        assert!(!consume_openai_sse_line_with_metadata(
+            r#"data: {"choices":[{"delta":{},"finish_reason":"length"}]}"#,
+            &mut response,
+            &emitter,
+            None,
+            &mut metadata,
+        ));
+        let error = finalize_openai_generic_response(response, &metadata).unwrap_err();
+        assert!(error.to_string().contains("token 上限"));
+        assert!(error.to_string().contains("reasoningChars=14"));
+    }
+
+    #[test]
+    fn normal_content_stop_remains_successful() {
+        let emitter = NoopAiEmitter;
+        let mut response = String::new();
+        let mut metadata = OpenAiStreamMetadata::default();
+        assert!(!consume_openai_sse_line_with_metadata(
+            r#"data: {"choices":[{"delta":{"content":"<svg></svg>"},"finish_reason":"stop"}]}"#,
+            &mut response,
+            &emitter,
+            None,
+            &mut metadata,
+        ));
+        assert_eq!(
+            finalize_openai_generic_response(response, &metadata).unwrap(),
+            "<svg></svg>"
+        );
+    }
+
+    #[test]
+    fn thinking_is_disabled_only_for_explicit_deepseek_requests() {
+        let mut native_body = json!({"model": "deepseek-v4-pro"});
+        apply_openai_thinking_policy(&mut native_body, "deepseek", true);
+        assert_eq!(native_body["thinking"]["type"], "disabled");
+
+        let mut normal_body = json!({"model": "deepseek-v4-pro"});
+        apply_openai_thinking_policy(&mut normal_body, "deepseek", false);
+        assert!(normal_body.get("thinking").is_none());
+
+        let mut other_provider_body = json!({"model": "gpt"});
+        apply_openai_thinking_policy(&mut other_provider_body, "openai", true);
+        assert!(other_provider_body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn json_output_is_added_only_when_explicitly_requested() {
+        let mut planning_body = json!({"model": "deepseek-v4-pro", "stream": true});
+        apply_openai_response_format(&mut planning_body, true);
+        assert_eq!(planning_body["response_format"]["type"], "json_object");
+        assert_eq!(planning_body["stream"], false);
+
+        let mut svg_body = json!({"model": "deepseek-v4-pro", "stream": true});
+        apply_openai_response_format(&mut svg_body, false);
+        assert!(svg_body.get("response_format").is_none());
+        assert_eq!(svg_body["stream"], true);
     }
 }

@@ -219,8 +219,11 @@ export const pptMasterApi = {
     console.info("[PPT API] invoke ppt_master_generate_from_prompt", {
       generationEngine: input.generationEngine,
       generationMode: input.generationMode,
+      blockOnQualityFailure: input.blockOnQualityFailure,
       slideCount: input.slideCount,
       style: input.style,
+      customStyle: input.customStyle,
+      visualSuggestionsLength: input.visualSuggestions?.length ?? 0,
       hasStructuredUnderstanding:
         typeof input.aiUnderstandingResult === "object" && input.aiUnderstandingResult !== null,
       rawMaterialLength: input.rawMaterial?.length ?? 0,

@@ -32,6 +32,7 @@ interface PptGenerationDraftState {
   selectedModelId: number | null;
   selectedModelInitialized: boolean;
   generationMode: PptGenerationMode;
+  blockOnQualityFailure: boolean;
   outputDir: string;
   outputDirInitialized: boolean;
 
@@ -67,6 +68,7 @@ interface PptGenerationDraftState {
   setSelectedModelId: (modelId: number | null) => void;
   initializeSelectedModel: (modelId: number | null) => void;
   setGenerationMode: (mode: PptGenerationMode) => void;
+  setBlockOnQualityFailure: (block: boolean) => void;
   setOutputDir: (path: string) => void;
   initializeOutputDir: (path: string) => void;
   setMaterialInputMode: (mode: PptMaterialInputMode) => void;
@@ -173,6 +175,7 @@ export const usePptGenerationDraftStore = create<PptGenerationDraftState>((set, 
   selectedModelId: null,
   selectedModelInitialized: false,
   generationMode: "template",
+  blockOnQualityFailure: true,
   outputDir: "",
   outputDirInitialized: false,
 
@@ -216,6 +219,8 @@ export const usePptGenerationDraftStore = create<PptGenerationDraftState>((set, 
     set({ selectedModelId, selectedModelInitialized: true });
   },
   setGenerationMode: (generationMode) => set({ generationMode, updatedAt: Date.now() }),
+  setBlockOnQualityFailure: (blockOnQualityFailure) =>
+    set({ blockOnQualityFailure, updatedAt: Date.now() }),
   setOutputDir: (outputDir) =>
     set({ outputDir, outputDirInitialized: true, updatedAt: Date.now() }),
   initializeOutputDir: (outputDir) => {
@@ -470,6 +475,7 @@ export const usePptGenerationDraftStore = create<PptGenerationDraftState>((set, 
       generationStatus: "idle",
       generationError: null,
       generationResult: null,
+      blockOnQualityFailure: true,
       updatedAt: Date.now(),
     })),
 }));

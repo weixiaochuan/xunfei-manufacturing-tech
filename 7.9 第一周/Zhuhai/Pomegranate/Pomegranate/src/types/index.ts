@@ -128,6 +128,7 @@ export interface PptMasterGenerateInput {
   suggestedPageStructure?: string | null;
   narrativeMainline?: string | null;
   visualExpressionAdvice?: string | null;
+  visualSuggestions?: string | null;
   openQuestions?: string | null;
   rawMaterial?: string | null;
   materialSources?: PptMaterialSourceMetadata[];
@@ -137,6 +138,7 @@ export interface PptMasterGenerateInput {
   audience?: string;
   slideCount?: number;
   style?: string;
+  customStyle?: string | null;
   generationEngine?: "ppt_master_native" | "legacy_fallback";
   mode?: string;
   visualStyle?: string;
@@ -144,6 +146,7 @@ export interface PptMasterGenerateInput {
   chartBias?: string[];
   outputDir?: string | null;
   generationMode?: "agent" | "template";
+  blockOnQualityFailure?: boolean;
 }
 
 export interface PptMasterGenerateResult {
@@ -161,6 +164,11 @@ export interface PptMasterGenerateResult {
   durationMs: number;
   error: string | null;
   generationEngine?: string;
+  failureStage?: string | null;
+  failureType?: string | null;
+  failedPage?: number | null;
+  timedOutAfterSeconds?: number | null;
+  failedSvgFile?: string | null;
 }
 
 // ─── 插件系统 ───────────────────────────────────

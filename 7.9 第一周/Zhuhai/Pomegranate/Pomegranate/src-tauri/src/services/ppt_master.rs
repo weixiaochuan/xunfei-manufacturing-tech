@@ -1,8 +1,11 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::Instant;
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::time::{timeout, Duration};
@@ -10,7 +13,34 @@ use tokio::time::{timeout, Duration};
 use crate::database::Database;
 use crate::error::AppError;
 use crate::models::{PluginAiChatInput, PluginAiMessage};
-use crate::services::ai::AiService;
+use crate::services::ai::{AiRequestProgress, AiService};
+
+#[path = "ppt_master_native_density.rs"]
+mod native_density;
+#[path = "ppt_master_native_planning.rs"]
+mod native_planning;
+#[path = "ppt_master_native_state.rs"]
+mod native_state;
+#[path = "ppt_master_native_theme.rs"]
+mod native_theme;
+use native_density::{run_space_utilization_check, NativePageDensityContract};
+use native_planning::{
+    assemble_slide_plan, deck_outline_schema, load_or_create_checkpoint, parse_deck_outline,
+    parse_slide_spec, persist_checkpoint as persist_native_planning_checkpoint, read_outline,
+    read_slide_spec, slide_spec_schema, write_outline, write_slide_spec, DeckOutline,
+    NativeMaterialIndex, NativePlanningCheckpoint, NativePlanningContractError,
+    NativePlanningErrorKind, NativePlanningRequestMetric, SlideSpec,
+    NATIVE_PLANNING_CHECKPOINT_FILE, NATIVE_PLANNING_MAX_ATTEMPTS,
+};
+use native_state::{
+    find_matching_resume_project, invalidate_downstream, now as native_state_now, read_state,
+    write_state_atomic, NativeFingerprintInput, NativeGenerationState, NativeStateModel,
+    NativeTextGeometryState, NATIVE_CANVAS, NATIVE_GENERATION_SPEC_VERSION, NATIVE_STATE_FILE,
+};
+use native_theme::{
+    persist_theme_spec, validate_svg_theme, validate_visible_text_integrity, NativeThemeSpec,
+    NATIVE_THEME_SPEC_FILE,
+};
 
 const SVG_TO_PPTX_SCRIPT: &str = "skills/ppt-master/scripts/svg_to_pptx.py";
 const SVG_QUALITY_CHECKER_SCRIPT: &str = "skills/ppt-master/scripts/svg_quality_checker.py";
@@ -25,6 +55,26 @@ const PPT_MASTER_VISUAL_STYLES_DIR: &str = "skills/ppt-master/references/visual-
 const PPT_MASTER_LAYOUTS_DIR: &str = "skills/ppt-master/templates/layouts";
 const PPT_MASTER_CHARTS_DIR: &str = "skills/ppt-master/templates/charts";
 const AI_PPT_TIMEOUT_SECS: u64 = 120;
+const NATIVE_AI_TIMEOUT_SECS: u64 = 300;
+const NATIVE_GENERATION_MAX_OUTPUT_TOKENS: i64 = 16_384;
+#[cfg(test)]
+const NATIVE_PLAN_JSON_MAX_ATTEMPTS: usize = 2;
+const NATIVE_SVG_REPAIR_TIMEOUT_CONFIG_KEY: &str = "ppt.native_svg_repair_timeout_seconds";
+const NATIVE_SVG_REPAIR_TIMEOUT_DEFAULT_SECS: u64 = 300;
+const NATIVE_SVG_REPAIR_TIMEOUT_MIN_SECS: u64 = 60;
+const NATIVE_SVG_REPAIR_TIMEOUT_MAX_SECS: u64 = 1_200;
+const NATIVE_SVG_REPAIR_MAX_ATTEMPTS_PER_PAGE: usize = 2;
+const NATIVE_SVG_REPAIR_MAX_OUTPUT_TOKENS: i64 = 8_192;
+const NATIVE_TEXT_GEOMETRY_CHECKER_SOURCE: &str =
+    include_str!("../../scripts/ppt_native_text_geometry.py");
+const NATIVE_TEXT_GEOMETRY_CHECKER_FILE: &str = "ppt_native_text_geometry_v1.py";
+const NATIVE_TEXT_GEOMETRY_MAX_AI_ATTEMPTS_PER_PAGE: usize = 2;
+const NATIVE_EXECUTOR_CLIP_PATH_RULE: &str =
+    "Never generate <clipPath> or a clip-path attribute on any <g> or shape. There are no Executor exceptions: draw the final circle, ellipse, rect, or path geometry directly instead of clipping. This includes portraits, avatars, cards, rounded corners, maps, and decorations.";
+const NATIVE_POWERPOINT_GEOMETRY_CHECKER_SOURCE: &str =
+    include_str!("../../scripts/ppt_native_powerpoint_geometry.ps1");
+const NATIVE_POWERPOINT_GEOMETRY_CHECKER_FILE: &str = "ppt_native_powerpoint_geometry_v1.ps1";
+const NATIVE_POWERPOINT_GEOMETRY_MAX_AI_ATTEMPTS_PER_PAGE: usize = 3;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,6 +159,8 @@ pub struct PptMasterGenerateInput {
     pub suggested_page_structure: Option<String>,
     pub narrative_mainline: Option<String>,
     pub visual_expression_advice: Option<String>,
+    #[serde(default)]
+    pub visual_suggestions: Option<String>,
     pub open_questions: Option<String>,
     pub raw_material: Option<String>,
     #[serde(default)]
@@ -119,6 +171,8 @@ pub struct PptMasterGenerateInput {
     pub audience: Option<String>,
     pub slide_count: Option<usize>,
     pub style: Option<String>,
+    #[serde(default)]
+    pub custom_style: Option<String>,
     pub generation_engine: Option<String>,
     pub mode: Option<String>,
     pub visual_style: Option<String>,
@@ -128,6 +182,36 @@ pub struct PptMasterGenerateInput {
     pub chart_bias: Vec<String>,
     pub output_dir: Option<String>,
     pub generation_mode: Option<String>,
+    #[serde(default)]
+    pub block_on_quality_failure: Option<bool>,
+}
+
+impl PptMasterGenerateInput {
+    pub(crate) fn block_on_quality_failure(&self) -> bool {
+        self.block_on_quality_failure.unwrap_or(true)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PptGenerationRoute {
+    LegacyFallback,
+    PptMasterNative,
+}
+
+impl PptGenerationRoute {
+    pub(crate) fn generation_mode(self) -> &'static str {
+        match self {
+            Self::LegacyFallback => "template",
+            Self::PptMasterNative => "agent",
+        }
+    }
+
+    pub(crate) fn generation_engine(self) -> &'static str {
+        match self {
+            Self::LegacyFallback => "legacy_fallback",
+            Self::PptMasterNative => "ppt_master_native",
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -147,6 +231,494 @@ pub struct PptMasterGenerateResult {
     pub duration_ms: u128,
     pub error: Option<String>,
     pub generation_engine: String,
+    pub failure_stage: Option<String>,
+    pub failure_type: Option<String>,
+    pub failed_page: Option<usize>,
+    pub timed_out_after_seconds: Option<u64>,
+    pub failed_svg_file: Option<String>,
+    pub stage: Option<String>,
+    pub page_number: Option<usize>,
+    pub svg_path: Option<String>,
+    pub violated_rule: Option<String>,
+    pub checker_summary: Option<String>,
+    pub intermediate_artifact_paths: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct PptGenerationFailureMetadata {
+    failure_stage: String,
+    failure_type: String,
+    failed_page: Option<usize>,
+    timed_out_after_seconds: Option<u64>,
+    failed_svg_file: Option<String>,
+}
+
+impl PptMasterGenerateResult {
+    pub fn failure(
+        error: String,
+        generation_mode: String,
+        generation_engine: String,
+        duration_ms: u128,
+    ) -> Self {
+        let metadata = classify_ppt_generation_failure(&error);
+        Self {
+            success: false,
+            project_path: None,
+            pptx_path: None,
+            final_pptx_path: None,
+            slide_plan_path: None,
+            design_spec_path: None,
+            quality_check_passed: None,
+            generation_mode,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms,
+            error: Some(error),
+            generation_engine,
+            failure_stage: Some(metadata.failure_stage),
+            failure_type: Some(metadata.failure_type),
+            failed_page: metadata.failed_page,
+            timed_out_after_seconds: metadata.timed_out_after_seconds,
+            failed_svg_file: metadata.failed_svg_file,
+            stage: None,
+            page_number: None,
+            svg_path: None,
+            violated_rule: None,
+            checker_summary: None,
+            intermediate_artifact_paths: Vec::new(),
+        }
+    }
+
+    fn with_generated_artifacts(
+        mut self,
+        project: &Path,
+        slide_plan_path: &Path,
+        design_spec_path: &Path,
+        quality_check_passed: Option<bool>,
+        stdout: String,
+        stderr: String,
+    ) -> Self {
+        self.project_path = Some(project.to_string_lossy().to_string());
+        self.slide_plan_path = Some(slide_plan_path.to_string_lossy().to_string());
+        self.design_spec_path = Some(design_spec_path.to_string_lossy().to_string());
+        self.quality_check_passed = quality_check_passed;
+        self.stdout = stdout;
+        self.stderr = stderr;
+        self.intermediate_artifact_paths = native_intermediate_artifact_paths(project);
+        self
+    }
+
+    fn with_partial_artifacts(
+        mut self,
+        project: Option<&Path>,
+        slide_plan_path: Option<&Path>,
+        design_spec_path: Option<&Path>,
+        quality_check_passed: Option<bool>,
+        stdout: String,
+        stderr: String,
+    ) -> Self {
+        self.project_path = project.map(|path| path.to_string_lossy().to_string());
+        self.slide_plan_path = slide_plan_path.map(|path| path.to_string_lossy().to_string());
+        self.design_spec_path = design_spec_path.map(|path| path.to_string_lossy().to_string());
+        self.quality_check_passed = quality_check_passed;
+        self.stdout = stdout;
+        self.stderr = stderr;
+        if let Some(project) = project {
+            self.intermediate_artifact_paths = native_intermediate_artifact_paths(project);
+        }
+        self
+    }
+
+    fn with_classified_failure(mut self) -> Self {
+        if self.success {
+            return self;
+        }
+        let metadata = classify_ppt_generation_failure(self.error.as_deref().unwrap_or(""));
+        self.failure_stage = Some(metadata.failure_stage);
+        self.failure_type = Some(metadata.failure_type);
+        self.failed_page = metadata.failed_page;
+        self.timed_out_after_seconds = metadata.timed_out_after_seconds;
+        self.failed_svg_file = metadata.failed_svg_file;
+        self.stage = self.failure_stage.clone();
+        self.page_number = self.failed_page;
+        self
+    }
+}
+
+fn native_intermediate_artifact_paths(project: &Path) -> Vec<String> {
+    [
+        project.join(NATIVE_STATE_FILE),
+        project.join(NATIVE_THEME_SPEC_FILE),
+        project.join("design_spec.md"),
+        project.join("spec_lock.md"),
+        project.join("slide_plan.json"),
+        project.join("svg_output"),
+        project.join("notes"),
+        project.join("svg_final"),
+        project.join("exports"),
+    ]
+    .into_iter()
+    .filter(|path| path.exists())
+    .map(|path| path.to_string_lossy().to_string())
+    .collect()
+}
+
+fn normalize_generation_value(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+pub(crate) fn resolve_generation_route(
+    generation_engine: Option<&str>,
+    generation_mode: Option<&str>,
+) -> Result<PptGenerationRoute, AppError> {
+    let engine = normalize_generation_value(generation_engine);
+    let mode = normalize_generation_value(generation_mode);
+    match (engine, mode) {
+        (None, None)
+        | (Some("legacy_fallback"), None)
+        | (None, Some("template"))
+        | (Some("legacy_fallback"), Some("template")) => Ok(PptGenerationRoute::LegacyFallback),
+        (Some("ppt_master_native"), None)
+        | (None, Some("agent"))
+        | (Some("ppt_master_native"), Some("agent")) => Ok(PptGenerationRoute::PptMasterNative),
+        (Some(engine), Some(mode))
+            if matches!(engine, "legacy_fallback" | "ppt_master_native")
+                && matches!(mode, "template" | "agent") =>
+        {
+            Err(AppError::InvalidInput(format!(
+                "generationMode 与 generationEngine 不一致: mode={mode}, engine={engine}"
+            )))
+        }
+        (Some(engine), _) if !matches!(engine, "legacy_fallback" | "ppt_master_native") => Err(
+            AppError::InvalidInput(format!("generationEngine 无效: {engine}")),
+        ),
+        (_, Some(mode)) if !matches!(mode, "template" | "agent") => Err(AppError::InvalidInput(
+            format!("generationMode 无效: {mode}"),
+        )),
+        _ => Err(AppError::InvalidInput("无法解析 PPT 生成模式".to_string())),
+    }
+}
+
+fn requested_generation_route(
+    input: &PptMasterGenerateInput,
+) -> Result<PptGenerationRoute, AppError> {
+    resolve_generation_route(
+        input.generation_engine.as_deref(),
+        input.generation_mode.as_deref(),
+    )
+}
+
+fn generation_identity_for_error(input: &PptMasterGenerateInput) -> PptGenerationRoute {
+    requested_generation_route(input).unwrap_or_else(|_| {
+        if normalize_generation_value(input.generation_engine.as_deref())
+            == Some("ppt_master_native")
+            || normalize_generation_value(input.generation_mode.as_deref()) == Some("agent")
+        {
+            PptGenerationRoute::PptMasterNative
+        } else {
+            PptGenerationRoute::LegacyFallback
+        }
+    })
+}
+
+fn native_stage_start(log_lines: &mut Vec<String>, stage: &str, input: &str) -> Instant {
+    log_lines.push(format!(
+        "[Native Stage] stage={stage} status=start input={} output=-",
+        single_line_log_value(input)
+    ));
+    Instant::now()
+}
+
+fn native_stage_success(log_lines: &mut Vec<String>, stage: &str, started: Instant, output: &str) {
+    log_lines.push(format!(
+        "[Native Stage] stage={stage} status=success durationMs={} input=- output={} error=-",
+        started.elapsed().as_millis(),
+        single_line_log_value(output)
+    ));
+}
+
+fn native_stage_failure(log_lines: &mut Vec<String>, stage: &str, started: Instant, error: &str) {
+    log_lines.push(format!(
+        "[Native Stage] stage={stage} status=failed durationMs={} input=- output=- error={}",
+        started.elapsed().as_millis(),
+        single_line_log_value(error)
+    ));
+}
+
+fn single_line_log_value(value: &str) -> String {
+    let flattened = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_for_log(&flattened, 360)
+}
+
+fn truncate_for_log(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut shortened = value
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    shortened.push('…');
+    shortened
+}
+
+fn native_failure_type(stage: &str, error: &str) -> &'static str {
+    if error.contains("native_planning_json_syntax") {
+        return "native_planning_json_syntax";
+    }
+    if error.contains("native_planning_schema_validation") {
+        return "native_planning_schema_validation";
+    }
+    if error.contains("native_planning_finish_reason") {
+        return "native_planning_finish_reason";
+    }
+    if error.contains("native_planning_network") {
+        return "native_planning_network";
+    }
+    if error.contains("超时") || error.contains("timeout") {
+        return "native_ai_timeout";
+    }
+    match stage {
+        "resolve_config" => "native_configuration_error",
+        "prepare_project" => "native_project_prepare_failed",
+        "build_design_spec" | "build_spec_lock" | "build_slide_plan" => "native_planning_failed",
+        "execute_slides" if error.contains("缺少") => "native_svg_missing",
+        "execute_slides" => "native_slide_execution_failed",
+        "validate_svgs" => "native_svg_validation_failed",
+        "validate_text_geometry" => "native_text_geometry_validation_failed",
+        "validate_powerpoint_text_geometry" => "native_powerpoint_text_geometry_validation_failed",
+        "generate_notes" => "native_notes_failed",
+        "export_pptx" => "native_export_failed",
+        _ => "native_generation_failed",
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_failure_result(
+    error: AppError,
+    stage: &str,
+    pipeline_started: Instant,
+    stage_started: Instant,
+    log_lines: &mut Vec<String>,
+    project: Option<&Path>,
+    slide_plan_path: Option<&Path>,
+    design_spec_path: Option<&Path>,
+    quality_check_passed: Option<bool>,
+    extra_stdout: &[String],
+    extra_stderr: &[String],
+) -> PptMasterGenerateResult {
+    let error_text = error.to_string();
+    if let Some(project) = project {
+        if project.join(NATIVE_STATE_FILE).is_file() {
+            if let Ok(mut state) = read_state(project) {
+                state.current_stage = stage.to_string();
+                state.set_status("failed");
+                let _ = write_state_atomic(project, &state);
+            }
+        }
+    }
+    native_stage_failure(log_lines, stage, stage_started, &error_text);
+    let mut result = PptMasterGenerateResult::failure(
+        error_text.clone(),
+        "agent".to_string(),
+        "ppt_master_native".to_string(),
+        pipeline_started.elapsed().as_millis(),
+    )
+    .with_partial_artifacts(
+        project,
+        slide_plan_path,
+        design_spec_path,
+        quality_check_passed,
+        join_outputs(log_lines, extra_stdout),
+        join_outputs(&[], extra_stderr),
+    );
+    result.failure_stage = Some(stage.to_string());
+    result.failure_type = Some(native_failure_type(stage, &error_text).to_string());
+    if let Some(captures) = native_failed_svg_regex().captures(&error_text) {
+        result.failed_svg_file = captures.get(1).map(|value| value.as_str().to_string());
+    }
+    if let Some(captures) = native_failed_page_regex().captures(&error_text) {
+        result.failed_page = captures
+            .get(1)
+            .and_then(|value| value.as_str().parse::<usize>().ok());
+    }
+    result.timed_out_after_seconds = error_text
+        .split_once("超过 ")
+        .and_then(|(_, suffix)| suffix.split_whitespace().next())
+        .and_then(|seconds| seconds.parse::<u64>().ok());
+    result
+}
+
+fn with_native_quality_failure(
+    mut result: PptMasterGenerateResult,
+    stage: &str,
+    project: &Path,
+    page_number: Option<usize>,
+    file_name: &str,
+    violated_rule: &str,
+    checker_summary: &str,
+) -> PptMasterGenerateResult {
+    let svg_path = project.join("svg_output").join(file_name);
+    result.stage = Some(stage.to_string());
+    result.failure_stage = Some(stage.to_string());
+    result.page_number = page_number;
+    result.failed_page = page_number;
+    result.failed_svg_file = Some(file_name.to_string());
+    result.svg_path = Some(svg_path.to_string_lossy().to_string());
+    result.violated_rule = Some(violated_rule.to_string());
+    result.checker_summary = Some(checker_summary.to_string());
+    result.intermediate_artifact_paths = native_intermediate_artifact_paths(project);
+    result
+}
+
+fn native_page_validation_error_message(
+    project: &Path,
+    stage: &str,
+    failure: &NativeQualityFailure,
+) -> String {
+    if stage == "validate_svgs" {
+        return native_quality_error_message(project, failure);
+    }
+    let checker_name = match stage {
+        "validate_powerpoint_text_geometry" => "PowerPoint 导出后文本几何检查",
+        "validate_visible_text_integrity" => "原生 SVG 可见文字完整性检查",
+        "validate_theme_consistency" => "原生 SVG 全局主题一致性检查",
+        "validate_space_utilization" => "原生 SVG 页面空间利用检查",
+        _ => "原生 SVG 文本几何检查",
+    };
+    format!(
+        "ppt-master {}失败；strict native 禁止自动回退或全页缩放；stage={}；page_number={}；svg_path={}；violated_rule={}；checker_summary={}；intermediate_artifacts={}",
+        checker_name,
+        stage,
+        failure
+            .page_number
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        project
+            .join("svg_output")
+            .join(&failure.file_name)
+            .display(),
+        failure.violated_rule,
+        single_line_log_value(&failure.checker_summary),
+        project.display()
+    )
+}
+
+fn native_page_validation_may_retry(stage: &str, attempts: usize) -> bool {
+    let limit = match stage {
+        "validate_svgs"
+        | "validate_visible_text_integrity"
+        | "validate_theme_consistency"
+        | "validate_space_utilization" => NATIVE_SVG_REPAIR_MAX_ATTEMPTS_PER_PAGE,
+        "validate_text_geometry" => NATIVE_TEXT_GEOMETRY_MAX_AI_ATTEMPTS_PER_PAGE,
+        _ => return false,
+    };
+    attempts < limit
+}
+
+fn native_page_relayout_preserved_visible_text(expected: &[String], actual: &[String]) -> bool {
+    expected == actual
+}
+
+fn native_quality_error_message(project: &Path, failure: &NativeQualityFailure) -> String {
+    format!(
+        "ppt-master 原生 SVG 质量检查失败；strict native 禁止自动回退或稳定模式修复；stage=validate_svgs；page_number={}；svg_path={}；violated_rule={}；checker_summary={}；intermediate_artifacts={}",
+        failure
+            .page_number
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        project
+            .join("svg_output")
+            .join(&failure.file_name)
+            .display(),
+        failure.violated_rule,
+        single_line_log_value(&failure.checker_summary),
+        project.display()
+    )
+}
+
+fn native_failed_svg_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)([0-9]{2}_[a-z0-9_-]+\.svg)").expect("valid regex"))
+}
+
+fn native_failed_page_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"P([0-9]{1,3})\b").expect("valid regex"))
+}
+
+fn classify_ppt_generation_failure(error: &str) -> PptGenerationFailureMetadata {
+    let failed_svg_file = [
+        "AI 修复 native 兼容 SVG：",
+        "AI 修复 SVG：",
+        "AI 修复 final text leakage:",
+    ]
+    .into_iter()
+    .find_map(|marker| error.split_once(marker).map(|(_, suffix)| suffix))
+    .and_then(|suffix| suffix.split_whitespace().next())
+    .map(|value| {
+        value
+            .trim_matches(|ch: char| ch == '，' || ch == '。')
+            .to_string()
+    });
+    let failed_page = failed_svg_file
+        .as_deref()
+        .and_then(|file| file.split_once('_').map(|(prefix, _)| prefix))
+        .and_then(|prefix| prefix.parse::<usize>().ok());
+    let timed_out_after_seconds = error
+        .split_once("超过 ")
+        .and_then(|(_, suffix)| suffix.split_whitespace().next())
+        .and_then(|seconds| seconds.parse::<u64>().ok());
+
+    if (error.contains("native_svg_repair_timeout") || error.contains("AI 修复 native 兼容 SVG"))
+        && timed_out_after_seconds.is_some()
+    {
+        return PptGenerationFailureMetadata {
+            failure_stage: if error.contains("AI 修复 native 兼容 SVG") {
+                "native_svg_compat_repair"
+            } else {
+                "native_svg_repair"
+            }
+            .to_string(),
+            failure_type: "native_svg_repair_timeout".to_string(),
+            failed_page,
+            timed_out_after_seconds,
+            failed_svg_file,
+        };
+    }
+    if error.contains("ppt-master 根目录") || error.contains("找不到 svg_to_pptx.py 脚本") {
+        return PptGenerationFailureMetadata {
+            failure_stage: "configuration".to_string(),
+            failure_type: "ppt_master_root_invalid".to_string(),
+            ..Default::default()
+        };
+    }
+    if error.contains("Python") {
+        return PptGenerationFailureMetadata {
+            failure_stage: "configuration".to_string(),
+            failure_type: "python_configuration_error".to_string(),
+            ..Default::default()
+        };
+    }
+    if error.contains("导出目录")
+        || error.contains("输出目录")
+        || error.contains("导出文件夹")
+        || error.contains("复制到")
+    {
+        return PptGenerationFailureMetadata {
+            failure_stage: "output".to_string(),
+            failure_type: "output_path_error".to_string(),
+            ..Default::default()
+        };
+    }
+    PptGenerationFailureMetadata {
+        failure_stage: "generation".to_string(),
+        failure_type: "generation_failed".to_string(),
+        failed_page,
+        timed_out_after_seconds,
+        failed_svg_file,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -331,27 +903,38 @@ impl PptMasterService {
         db: &Database,
         input: PptMasterGenerateInput,
     ) -> Result<PptMasterGenerateResult, AppError> {
-        let engine = input
-            .generation_engine
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("legacy_fallback");
-        println!("[Engine] generation_engine={}", engine);
-        if engine == "legacy_fallback" {
-            return Self::generate_from_prompt_template(db, input).await;
+        let route = match requested_generation_route(&input) {
+            Ok(route) => route,
+            Err(error) => {
+                let identity = generation_identity_for_error(&input);
+                let mut result = PptMasterGenerateResult::failure(
+                    error.to_string(),
+                    identity.generation_mode().to_string(),
+                    identity.generation_engine().to_string(),
+                    0,
+                );
+                result.failure_stage = Some("resolve_config".to_string());
+                result.failure_type = Some("generation_route_invalid".to_string());
+                result.stdout = format!(
+                    "[Native Stage] stage=resolve_config status=failed durationMs=0 input=generationMode,generationEngine output=- error={}",
+                    single_line_log_value(&error.to_string())
+                );
+                return Ok(result);
+            }
+        };
+        println!(
+            "[Engine] generation_mode={} generation_engine={}",
+            route.generation_mode(),
+            route.generation_engine()
+        );
+        match route {
+            PptGenerationRoute::LegacyFallback => {
+                Self::generate_from_prompt_template(db, input).await
+            }
+            PptGenerationRoute::PptMasterNative => {
+                Self::generate_from_prompt_ppt_master_native(db, input).await
+            }
         }
-
-        let mode = input
-            .generation_mode
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("template");
-        if mode == "template" {
-            return Self::generate_from_prompt_template(db, input).await;
-        }
-        Self::generate_from_prompt_ppt_master_native(db, input).await
     }
 
     async fn generate_from_prompt_template(
@@ -372,6 +955,7 @@ impl PptMasterService {
 
         let prompt = input.prompt.trim();
         let planning_context = build_generation_planning_context(&input, prompt);
+        let visible_material = build_stable_visible_material(&input, prompt);
         if prompt.is_empty() && !has_authoritative_generation_input(&input) {
             return Err(AppError::InvalidInput(
                 "缺少结构化需求理解、规划上下文或原始语料".into(),
@@ -401,7 +985,10 @@ impl PptMasterService {
             "rawMaterialLength={}",
             input.raw_material.as_deref().unwrap_or("").chars().count()
         ));
-        log_lines.push(format!("materialSourceCount={}", input.material_sources.len()));
+        log_lines.push(format!(
+            "materialSourceCount={}",
+            input.material_sources.len()
+        ));
         log_lines.push(format!(
             "hasPlanningContext={}",
             !planning_context.trim().is_empty()
@@ -427,14 +1014,15 @@ impl PptMasterService {
                 log::warn!("AI slide_plan 生成失败，使用默认方案: {}", e);
                 log_lines.push(format!("path=default_fallback"));
                 log_lines.push(format!("[Stable Mode] fallback used, reason={}", e));
-                if extract_material_units(&planning_context).is_empty() {
+                if extract_material_units(&visible_material).is_empty() {
                     return Err(AppError::Custom(
                         "AI slide_plan 生成失败，且未能从用户语料中提取可用内容，已停止生成，避免输出占位 PPT。".into(),
                     ));
                 }
-                default_slide_plan(&title, requested_count, &style, &planning_context)
+                default_slide_plan(&title, requested_count, &style, &visible_material)
             }
         };
+        prepare_stable_plan_for_render(&mut plan, &visible_material);
         log_stable_content_check(&plan, "[Stable Content Check]", &mut log_lines);
         if let Some(report) = validate_stable_content_plan(&plan) {
             log_lines.push(format!("[Stable Content Check] failed reason={}", report));
@@ -452,17 +1040,21 @@ impl PptMasterService {
             .await
             {
                 Ok(repaired) => {
-                    let repaired = normalize_slide_plan(repaired, &title, requested_count, &style);
+                    let mut repaired =
+                        normalize_slide_plan(repaired, &title, requested_count, &style);
+                    prepare_stable_plan_for_render(&mut repaired, &visible_material);
                     if validate_stable_content_plan(&repaired).is_none() {
                         plan = repaired;
                         log_lines.push("[Stable Content Repair] done".to_string());
                     } else {
-                        enrich_plan_from_material(&mut plan, &planning_context);
+                        enrich_plan_from_material(&mut plan, &visible_material);
+                        prepare_stable_plan_for_render(&mut plan, &visible_material);
                         log_lines.push("[Stable Content Repair] ai output still thin; fallback enrichment applied".to_string());
                     }
                 }
                 Err(e) => {
-                    enrich_plan_from_material(&mut plan, &planning_context);
+                    enrich_plan_from_material(&mut plan, &visible_material);
+                    prepare_stable_plan_for_render(&mut plan, &visible_material);
                     log_lines.push(format!(
                         "[Stable Content Repair] ai failed; fallback enrichment applied: {}",
                         e
@@ -470,6 +1062,7 @@ impl PptMasterService {
                 }
             }
         }
+        prepare_stable_plan_for_render(&mut plan, &visible_material);
         if let Some(report) = validate_stable_content_plan(&plan) {
             return Err(AppError::Custom(format!(
                 "Stable slide_plan content is still too thin after repair: {}",
@@ -554,10 +1147,11 @@ impl PptMasterService {
                 slide.page, rendered.layout, rendered.motif
             ));
             log_lines.push(format!(
-                "[Stable Visual Diversity] duplicate_signature={} motif_reuse_count={} signature={}",
+                "[Stable Visual Diversity] duplicate_signature={} motif_reuse_count={} signature={} structure_fingerprint={}",
                 rendered.duplicate_signature,
                 rendered.motif_reuse_count,
-                rendered.visual_signature
+                rendered.visual_signature,
+                rendered.structure_fingerprint
             ));
             log_lines.extend(rendered.local_repair_logs.iter().cloned());
             for degradation in &rendered.degradations {
@@ -627,27 +1221,109 @@ impl PptMasterService {
             duration_ms: export.duration_ms,
             error,
             generation_engine: "legacy_fallback".to_string(),
-        })
+            failure_stage: None,
+            failure_type: None,
+            failed_page: None,
+            timed_out_after_seconds: None,
+            failed_svg_file: None,
+            stage: None,
+            page_number: None,
+            svg_path: None,
+            violated_rule: None,
+            checker_summary: None,
+            intermediate_artifact_paths: Vec::new(),
+        }
+        .with_classified_failure())
     }
 
     async fn generate_from_prompt_ppt_master_native(
         db: &Database,
         input: PptMasterGenerateInput,
     ) -> Result<PptMasterGenerateResult, AppError> {
+        Self::generate_from_prompt_ppt_master_native_with_project(db, input, None).await
+    }
+
+    async fn generate_from_prompt_ppt_master_native_with_project(
+        db: &Database,
+        input: PptMasterGenerateInput,
+        forced_project: Option<PathBuf>,
+    ) -> Result<PptMasterGenerateResult, AppError> {
         let started = Instant::now();
+        let mut log_lines = Vec::new();
+        let block_on_quality_failure = input.block_on_quality_failure();
+        let mut quality_check_passed = true;
         println!("[PPT Pipeline] service entered");
-        let root = parse_dir("ppt-master 根目录", &input.ppt_master_root)?;
+        let resolve_started = native_stage_start(
+            &mut log_lines,
+            "resolve_config",
+            "generationMode=agent,generationEngine=ppt_master_native,pptMasterRoot,pythonPath",
+        );
+        let root = match parse_dir("ppt-master 根目录", &input.ppt_master_root) {
+            Ok(root) => root,
+            Err(error) => {
+                return Ok(native_failure_result(
+                    error,
+                    "resolve_config",
+                    started,
+                    resolve_started,
+                    &mut log_lines,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &[],
+                    &[],
+                ));
+            }
+        };
         println!("[Config] pptMasterRoot={}", root.display());
-        println!("[Config] pythonPath={}", input.python_path);
+        println!(
+            "[Config] pythonPath={}",
+            resolve_python_program(&root, &input.python_path).display()
+        );
         println!("[Engine] generation_engine=ppt_master_native");
-        ensure_python_available(&root, &input.python_path)?;
+        println!(
+            "[Quality Check] blockOnQualityFailure={}",
+            block_on_quality_failure
+        );
+        log_lines.push(format!(
+            "[Quality Check] blockOnQualityFailure={} strictNative=true checksSkipped=false fallback=false",
+            block_on_quality_failure
+        ));
+        if let Err(error) = ensure_python_available(&root, &input.python_path) {
+            return Ok(native_failure_result(
+                error,
+                "resolve_config",
+                started,
+                resolve_started,
+                &mut log_lines,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                &[],
+            ));
+        }
 
         let export_script = root.join(SVG_TO_PPTX_SCRIPT);
         if !export_script.is_file() {
-            return Err(AppError::NotFound(format!(
-                "找不到 svg_to_pptx.py 脚本: {}",
-                export_script.display()
-            )));
+            return Ok(native_failure_result(
+                AppError::NotFound(format!(
+                    "找不到 svg_to_pptx.py 脚本: {}",
+                    export_script.display()
+                )),
+                "resolve_config",
+                started,
+                resolve_started,
+                &mut log_lines,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                &[],
+            ));
         }
         for script in [
             PROJECT_MANAGER_SCRIPT,
@@ -656,19 +1332,53 @@ impl PptMasterService {
         ] {
             let script_path = root.join(script);
             if !script_path.is_file() {
-                return Err(AppError::NotFound(format!(
-                    "找不到 ppt-master 脚本: {}",
-                    script_path.display()
-                )));
+                return Ok(native_failure_result(
+                    AppError::NotFound(format!(
+                        "找不到 ppt-master 脚本: {}",
+                        script_path.display()
+                    )),
+                    "resolve_config",
+                    started,
+                    resolve_started,
+                    &mut log_lines,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &[],
+                    &[],
+                ));
             }
         }
         let checker_script = root.join(SVG_QUALITY_CHECKER_SCRIPT);
         if !checker_script.is_file() {
-            return Err(AppError::NotFound(format!(
-                "找不到 svg_quality_checker.py 脚本: {}",
-                checker_script.display()
-            )));
+            return Ok(native_failure_result(
+                AppError::NotFound(format!(
+                    "找不到 svg_quality_checker.py 脚本: {}",
+                    checker_script.display()
+                )),
+                "resolve_config",
+                started,
+                resolve_started,
+                &mut log_lines,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                &[],
+            ));
         }
+        native_stage_success(
+            &mut log_lines,
+            "resolve_config",
+            resolve_started,
+            &format!(
+                "root={},python={},scripts=project_manager|quality_checker|total_md_split|finalize_svg|svg_to_pptx",
+                root.display(),
+                resolve_python_program(&root, &input.python_path).display()
+            ),
+        );
 
         let prompt = input.prompt.trim();
         let planning_context = build_generation_planning_context(&input, prompt);
@@ -693,9 +1403,47 @@ impl PptMasterService {
             .filter(|s| !s.is_empty())
             .unwrap_or("科技蓝")
             .to_string();
-        let style_mapping = resolve_style_mapping(&root, &style, &input);
+        let understanding_for_theme = effective_understanding_draft(&input);
+        let visual_suggestions = trimmed_option(&input.visual_suggestions)
+            .or_else(|| trimmed_option(&input.visual_expression_advice))
+            .or_else(|| {
+                let value = understanding_for_theme.visual_expression_advice.trim();
+                (!value.is_empty()).then_some(value)
+            });
+        let theme_spec = NativeThemeSpec::from_inputs(
+            &style,
+            input.custom_style.as_deref(),
+            input.extra_requirements.as_deref(),
+            visual_suggestions,
+        );
+        let style_mapping = resolve_style_mapping(&root, &style, &input, &theme_spec);
+        let (input_fingerprint, state_model) = match build_native_input_fingerprint(
+            db,
+            &input,
+            &planning_context,
+            &title,
+            requested_count,
+            &style_mapping,
+            &theme_spec,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok(native_failure_result(
+                    error,
+                    "resolve_config",
+                    started,
+                    resolve_started,
+                    &mut log_lines,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &[],
+                    &[],
+                ));
+            }
+        };
 
-        let mut log_lines = Vec::new();
         log_lines.push("[PPT Pipeline]".to_string());
         log_lines.push("engine=ppt_master_native".to_string());
         log_lines.push("[Style Mapping]".to_string());
@@ -707,6 +1455,15 @@ impl PptMasterService {
             style_mapping.layout_bias.join(",")
         ));
         log_lines.push(format!("chart_bias={}", style_mapping.chart_bias.join(",")));
+        log_lines.push(format!(
+            "[Native Theme] name={} primary={} secondary={} accent={} customStylePresent={} extraRequirementsPresent={}",
+            theme_spec.theme_name,
+            theme_spec.primary_color,
+            theme_spec.secondary_color,
+            theme_spec.accent_color,
+            !theme_spec.source_custom_style.is_empty(),
+            !theme_spec.source_extra_requirements.is_empty()
+        ));
         log_planning_input(
             &input,
             prompt,
@@ -720,124 +1477,544 @@ impl PptMasterService {
         log_lines.push("page_count_template=false".to_string());
         log_lines.push("roadshow_template=false".to_string());
 
-        println!("[Project] init start");
-        log_lines.push("[Project] init start".to_string());
-        let project =
-            init_project_with_project_manager(&root, &input.python_path, &title, &mut log_lines)?;
-        println!("[Project] init done: {}", project.display());
-        log_lines.push(format!("[Project] init done: {}", project.display()));
+        println!("[Project] init/resume start");
+        let prepare_started = native_stage_start(
+            &mut log_lines,
+            "prepare_project",
+            &format!(
+                "slideCount={requested_count},planningContextChars={}",
+                planning_context.chars().count()
+            ),
+        );
+        let (project, mut native_state, resumed) = match select_native_project(
+            &root,
+            &input.python_path,
+            &title,
+            requested_count,
+            &input_fingerprint,
+            state_model,
+            forced_project,
+            &mut log_lines,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok(native_failure_result(
+                    error,
+                    "prepare_project",
+                    started,
+                    prepare_started,
+                    &mut log_lines,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &[],
+                    &[],
+                ));
+            }
+        };
+        println!(
+            "[Project] {} done: {}",
+            if resumed { "resume" } else { "init" },
+            project.display()
+        );
         let sources = project.join("sources");
         let notes = project.join("notes");
         let svg_output = project.join("svg_output");
-        write_file(&sources.join("confirmed_prompt.md"), prompt)?;
-        write_file(&sources.join("planning_context.md"), &planning_context)?;
-
-        let skill_text = read_ppt_master_skill(&root)?;
-        let resources = read_ppt_master_resources(&root)?;
-        let chart_catalog = load_chart_catalog(&root);
-
-        println!("[AI] slide_plan start");
-        log_lines.push("[AI] slide_plan start".to_string());
-        let mut slide_plan_source = "ai_understanding/planning_context".to_string();
-        let mut plan = match generate_agent_design_plan(
-            db,
-            &skill_text,
-            &planning_context,
-            input.model_id,
-            &title,
-            requested_count,
-            &style,
-        )
-        .await
-        {
-            Ok(plan) => normalize_slide_plan(plan, &title, requested_count, &style),
-            Err(e) => {
-                log_lines.push(format!("Agent 规划失败，使用 fallback slide_plan: {}", e));
-                slide_plan_source = "fallback".to_string();
-                log_lines.push("[Fallback Plan] used=true".to_string());
-                log_lines.push(format!("reason={}", e));
-                log_lines.push("fallback_is_domain_neutral=true".to_string());
-                default_slide_plan(&title, requested_count, &style, &planning_context)
+        let theme_spec_path = match persist_theme_spec(&project, &theme_spec) {
+            Ok(path) => path,
+            Err(error) => {
+                native_state.set_status("failed");
+                let _ = write_state_atomic(&project, &native_state);
+                return Ok(native_failure_result(
+                    AppError::Custom(error),
+                    "prepare_project",
+                    started,
+                    prepare_started,
+                    &mut log_lines,
+                    Some(&project),
+                    None,
+                    None,
+                    None,
+                    &[],
+                    &[],
+                ));
             }
         };
-        if slide_plan_source != "fallback" {
-            log_lines.push("[Fallback Plan] used=false".to_string());
-        }
-        log_lines.push("[Slide Plan Source]".to_string());
-        log_lines.push(format!("source={}", slide_plan_source));
-        println!("[AI] slide_plan done");
-        log_lines.push("[AI] slide_plan done".to_string());
-        ensure_layout_variety(&mut plan);
-        enrich_slide_execution_plan(&mut plan, &style_mapping, &chart_catalog);
-        if let Some(duplicate_report) = detect_slide_plan_duplicates(&plan) {
-            println!("[Slide Plan] duplicate detected: {}", duplicate_report);
-            log_lines.push(format!(
-                "[Slide Plan] duplicate detected: {}",
-                duplicate_report
-            ));
-            log_lines.push("[Slide Plan] regenerate with de-duplication".to_string());
-            match regenerate_agent_design_plan_with_dedup(
-                db,
-                &skill_text,
-                &planning_context,
-                &plan,
-                &duplicate_report,
-                input.model_id,
-                &title,
-                requested_count,
-                &style,
-            )
-            .await
-            {
-                Ok(replanned) => {
-                    plan = normalize_slide_plan(replanned, &title, requested_count, &style);
-                    ensure_layout_variety(&mut plan);
-                    enrich_slide_execution_plan(&mut plan, &style_mapping, &chart_catalog);
-                    log_lines.push("[Slide Plan] de-duplication applied".to_string());
+        if !resumed {
+            for (path, content) in [
+                (sources.join("confirmed_prompt.md"), prompt),
+                (
+                    sources.join("planning_context.md"),
+                    planning_context.as_str(),
+                ),
+            ] {
+                if let Err(error) = write_file(&path, content) {
+                    native_state.set_status("failed");
+                    let _ = write_state_atomic(&project, &native_state);
+                    return Ok(native_failure_result(
+                        error,
+                        "prepare_project",
+                        started,
+                        prepare_started,
+                        &mut log_lines,
+                        Some(&project),
+                        None,
+                        None,
+                        None,
+                        &[],
+                        &[],
+                    ));
                 }
-                Err(e) => {
-                    log_lines.push(format!(
-                        "[Slide Plan] de-duplication failed, keep first plan: {}",
-                        e
+            }
+            if let Some(raw_material) = input.raw_material.as_deref() {
+                if let Err(error) = write_file(&sources.join("raw_material.txt"), raw_material) {
+                    native_state.set_status("failed");
+                    let _ = write_state_atomic(&project, &native_state);
+                    return Ok(native_failure_result(
+                        error,
+                        "prepare_project",
+                        started,
+                        prepare_started,
+                        &mut log_lines,
+                        Some(&project),
+                        None,
+                        None,
+                        None,
+                        &[],
+                        &[],
                     ));
                 }
             }
         }
-        plan.style = style_mapping.user_style.clone();
-        plan.theme = theme_for_style(&plan.style);
-        log_slide_plan_summary(&plan, &mut log_lines);
+        native_state.set_stage(if resumed {
+            "resume_validate"
+        } else {
+            "build_design_spec"
+        });
+        if let Err(error) = persist_native_state(&project, &native_state) {
+            return Ok(native_failure_result(
+                error,
+                "prepare_project",
+                started,
+                prepare_started,
+                &mut log_lines,
+                Some(&project),
+                None,
+                None,
+                None,
+                &[],
+                &[],
+            ));
+        }
+        native_stage_success(
+            &mut log_lines,
+            "prepare_project",
+            prepare_started,
+            &format!(
+                "project={},resumed={},state={},themeSpec={}",
+                project.display(),
+                resumed,
+                project.join(NATIVE_STATE_FILE).display(),
+                theme_spec_path.display()
+            ),
+        );
 
-        copy_layout_templates(&root, &project, &style_mapping, &mut log_lines)?;
+        let design_started = native_stage_start(
+            &mut log_lines,
+            "build_design_spec",
+            "SKILL.md,executor-base.md,shared-standards.md,planning_context.md",
+        );
+        let skill_text = match read_ppt_master_skill(&root) {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok(native_failure_result(
+                    error,
+                    "build_design_spec",
+                    started,
+                    design_started,
+                    &mut log_lines,
+                    Some(&project),
+                    None,
+                    None,
+                    None,
+                    &[],
+                    &[],
+                ));
+            }
+        };
+        let resources = match read_ppt_master_resources(&root) {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok(native_failure_result(
+                    error,
+                    "build_design_spec",
+                    started,
+                    design_started,
+                    &mut log_lines,
+                    Some(&project),
+                    None,
+                    None,
+                    None,
+                    &[],
+                    &[],
+                ));
+            }
+        };
+        let chart_catalog = load_chart_catalog(&root);
 
-        println!("[Spec] write design_spec/spec_lock");
-        log_lines.push("[Spec] write design_spec/spec_lock".to_string());
-        log_design_spec_pages(&plan, &style_mapping, &mut log_lines);
-        let design_spec = build_ppt_master_design_spec(&plan, &planning_context, &style_mapping);
-        let spec_lock = build_ppt_master_spec_lock(&plan, &style_mapping);
-        let design_spec_path = project.join("design_spec.md");
-        let spec_lock_path = project.join("spec_lock.md");
-        let slide_plan_path = project.join("slide_plan.json");
-        write_file(&design_spec_path, &design_spec)?;
-        write_file(&spec_lock_path, &spec_lock)?;
-        let plan_json = serde_json::to_string_pretty(&plan)
-            .map_err(|e| AppError::Custom(format!("序列化 slide_plan 失败: {}", e)))?;
-        write_file(&slide_plan_path, &plan_json)?;
-        write_file(&notes.join("total.md"), &build_notes(&plan))?;
-        log_lines.push("[Generation]".to_string());
-        log_lines.push(format!(
-            "design_spec generated: {}",
-            design_spec_path.display()
-        ));
-        log_lines.push(format!("spec_lock generated: {}", spec_lock_path.display()));
-        log_lines.push(format!(
-            "slide_plan generated: {}",
-            slide_plan_path.display()
-        ));
+        let (plan, design_spec, design_spec_path, spec_lock_path, slide_plan_path) = if resumed
+            && native_planning_artifacts_present(&project)
+        {
+            log_lines.push(format!(
+                "[Native Resume] planningArtifacts=reuse fingerprint={} project={}",
+                input_fingerprint,
+                project.display()
+            ));
+            match load_native_planning_artifacts(&project, requested_count) {
+                Ok(artifacts) => artifacts,
+                Err(error) => {
+                    native_state.set_status("failed");
+                    let _ = persist_native_state(&project, &native_state);
+                    return Ok(native_failure_result(
+                        error,
+                        "build_slide_plan",
+                        started,
+                        design_started,
+                        &mut log_lines,
+                        Some(&project),
+                        Some(&project.join("slide_plan.json")),
+                        Some(&project.join("design_spec.md")),
+                        None,
+                        &[],
+                        &[],
+                    ));
+                }
+            }
+        } else {
+            println!("[AI] slide_plan start");
+            log_lines.push("[AI] slide_plan start".to_string());
+            let mut plan = match generate_native_structured_slide_plan(
+                db,
+                &input,
+                &project,
+                &input_fingerprint,
+                &title,
+                input.audience.as_deref().unwrap_or(""),
+                requested_count,
+                &style,
+                &theme_spec,
+                input.model_id,
+                &mut log_lines,
+            )
+            .await
+            {
+                Ok(plan) => normalize_slide_plan(plan, &title, requested_count, &style),
+                Err(error) => {
+                    record_native_pipeline_failure(
+                        &project,
+                        &mut native_state,
+                        "build_design_spec",
+                    );
+                    return Ok(native_failure_result(
+                        error,
+                        "build_design_spec",
+                        started,
+                        design_started,
+                        &mut log_lines,
+                        Some(&project),
+                        None,
+                        None,
+                        None,
+                        &[],
+                        &[],
+                    ));
+                }
+            };
+            log_lines.push("[Fallback Plan] used=false strictNative=true".to_string());
+            log_lines.push("[Slide Plan Source] source=ppt_master_native_ai".to_string());
+            println!("[AI] slide_plan done");
+            log_lines.push("[AI] slide_plan done".to_string());
+            ensure_layout_variety(&mut plan);
+            enrich_slide_execution_plan(&mut plan, &style_mapping, &chart_catalog);
+            if let Some(duplicate_report) = detect_slide_plan_duplicates(&plan) {
+                log_lines.push(format!(
+                    "[Slide Plan] duplicate warning after per-page planning: {}; global replan=false",
+                    duplicate_report
+                ));
+            }
+            plan.style = style_mapping.user_style.clone();
+            plan.theme = Theme {
+                name: theme_spec.theme_name.clone(),
+                primary: theme_spec.primary_color.clone(),
+                secondary: theme_spec.secondary_color.clone(),
+                accent: theme_spec.accent_color.clone(),
+                background: theme_spec.background_color.clone(),
+            };
+            log_slide_plan_summary(&plan, &mut log_lines);
+
+            if let Err(error) =
+                copy_layout_templates(&root, &project, &style_mapping, &mut log_lines)
+            {
+                record_native_pipeline_failure(&project, &mut native_state, "build_design_spec");
+                return Ok(native_failure_result(
+                    error,
+                    "build_design_spec",
+                    started,
+                    design_started,
+                    &mut log_lines,
+                    Some(&project),
+                    None,
+                    None,
+                    None,
+                    &[],
+                    &[],
+                ));
+            }
+
+            println!("[Spec] write design_spec/spec_lock");
+            log_design_spec_pages(&plan, &style_mapping, &mut log_lines);
+            let design_spec =
+                build_ppt_master_design_spec(&plan, &planning_context, &style_mapping, &theme_spec);
+            let design_spec_path = project.join("design_spec.md");
+            if let Err(error) = write_file(&design_spec_path, &design_spec) {
+                record_native_pipeline_failure(&project, &mut native_state, "build_design_spec");
+                return Ok(native_failure_result(
+                    error,
+                    "build_design_spec",
+                    started,
+                    design_started,
+                    &mut log_lines,
+                    Some(&project),
+                    None,
+                    Some(&design_spec_path),
+                    None,
+                    &[],
+                    &[],
+                ));
+            }
+            native_stage_success(
+                &mut log_lines,
+                "build_design_spec",
+                design_started,
+                &format!("designSpec={}", design_spec_path.display()),
+            );
+
+            let spec_started = native_stage_start(
+                &mut log_lines,
+                "build_spec_lock",
+                "design_spec.md,normalized native slide plan",
+            );
+            let spec_lock = build_ppt_master_spec_lock(&plan, &style_mapping, &theme_spec);
+            let spec_lock_path = project.join("spec_lock.md");
+            if let Err(error) = write_file(&spec_lock_path, &spec_lock) {
+                record_native_pipeline_failure(&project, &mut native_state, "build_spec_lock");
+                return Ok(native_failure_result(
+                    error,
+                    "build_spec_lock",
+                    started,
+                    spec_started,
+                    &mut log_lines,
+                    Some(&project),
+                    None,
+                    Some(&design_spec_path),
+                    None,
+                    &[],
+                    &[],
+                ));
+            }
+            native_stage_success(
+                &mut log_lines,
+                "build_spec_lock",
+                spec_started,
+                &format!("specLock={}", spec_lock_path.display()),
+            );
+
+            let plan_started = native_stage_start(
+                &mut log_lines,
+                "build_slide_plan",
+                "normalized AI plan,design_spec.md,spec_lock.md",
+            );
+            let slide_plan_path = project.join("slide_plan.json");
+            let plan_json = match serde_json::to_string_pretty(&plan) {
+                Ok(value) => value,
+                Err(error) => {
+                    record_native_pipeline_failure(&project, &mut native_state, "build_slide_plan");
+                    return Ok(native_failure_result(
+                        AppError::Custom(format!("序列化 slide_plan 失败: {error}")),
+                        "build_slide_plan",
+                        started,
+                        plan_started,
+                        &mut log_lines,
+                        Some(&project),
+                        Some(&slide_plan_path),
+                        Some(&design_spec_path),
+                        None,
+                        &[],
+                        &[],
+                    ));
+                }
+            };
+            if let Err(error) = write_file(&slide_plan_path, &plan_json) {
+                record_native_pipeline_failure(&project, &mut native_state, "build_slide_plan");
+                return Ok(native_failure_result(
+                    error,
+                    "build_slide_plan",
+                    started,
+                    plan_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    None,
+                    &[],
+                    &[],
+                ));
+            }
+            native_stage_success(
+                &mut log_lines,
+                "build_slide_plan",
+                plan_started,
+                &format!(
+                    "slidePlan={},slides={}",
+                    slide_plan_path.display(),
+                    plan.slides.len()
+                ),
+            );
+            (
+                plan,
+                design_spec,
+                design_spec_path,
+                spec_lock_path,
+                slide_plan_path,
+            )
+        };
+
+        update_native_state_plan_paths(&mut native_state, &project, &plan);
+        #[cfg(debug_assertions)]
+        if std::env::var("POME_NATIVE_DEBUG_PLANNING_ONLY").as_deref() == Ok("1") {
+            native_state.set_stage("planning_validated");
+            native_state.set_status("planning_validated");
+            if let Err(error) = persist_native_state(&project, &native_state) {
+                return Ok(native_failure_result(
+                    error,
+                    "build_slide_plan",
+                    started,
+                    design_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    None,
+                    &[],
+                    &[],
+                ));
+            }
+            log_lines.push(
+                "[Native Debug] planningOnly=true planningValidated=true svgGeneration=false fallback=false"
+                    .to_string(),
+            );
+            return Ok(PptMasterGenerateResult {
+                success: true,
+                project_path: Some(project.to_string_lossy().to_string()),
+                pptx_path: None,
+                final_pptx_path: None,
+                slide_plan_path: Some(slide_plan_path.to_string_lossy().to_string()),
+                design_spec_path: Some(design_spec_path.to_string_lossy().to_string()),
+                quality_check_passed: None,
+                generation_mode: "agent".to_string(),
+                exit_code: Some(0),
+                stdout: log_lines.join("\n"),
+                stderr: String::new(),
+                duration_ms: started.elapsed().as_millis(),
+                error: None,
+                generation_engine: "ppt_master_native".to_string(),
+                failure_stage: None,
+                failure_type: None,
+                failed_page: None,
+                timed_out_after_seconds: None,
+                failed_svg_file: None,
+                stage: Some("planning_validated".to_string()),
+                page_number: None,
+                svg_path: None,
+                violated_rule: None,
+                checker_summary: None,
+                intermediate_artifact_paths: native_intermediate_artifact_paths(&project),
+            });
+        }
+        native_state.set_stage("execute_slides");
+        if let Err(error) = persist_native_state(&project, &native_state) {
+            return Ok(native_failure_result(
+                error,
+                "build_slide_plan",
+                started,
+                design_started,
+                &mut log_lines,
+                Some(&project),
+                Some(&slide_plan_path),
+                Some(&design_spec_path),
+                None,
+                &[],
+                &[],
+            ));
+        }
 
         println!("[SVG] generate start");
-        log_lines.push("[SVG] generate start".to_string());
+        let execute_started = native_stage_start(
+            &mut log_lines,
+            "execute_slides",
+            &format!(
+                "designSpec={},specLock={},slidePlan={},slides={}",
+                design_spec_path.display(),
+                spec_lock_path.display(),
+                slide_plan_path.display(),
+                plan.slides.len()
+            ),
+        );
+        let reuse_preparation = match prepare_existing_native_pages(
+            &root,
+            &input.python_path,
+            &project,
+            &plan,
+            &theme_spec,
+            &mut native_state,
+            &mut log_lines,
+            started,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                native_state.set_status("failed");
+                let _ = persist_native_state(&project, &native_state);
+                return Ok(native_failure_result(
+                    error,
+                    "execute_slides",
+                    started,
+                    execute_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    None,
+                    &[],
+                    &[],
+                ));
+            }
+        };
+        let mut downstream_invalidated = reuse_preparation.upstream_changed;
+        let pages_to_generate: HashSet<usize> =
+            native_pages_requiring_generation(&plan, &reuse_preparation.reusable_pages)
+                .into_iter()
+                .collect();
+        log_lines.push(format!(
+            "[Native Resume] reusablePages={} generatePages={}",
+            sorted_page_list(&reuse_preparation.reusable_pages),
+            sorted_page_list(&pages_to_generate)
+        ));
         for idx in 0..plan.slides.len() {
             let slide = &plan.slides[idx];
+            if !pages_to_generate.contains(&slide.page) {
+                continue;
+            }
             let prev_title = idx
                 .checked_sub(1)
                 .and_then(|i| plan.slides.get(i))
@@ -849,280 +2026,2657 @@ impl PptMasterService {
                 .map(|s| s.title.as_str())
                 .unwrap_or("");
             log_svg_page_task(slide, &style_mapping, &mut log_lines);
-            let svg = match generate_ppt_master_driven_slide_svg(
-                db,
-                &skill_text,
-                &resources,
-                &design_spec,
-                &spec_lock_path,
-                &style_mapping,
-                &plan,
-                slide,
-                prev_title,
-                next_title,
-                input.model_id,
-            )
-            .await
-            {
-                Ok(svg) => svg,
-                Err(e) => {
-                    log_lines.push(format!(
-                        "第 {} 页 ppt-master 驱动 SVG 生成失败，先记录，稍后进入 fallback: {}",
-                        slide.page, e
-                    ));
-                    String::new()
-                }
-            };
-            if svg.trim().is_empty() {
-                continue;
-            }
             let filename = svg_filename_for_slide(slide);
-            write_file(&svg_output.join(&filename), &svg)?;
-            log_lines.push(format!("写入 SVG: svg_output/{}", filename));
+            let density_contract = NativePageDensityContract::for_slide(slide);
+            let mut page_retry_feedback = native_state
+                .pages
+                .get(&slide.page.to_string())
+                .and_then(|page| {
+                    page.checker_summary.as_deref().map(|summary| {
+                        format!(
+                            "Previous strict validation failed. Repair only this page. violatedRule={}; detail={}",
+                            page.violated_rule.as_deref().unwrap_or("unknown"),
+                            summary
+                        )
+                    })
+                });
+            let mut geometry_repair_svg: Option<String> = None;
+            let mut geometry_must_keep_text: Option<Vec<String>> = None;
+            let mut density_relayout_svg: Option<String> = None;
+            let mut density_must_keep_text: Option<Vec<String>> = None;
+            if injected_native_failure_page() == Some(slide.page) {
+                let error_text = format!(
+                    "P{:02} 原生断点续跑验收注入失败；未调用 AI；strict native fallback=false",
+                    slide.page
+                );
+                set_native_page_state(
+                    &mut native_state,
+                    slide.page,
+                    "failed",
+                    Some(error_text.clone()),
+                    Some("test-injected interruption".to_string()),
+                    None,
+                    false,
+                );
+                native_state.set_status("failed");
+                let _ = persist_native_state(&project, &native_state);
+                return Ok(native_failure_result(
+                    AppError::Custom(error_text),
+                    "execute_slides",
+                    started,
+                    execute_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    None,
+                    &[],
+                    &[],
+                ));
+            }
+            if !downstream_invalidated {
+                if let Err(error) = invalidate_downstream(&project).map_err(AppError::Custom) {
+                    native_state.set_status("failed");
+                    let _ = persist_native_state(&project, &native_state);
+                    return Ok(native_failure_result(
+                        error,
+                        "execute_slides",
+                        started,
+                        execute_started,
+                        &mut log_lines,
+                        Some(&project),
+                        Some(&slide_plan_path),
+                        Some(&design_spec_path),
+                        None,
+                        &[],
+                        &[],
+                    ));
+                }
+                native_state.artifacts.final_pptx_path = None;
+                downstream_invalidated = true;
+            }
+            'page_attempt: loop {
+                {
+                    let page_state = native_state.page_mut(slide.page);
+                    page_state.status = "generating".to_string();
+                    page_state.attempts += 1;
+                    page_state.last_error = None;
+                    page_state.violated_rule = None;
+                    page_state.checker_summary = None;
+                    page_state.text_geometry = None;
+                    page_state.reused = false;
+                    page_state.updated_at = native_state_now();
+                }
+                if let Err(error) = persist_native_state(&project, &native_state) {
+                    return Ok(native_failure_result(
+                        error,
+                        "execute_slides",
+                        started,
+                        execute_started,
+                        &mut log_lines,
+                        Some(&project),
+                        Some(&slide_plan_path),
+                        Some(&design_spec_path),
+                        None,
+                        &[],
+                        &[],
+                    ));
+                }
+                log_lines.push(format!(
+                    "[Native Resume] page=P{:02} action={} aiCalled=true attempt={}",
+                    slide.page,
+                    if geometry_repair_svg.is_some() {
+                        "repair-current-svg"
+                    } else if density_relayout_svg.is_some() {
+                        "relayout-current-svg"
+                    } else {
+                        "generate"
+                    },
+                    native_state.page_mut(slide.page).attempts
+                ));
+                let svg = match generate_ppt_master_driven_slide_svg(
+                    db,
+                    &skill_text,
+                    &resources,
+                    &design_spec,
+                    &spec_lock_path,
+                    &style_mapping,
+                    &theme_spec,
+                    &plan,
+                    slide,
+                    prev_title,
+                    next_title,
+                    input.model_id,
+                    page_retry_feedback.as_deref(),
+                    &density_contract,
+                    geometry_repair_svg.as_deref(),
+                    geometry_must_keep_text.as_deref(),
+                    density_relayout_svg.as_deref(),
+                    density_must_keep_text.as_deref(),
+                )
+                .await
+                {
+                    Ok(svg) => svg,
+                    Err(error) => {
+                        let error_text = format!("P{:02} 原生 SVG 生成失败: {error}", slide.page);
+                        set_native_page_state(
+                            &mut native_state,
+                            slide.page,
+                            "failed",
+                            Some(error_text.clone()),
+                            Some("AI SVG generation".to_string()),
+                            None,
+                            false,
+                        );
+                        native_state.set_status("failed");
+                        let _ = persist_native_state(&project, &native_state);
+                        return Ok(native_failure_result(
+                            AppError::Custom(error_text),
+                            "execute_slides",
+                            started,
+                            execute_started,
+                            &mut log_lines,
+                            Some(&project),
+                            Some(&slide_plan_path),
+                            Some(&design_spec_path),
+                            None,
+                            &[],
+                            &[],
+                        ));
+                    }
+                };
+                let (svg, normalization) = normalize_native_svg_compatibility(&svg);
+                if normalization != NativeSvgNormalizationReport::default() {
+                    log_lines.push(format!(
+                    "[SVG Compatibility] file={} rgbaColorsNormalized={} groupOpacityNormalized={} filtersRemoved={} malformedClosingTagsRepaired={} duplicateLineCoordinatesRepaired={} fallback=false",
+                    filename,
+                    normalization.rgba_colors_normalized,
+                    normalization.group_opacity_normalized,
+                    normalization.filters_removed,
+                    normalization.malformed_closing_tags_repaired,
+                    normalization.duplicate_line_coordinates_repaired
+                ));
+                }
+                if let Err(error) = validate_native_svg_text(&filename, &svg) {
+                    set_native_page_state(
+                        &mut native_state,
+                        slide.page,
+                        "failed",
+                        Some(error.to_string()),
+                        Some("native SVG completeness/canvas".to_string()),
+                        None,
+                        false,
+                    );
+                    native_state.set_status("failed");
+                    let _ = persist_native_state(&project, &native_state);
+                    return Ok(native_failure_result(
+                        error,
+                        "execute_slides",
+                        started,
+                        execute_started,
+                        &mut log_lines,
+                        Some(&project),
+                        Some(&slide_plan_path),
+                        Some(&design_spec_path),
+                        None,
+                        &[],
+                        &[],
+                    ));
+                }
+                if let Err(error) = write_file(&svg_output.join(&filename), &svg) {
+                    set_native_page_state(
+                        &mut native_state,
+                        slide.page,
+                        "failed",
+                        Some(error.to_string()),
+                        Some("write native SVG".to_string()),
+                        None,
+                        false,
+                    );
+                    native_state.set_status("failed");
+                    let _ = persist_native_state(&project, &native_state);
+                    return Ok(native_failure_result(
+                        error,
+                        "execute_slides",
+                        started,
+                        execute_started,
+                        &mut log_lines,
+                        Some(&project),
+                        Some(&slide_plan_path),
+                        Some(&design_spec_path),
+                        None,
+                        &[],
+                        &[],
+                    ));
+                }
+                set_native_page_state(
+                    &mut native_state,
+                    slide.page,
+                    "generated",
+                    None,
+                    None,
+                    None,
+                    false,
+                );
+                if let Err(error) = persist_native_state(&project, &native_state) {
+                    return Ok(native_failure_result(
+                        error,
+                        "execute_slides",
+                        started,
+                        execute_started,
+                        &mut log_lines,
+                        Some(&project),
+                        Some(&slide_plan_path),
+                        Some(&design_spec_path),
+                        None,
+                        &[],
+                        &[],
+                    ));
+                }
+                let (mut page_failure, page_quality, page_geometry) =
+                    match validate_generated_native_page(
+                        &root,
+                        &input.python_path,
+                        &project,
+                        &filename,
+                        slide.page,
+                        &theme_spec,
+                        &density_contract,
+                        &mut log_lines,
+                        started,
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            let failure_stage = if error.to_string().contains("空间占用") {
+                                "validate_space_utilization"
+                            } else if error.to_string().contains("文本几何") {
+                                "validate_text_geometry"
+                            } else {
+                                "validate_svgs"
+                            };
+                            set_native_page_state(
+                                &mut native_state,
+                                slide.page,
+                                "failed",
+                                Some(error.to_string()),
+                                Some(format!("strict native page validation ({failure_stage})")),
+                                None,
+                                false,
+                            );
+                            native_state.set_status("failed");
+                            let _ = persist_native_state(&project, &native_state);
+                            return Ok(native_failure_result(
+                                error,
+                                failure_stage,
+                                started,
+                                execute_started,
+                                &mut log_lines,
+                                Some(&project),
+                                Some(&slide_plan_path),
+                                Some(&design_spec_path),
+                                Some(false),
+                                &[],
+                                &[],
+                            ));
+                        }
+                    };
+                if page_failure.is_none() {
+                    if let (Some(expected), Some(geometry)) =
+                        (geometry_must_keep_text.as_ref(), page_geometry.as_ref())
+                    {
+                        let actual = geometry.visible_texts();
+                        if !native_page_relayout_preserved_visible_text(expected, &actual) {
+                            page_failure = Some(NativePageValidationFailure {
+                                stage: "validate_text_geometry".to_string(),
+                                violated_rule: "visible_text_changed_during_geometry_repair"
+                                    .to_string(),
+                                checker_summary: format!(
+                                    "AI local geometry repair changed visible text; expected={}; actual={}",
+                                    serde_json::to_string(expected).unwrap_or_default(),
+                                    serde_json::to_string(&actual).unwrap_or_default()
+                                ),
+                                text_geometry: Some(geometry.state()),
+                            });
+                        }
+                    }
+                }
+                if page_failure.is_none() {
+                    if let (Some(expected), Some(geometry)) =
+                        (density_must_keep_text.as_ref(), page_geometry.as_ref())
+                    {
+                        let actual = geometry.visible_texts();
+                        if !native_page_relayout_preserved_visible_text(expected, &actual) {
+                            page_failure = Some(NativePageValidationFailure {
+                                stage: "validate_space_utilization".to_string(),
+                                violated_rule: "visible_text_changed_during_density_relayout"
+                                    .to_string(),
+                                checker_summary: format!(
+                                    "AI local density relayout changed visible text; expected={}; actual={}",
+                                    serde_json::to_string(expected).unwrap_or_default(),
+                                    serde_json::to_string(&actual).unwrap_or_default()
+                                ),
+                                text_geometry: Some(geometry.state()),
+                            });
+                        }
+                    }
+                }
+                if let Some(geometry) = page_geometry.as_ref() {
+                    set_native_text_geometry_state(&mut native_state, slide.page, geometry.state());
+                    log_lines.push(format!(
+                    "[Text Geometry] page=P{:02} passed={} hardErrors={} warnings={} autoFixedBlocks={} svg={}",
+                    slide.page,
+                    geometry.passed,
+                    geometry.hard_errors.len(),
+                    geometry.warnings.len(),
+                    geometry.auto_fix_applied.len(),
+                    filename
+                ));
+                }
+                if let Some(failure) = page_failure {
+                    let failure_stage = failure.stage.clone();
+                    let violated_rule = failure.violated_rule.clone();
+                    let checker_summary = failure.checker_summary.clone();
+                    if let Some(geometry) = failure.text_geometry.clone() {
+                        set_native_text_geometry_state(&mut native_state, slide.page, geometry);
+                    }
+                    set_native_page_state(
+                        &mut native_state,
+                        slide.page,
+                        "failed",
+                        Some(failure.checker_summary.clone()),
+                        Some(failure.violated_rule.clone()),
+                        Some(failure.checker_summary.clone()),
+                        false,
+                    );
+                    native_state.current_stage = failure_stage.clone();
+                    let page_attempts = native_state
+                        .pages
+                        .get(&slide.page.to_string())
+                        .map(|page| page.attempts)
+                        .unwrap_or_default();
+                    if native_page_validation_may_retry(&failure_stage, page_attempts) {
+                        native_state.set_stage("execute_slides");
+                        persist_native_state(&project, &native_state)?;
+                        page_retry_feedback = Some(if failure_stage == "validate_svgs" {
+                            format!(
+                                "Page P{:02} strict SVG compatibility hard error. violatedRule={}; detail={}. Repair only this page. {} Do not remove core content and do not use fallback.",
+                                slide.page,
+                                violated_rule,
+                                checker_summary,
+                                NATIVE_EXECUTOR_CLIP_PATH_RULE
+                            )
+                        } else if failure_stage == "validate_theme_consistency" {
+                            format!(
+                                "Page P{:02} does not follow the immutable deck-wide NativeThemeSpec. {} Regenerate only this page using the exact allowed palette and shared decoration/shape language. Do not mechanically recolor all elements; preserve readable text contrast. Do not use any forbidden color or fallback.",
+                                slide.page, checker_summary
+                            )
+                        } else if failure_stage == "validate_visible_text_integrity" {
+                            format!(
+                                "Page P{:02} contains damaged visible text. {} Regenerate only this page. Preserve the SlideSpec meaning, emit valid UTF-8 Chinese, and do not expose Markdown heading markers. Do not use fallback.",
+                                slide.page, checker_summary
+                            )
+                        } else if failure_stage == "validate_space_utilization" {
+                            density_relayout_svg =
+                                fs::read_to_string(project.join("svg_output").join(&filename)).ok();
+                            density_must_keep_text = page_geometry
+                                .as_ref()
+                                .map(NativeTextGeometryReport::visible_texts);
+                            geometry_repair_svg = None;
+                            geometry_must_keep_text = None;
+                            format!(
+                                "Page P{:02} has theme-independent dead whitespace or insufficient functional occupancy. {} Relayout only this page once. Keep every current visible text string and every mustInclude fact, redistribute them across the effective canvas, and use semantic supporting structure without adding facts, repeating text, empty cards, or changing the NativeThemeSpec.",
+                                slide.page, checker_summary
+                            )
+                        } else if let Some(geometry) = page_geometry.as_ref() {
+                            geometry_repair_svg =
+                                fs::read_to_string(project.join("svg_output").join(&filename)).ok();
+                            geometry_must_keep_text = Some(geometry.visible_texts());
+                            density_relayout_svg = None;
+                            density_must_keep_text = None;
+                            serde_json::to_string(&geometry.repair_context())
+                                .unwrap_or_else(|_| checker_summary.clone())
+                        } else {
+                            checker_summary.clone()
+                        });
+                        if (failure_stage != "validate_text_geometry"
+                            || geometry_repair_svg.is_some())
+                            && (failure_stage != "validate_space_utilization"
+                                || density_relayout_svg.is_some())
+                        {
+                            log_lines.push(format!(
+                                "[Native Page Retry] page=P{:02} stage={} action={} nextAttempt={} otherPagesRegenerated=false fallback=false violatedRule={}",
+                                slide.page,
+                                failure_stage,
+                                if failure_stage == "validate_text_geometry" {
+                                    "repair-current-svg-only"
+                                } else if failure_stage == "validate_space_utilization" {
+                                    "relayout-current-svg-only"
+                                } else {
+                                    "regenerate-page-only"
+                                },
+                                page_attempts + 1,
+                                violated_rule
+                            ));
+                            continue 'page_attempt;
+                        }
+                        log_lines.push(format!(
+                            "[Native Page Retry] page=P{:02} stage={} action=abort-local-repair svgRead=false fallback=false",
+                            slide.page, failure_stage
+                        ));
+                    }
+                    let last_svg_path = svg_output.join(&filename);
+                    if should_continue_after_quality_failure(
+                        block_on_quality_failure,
+                        &last_svg_path,
+                    ) {
+                        quality_check_passed = false;
+                        set_native_page_state(
+                            &mut native_state,
+                            slide.page,
+                            "generated",
+                            Some(failure.checker_summary.clone()),
+                            Some(failure.violated_rule.clone()),
+                            Some(failure.checker_summary.clone()),
+                            false,
+                        );
+                        native_state.set_stage("execute_slides");
+                        persist_native_state(&project, &native_state)?;
+                        log_lines.push(format!(
+                            "[Quality Check] page=P{:02} passed=false blockOnQualityFailure=false action=keep-last-svg-and-continue svg={} fallback=false",
+                            slide.page,
+                            last_svg_path.display()
+                        ));
+                        break 'page_attempt;
+                    }
+                    native_state.set_status("failed");
+                    let _ = persist_native_state(&project, &native_state);
+                    let quality_failure = NativeQualityFailure {
+                        page_number: Some(slide.page),
+                        file_name: filename.clone(),
+                        violated_rule: failure.violated_rule,
+                        checker_summary: failure.checker_summary,
+                    };
+                    let result = native_failure_result(
+                        AppError::Custom(native_page_validation_error_message(
+                            &project,
+                            &failure_stage,
+                            &quality_failure,
+                        )),
+                        &failure_stage,
+                        started,
+                        execute_started,
+                        &mut log_lines,
+                        Some(&project),
+                        Some(&slide_plan_path),
+                        Some(&design_spec_path),
+                        Some(false),
+                        std::slice::from_ref(&page_quality.stdout),
+                        std::slice::from_ref(&page_quality.stderr),
+                    );
+                    return Ok(with_native_quality_failure(
+                        result,
+                        &failure_stage,
+                        &project,
+                        Some(slide.page),
+                        &filename,
+                        &quality_failure.violated_rule,
+                        &quality_failure.checker_summary,
+                    ));
+                }
+                set_native_page_state(
+                    &mut native_state,
+                    slide.page,
+                    "validated",
+                    None,
+                    None,
+                    None,
+                    false,
+                );
+                persist_native_state(&project, &native_state)?;
+                log_lines.push(format!("写入 SVG: svg_output/{}", filename));
+                break 'page_attempt;
+            }
         }
-
-        fill_missing_svgs_with_legacy_fallback(&plan, &svg_output, &mut log_lines)?;
-        log_lines.push("[SVG] all pages generated".to_string());
-        enforce_final_text_guard(
-            db,
-            &design_spec,
-            &spec_lock,
-            &plan,
-            &svg_output,
-            input.model_id,
+        let svg_set_validation = if block_on_quality_failure {
+            validate_native_svg_set(&plan, &svg_output)
+        } else {
+            ensure_native_svg_files_exist(&plan, &svg_output)
+        };
+        if let Err(error) = svg_set_validation {
+            native_state.set_status("failed");
+            let _ = persist_native_state(&project, &native_state);
+            return Ok(native_failure_result(
+                error,
+                "execute_slides",
+                started,
+                execute_started,
+                &mut log_lines,
+                Some(&project),
+                Some(&slide_plan_path),
+                Some(&design_spec_path),
+                None,
+                &[],
+                &[],
+            ));
+        }
+        native_stage_success(
             &mut log_lines,
-        )
-        .await?;
+            "execute_slides",
+            execute_started,
+            &format!(
+                "svgOutput={},pages={}",
+                svg_output.display(),
+                plan.slides.len()
+            ),
+        );
+
+        let validate_started = native_stage_start(
+            &mut log_lines,
+            "validate_svgs",
+            &format!("svgOutput={}", svg_output.display()),
+        );
+        native_state.set_stage("validate_svgs");
+        if let Err(error) = persist_native_state(&project, &native_state) {
+            return Ok(native_failure_result(
+                error,
+                "validate_svgs",
+                started,
+                validate_started,
+                &mut log_lines,
+                Some(&project),
+                Some(&slide_plan_path),
+                Some(&design_spec_path),
+                None,
+                &[],
+                &[],
+            ));
+        }
         log_lines.push("[Check] svg_quality_checker start".to_string());
-        let mut quality = run_quality_check(&root, &input.python_path, &project, started)?;
+        let quality = match run_quality_check(&root, &input.python_path, &project, started) {
+            Ok(result) => result,
+            Err(error) if !block_on_quality_failure => {
+                quality_check_passed = false;
+                log_lines.push(format!(
+                    "[Quality Check] stage=validate_svgs passed=false blockOnQualityFailure=false action=continue-to-export checkerError={} fallback=false",
+                    single_line_log_value(&error.to_string())
+                ));
+                PptMasterExportResult {
+                    success: false,
+                    output_path: None,
+                    exit_code: None,
+                    stdout: String::new(),
+                    stderr: error.to_string(),
+                    duration_ms: started.elapsed().as_millis(),
+                    error: Some(error.to_string()),
+                }
+            }
+            Err(error) => {
+                return Ok(native_failure_result(
+                    error,
+                    "validate_svgs",
+                    started,
+                    validate_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    None,
+                    &[],
+                    &[],
+                ));
+            }
+        };
         log_lines.push(format!(
             "[Check] svg_quality_checker done: success={}",
             quality.success
         ));
         if !quality.success {
-            log_lines.push(
-                "[Repair] start: svg_quality_checker failed, AI repair max 1 pass".to_string(),
-            );
-            log_lines.push("质量检查未通过，尝试让 AI 修复 SVG（最多 1 次）".to_string());
-            repair_agent_svgs_once(
-                db,
-                &skill_text,
-                &design_spec,
-                &spec_lock,
-                &plan,
-                &svg_output,
-                &join_outputs(&[], &[quality.stdout.clone(), quality.stderr.clone()]),
-                input.model_id,
-            )
-            .await?;
-            log_lines.push("[Repair] done: svg_quality_checker AI repair".to_string());
-            log_lines.push("[Check] svg_quality_checker start".to_string());
-            quality = run_quality_check(&root, &input.python_path, &project, started)?;
-            log_lines.push(format!(
-                "[Check] svg_quality_checker done: success={}",
-                quality.success
-            ));
-            if !quality.success {
-                log_lines.push(
-                    "AI 修复后仍未通过，使用 render_slide_svg 作为最终 legacy fallback".to_string(),
+            quality_check_passed = false;
+            let failures = parse_native_quality_failures(&quality.stdout, &quality.stderr);
+            let first_failure = failures
+                .first()
+                .cloned()
+                .unwrap_or_else(|| NativeQualityFailure {
+                    page_number: None,
+                    file_name: "unknown.svg".to_string(),
+                    violated_rule: "SVG Quality Checker hard error".to_string(),
+                    checker_summary: single_line_log_value(&quality.stdout),
+                });
+            if block_on_quality_failure {
+                for failure in &failures {
+                    if let Some(page) = failure.page_number {
+                        set_native_page_state(
+                            &mut native_state,
+                            page,
+                            "failed",
+                            Some(failure.checker_summary.clone()),
+                            Some(failure.violated_rule.clone()),
+                            Some(failure.checker_summary.clone()),
+                            false,
+                        );
+                    }
+                }
+                native_state.set_status("failed");
+                let _ = persist_native_state(&project, &native_state);
+                let result = native_failure_result(
+                    AppError::Custom(native_quality_error_message(&project, &first_failure)),
+                    "validate_svgs",
+                    started,
+                    validate_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    Some(false),
+                    std::slice::from_ref(&quality.stdout),
+                    std::slice::from_ref(&quality.stderr),
                 );
-                write_legacy_fallback_svgs(&plan, &svg_output)?;
-                log_lines.push("[Check] svg_quality_checker start".to_string());
-                quality = run_quality_check(&root, &input.python_path, &project, started)?;
-                log_lines.push(format!(
-                    "[Check] svg_quality_checker done: success={}",
-                    quality.success
+                return Ok(with_native_quality_failure(
+                    result,
+                    "validate_svgs",
+                    &project,
+                    first_failure.page_number,
+                    &first_failure.file_name,
+                    &first_failure.violated_rule,
+                    &first_failure.checker_summary,
                 ));
             }
+            for failure in &failures {
+                if let Some(page) = failure.page_number {
+                    set_native_page_state(
+                        &mut native_state,
+                        page,
+                        "generated",
+                        Some(failure.checker_summary.clone()),
+                        Some(failure.violated_rule.clone()),
+                        Some(failure.checker_summary.clone()),
+                        false,
+                    );
+                }
+            }
+            persist_native_state(&project, &native_state)?;
+            log_lines.push(format!(
+                "[Quality Check] stage=validate_svgs passed=false blockOnQualityFailure=false action=continue-to-export firstRule={} fallback=false",
+                first_failure.violated_rule
+            ));
         } else {
-            log_lines.push("[Repair] skipped: svg_quality_checker passed".to_string());
+            log_lines.push("[Repair] skipped: strict native validation passed".to_string());
         }
-        log_lines.push(format!("SVG 质量检查通过: {}", quality.success));
 
-        let split = run_total_md_split(&root, &input.python_path, &project, started)?;
-        log_lines.push("total_md_split started".to_string());
-        log_lines.push("[Finalize] start".to_string());
-        let mut finalize = run_finalize_svg(&root, &input.python_path, &project, started)?;
-        log_lines.push(format!("[Finalize] done: success={}", finalize.success));
-
-        log_lines.push("[Native Compat] scan start: source=svg_output".to_string());
-        let mut native_issues = scan_native_incompatible_svgs(&project.join("svg_output"))?;
-        log_lines.push(format!(
-            "[Native Compat] scan done: issue_count={}",
-            native_issues.len()
-        ));
+        let native_issues = match scan_native_incompatible_svgs(&svg_output) {
+            Ok(issues) => issues,
+            Err(error) if !block_on_quality_failure => {
+                quality_check_passed = false;
+                log_lines.push(format!(
+                    "[Quality Check] stage=scan_native_compatibility passed=false blockOnQualityFailure=false action=continue-to-export error={} fallback=false",
+                    single_line_log_value(&error.to_string())
+                ));
+                Vec::new()
+            }
+            Err(error) => {
+                return Ok(native_failure_result(
+                    error,
+                    "validate_svgs",
+                    started,
+                    validate_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    Some(true),
+                    std::slice::from_ref(&quality.stdout),
+                    std::slice::from_ref(&quality.stderr),
+                ));
+            }
+        };
         if !native_issues.is_empty() {
-            log_lines.push("[Repair] start: native compatibility repair max 1 pass".to_string());
-            log_lines.push(format!(
-                "[Native Compat] pre-export check found unsupported SVG elements: {}",
-                summarize_native_issues(&native_issues)
-            ));
-            repair_native_svg_issues_once(
-                db,
-                &design_spec,
-                &spec_lock,
-                &plan,
-                &svg_output,
-                &native_issues,
-                input.model_id,
-                &mut log_lines,
-            )
-            .await?;
-            log_lines.push("[Repair] done: native compatibility repair".to_string());
-            log_lines.push("[Check] svg_quality_checker start".to_string());
-            quality = run_quality_check(&root, &input.python_path, &project, started)?;
-            log_lines.push(format!(
-                "[Check] svg_quality_checker done: success={}",
-                quality.success
-            ));
-            log_lines.push("[Finalize] start".to_string());
-            finalize = run_finalize_svg(&root, &input.python_path, &project, started)?;
-            log_lines.push(format!("[Finalize] done: success={}", finalize.success));
-            log_lines.push("[Native Compat] scan start: source=svg_output".to_string());
-            native_issues = scan_native_incompatible_svgs(&project.join("svg_output"))?;
-            log_lines.push(format!(
-                "[Native Compat] scan done: issue_count={}",
-                native_issues.len()
-            ));
-            if !native_issues.is_empty() {
+            quality_check_passed = false;
+            if !block_on_quality_failure {
                 log_lines.push(format!(
-                    "[Native Compat] unsupported elements remain after repair: {}",
-                    summarize_native_issues(&native_issues)
+                    "[Quality Check] stage=scan_native_compatibility passed=false blockOnQualityFailure=false action=continue-to-export issues={} fallback=false",
+                    single_line_log_value(&summarize_native_issues(&native_issues))
+                ));
+            } else {
+                return Ok(native_failure_result(
+                    AppError::Custom(format!(
+                        "原生 SVG 包含 DrawingML 导出不支持的元素: {}",
+                        summarize_native_issues(&native_issues)
+                    )),
+                    "validate_svgs",
+                    started,
+                    validate_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    Some(true),
+                    std::slice::from_ref(&quality.stdout),
+                    std::slice::from_ref(&quality.stderr),
                 ));
             }
-        } else {
-            log_lines.push("[Repair] skipped: native compatibility passed".to_string());
         }
-
-        enforce_final_text_guard(
-            db,
-            &design_spec,
-            &spec_lock,
-            &plan,
-            &svg_output,
-            input.model_id,
+        let text_issues = match scan_final_text_leaks(&svg_output) {
+            Ok(issues) => issues,
+            Err(error) if !block_on_quality_failure => {
+                quality_check_passed = false;
+                log_lines.push(format!(
+                    "[Quality Check] stage=scan_visible_text passed=false blockOnQualityFailure=false action=continue-to-export error={} fallback=false",
+                    single_line_log_value(&error.to_string())
+                ));
+                Vec::new()
+            }
+            Err(error) => {
+                return Ok(native_failure_result(
+                    error,
+                    "validate_svgs",
+                    started,
+                    validate_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    Some(true),
+                    std::slice::from_ref(&quality.stdout),
+                    std::slice::from_ref(&quality.stderr),
+                ));
+            }
+        };
+        if !text_issues.is_empty() {
+            quality_check_passed = false;
+            if !block_on_quality_failure {
+                log_lines.push(format!(
+                    "[Quality Check] stage=scan_visible_text passed=false blockOnQualityFailure=false action=continue-to-export issues={} fallback=false",
+                    single_line_log_value(&summarize_final_text_issues(&text_issues))
+                ));
+            } else {
+                return Ok(native_failure_result(
+                    AppError::Custom(format!(
+                        "原生 SVG 检测到内部字段或模板词泄漏: {}",
+                        summarize_final_text_issues(&text_issues)
+                    )),
+                    "validate_svgs",
+                    started,
+                    validate_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    Some(true),
+                    std::slice::from_ref(&quality.stdout),
+                    std::slice::from_ref(&quality.stderr),
+                ));
+            }
+        }
+        if quality_check_passed {
+            for slide in &plan.slides {
+                let reused = native_state
+                    .pages
+                    .get(&slide.page.to_string())
+                    .is_some_and(|page| page.reused);
+                set_native_page_state(
+                    &mut native_state,
+                    slide.page,
+                    "validated",
+                    None,
+                    None,
+                    None,
+                    reused,
+                );
+            }
+        }
+        native_state.set_stage("generate_notes");
+        if let Err(error) = persist_native_state(&project, &native_state) {
+            return Ok(native_failure_result(
+                error,
+                "validate_svgs",
+                started,
+                validate_started,
+                &mut log_lines,
+                Some(&project),
+                Some(&slide_plan_path),
+                Some(&design_spec_path),
+                Some(true),
+                std::slice::from_ref(&quality.stdout),
+                std::slice::from_ref(&quality.stderr),
+            ));
+        }
+        native_stage_success(
             &mut log_lines,
-        )
-        .await?;
+            "validate_svgs",
+            validate_started,
+            &format!(
+                "qualityPassed={},svgOutput={}",
+                quality_check_passed,
+                svg_output.display()
+            ),
+        );
+
+        let notes_started = native_stage_start(
+            &mut log_lines,
+            "generate_notes",
+            &format!("slidePlan={}", slide_plan_path.display()),
+        );
+        let total_notes_path = notes.join("total.md");
+        if let Err(error) = write_file(&total_notes_path, &build_notes(&plan)) {
+            return Ok(native_failure_result(
+                error,
+                "generate_notes",
+                started,
+                notes_started,
+                &mut log_lines,
+                Some(&project),
+                Some(&slide_plan_path),
+                Some(&design_spec_path),
+                Some(true),
+                std::slice::from_ref(&quality.stdout),
+                std::slice::from_ref(&quality.stderr),
+            ));
+        }
+        let split = match run_total_md_split(&root, &input.python_path, &project, started) {
+            Ok(result) => result,
+            Err(error) => {
+                return Ok(native_failure_result(
+                    error,
+                    "generate_notes",
+                    started,
+                    notes_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    Some(true),
+                    std::slice::from_ref(&quality.stdout),
+                    std::slice::from_ref(&quality.stderr),
+                ));
+            }
+        };
+        if !split.success {
+            return Ok(native_failure_result(
+                AppError::Custom(
+                    split
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "total_md_split.py 执行失败".to_string()),
+                ),
+                "generate_notes",
+                started,
+                notes_started,
+                &mut log_lines,
+                Some(&project),
+                Some(&slide_plan_path),
+                Some(&design_spec_path),
+                Some(true),
+                &[quality.stdout.clone(), split.stdout.clone()],
+                &[quality.stderr.clone(), split.stderr.clone()],
+            ));
+        }
+        native_stage_success(
+            &mut log_lines,
+            "generate_notes",
+            notes_started,
+            &format!("notes={}", total_notes_path.display()),
+        );
+        native_state.set_stage("export_pptx");
+        native_state.artifacts.notes_path = notes.to_string_lossy().to_string();
+        if let Err(error) = persist_native_state(&project, &native_state) {
+            return Ok(native_failure_result(
+                error,
+                "generate_notes",
+                started,
+                notes_started,
+                &mut log_lines,
+                Some(&project),
+                Some(&slide_plan_path),
+                Some(&design_spec_path),
+                Some(true),
+                &[quality.stdout.clone(), split.stdout.clone()],
+                &[quality.stderr.clone(), split.stderr.clone()],
+            ));
+        }
 
         println!("[Export] start");
+        let export_started = native_stage_start(
+            &mut log_lines,
+            "export_pptx",
+            &format!("project={},svgSource=svg_output", project.display()),
+        );
+        log_lines.push("[Finalize] command: finalize_svg.py <project>".to_string());
+        let finalize = match run_finalize_svg(&root, &input.python_path, &project, started) {
+            Ok(result) => result,
+            Err(error) => {
+                return Ok(native_failure_result(
+                    error,
+                    "export_pptx",
+                    started,
+                    export_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    Some(true),
+                    &[quality.stdout.clone(), split.stdout.clone()],
+                    &[quality.stderr.clone(), split.stderr.clone()],
+                ));
+            }
+        };
+        if !finalize.success {
+            return Ok(native_failure_result(
+                AppError::Custom(
+                    finalize
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "finalize_svg.py 执行失败".to_string()),
+                ),
+                "export_pptx",
+                started,
+                export_started,
+                &mut log_lines,
+                Some(&project),
+                Some(&slide_plan_path),
+                Some(&design_spec_path),
+                Some(true),
+                &[
+                    quality.stdout.clone(),
+                    split.stdout.clone(),
+                    finalize.stdout.clone(),
+                ],
+                &[
+                    quality.stderr.clone(),
+                    split.stderr.clone(),
+                    finalize.stderr.clone(),
+                ],
+            ));
+        }
+
         log_lines.push("[Export] svg source: svg_output".to_string());
         log_lines.push(
             "[Export] command: svg_to_pptx.py <project> (native default source=svg_output)"
                 .to_string(),
         );
-        let mut export = export_project(&root, &input.python_path, &project, started)?;
-        log_lines.push(format!(
-            "[Export] svg_to_pptx default done: success={}",
-            export.success
-        ));
-
-        if !export.success {
-            let export_text = join_outputs(&[], &[export.stdout.clone(), export.stderr.clone()]);
-            let export_issues = parse_native_export_issues(&export_text);
-            if !export_issues.is_empty() {
-                log_lines.push(
-                    "[Repair] start: export failure targeted native repair max 1 pass".to_string(),
-                );
-                log_lines.push(format!(
-                    "[Native Compat] svg_to_pptx failed with native issue: {}",
-                    summarize_native_issues(&export_issues)
-                ));
-                repair_native_svg_issues_once(
-                    db,
-                    &design_spec,
-                    &spec_lock,
-                    &plan,
-                    &svg_output,
-                    &export_issues,
-                    input.model_id,
+        let export = match export_project(&root, &input.python_path, &project, started) {
+            Ok(result) => result,
+            Err(error) => {
+                return Ok(native_failure_result(
+                    error,
+                    "export_pptx",
+                    started,
+                    export_started,
                     &mut log_lines,
-                )
-                .await?;
-                log_lines.push("[Repair] done: export failure targeted native repair".to_string());
-                log_lines.push("[Check] svg_quality_checker start".to_string());
-                quality = run_quality_check(&root, &input.python_path, &project, started)?;
-                log_lines.push(format!(
-                    "[Check] svg_quality_checker done: success={}",
-                    quality.success
-                ));
-                log_lines.push("[Finalize] start".to_string());
-                finalize = run_finalize_svg(&root, &input.python_path, &project, started)?;
-                log_lines.push(format!("[Finalize] done: success={}", finalize.success));
-                log_lines.push("[Export] svg source: svg_output".to_string());
-                log_lines.push(
-                    "[Export] command: svg_to_pptx.py <project> (native default source=svg_output)"
-                        .to_string(),
-                );
-                export = export_project(&root, &input.python_path, &project, started)?;
-                log_lines.push(format!(
-                    "[Export] svg_to_pptx default done: success={}",
-                    export.success
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    Some(true),
+                    &[
+                        quality.stdout.clone(),
+                        split.stdout.clone(),
+                        finalize.stdout.clone(),
+                    ],
+                    &[
+                        quality.stderr.clone(),
+                        split.stderr.clone(),
+                        finalize.stderr.clone(),
+                    ],
                 ));
             }
-        }
-        let mut success = export.success;
-        let quality_passed = quality.success;
-        let export_native_issues = parse_native_export_issues(&join_outputs(
-            &[],
-            &[export.stdout.clone(), export.stderr.clone()],
-        ));
-        let detailed_export_error = if export.success || export_native_issues.is_empty() {
-            export.error
-        } else {
-            Some(summarize_native_issues(&export_native_issues))
         };
-        let mut error = detailed_export_error.or(split.error).or(finalize.error);
-        let mut final_pptx_path = None;
-
-        if export.success && split.success && finalize.success {
-            if let (Some(dir), Some(pptx)) =
-                (input.output_dir.as_deref(), export.output_path.as_deref())
-            {
-                match copy_final_pptx(Path::new(pptx), dir, &plan.title) {
-                    Ok(path) => {
-                        log_lines.push(format!("复制到 outputDir: {}", path.display()));
-                        final_pptx_path = Some(path.to_string_lossy().to_string());
-                    }
-                    Err(e) => {
-                        success = false;
-                        error = Some(format!("PPTX 已生成，但复制到导出文件夹失败: {}", e));
-                    }
-                }
+        let pptx_path = match validate_native_export_result(&export) {
+            Ok(path) => path,
+            Err(error) => {
+                return Ok(native_failure_result(
+                    error,
+                    "export_pptx",
+                    started,
+                    export_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    Some(true),
+                    &[
+                        quality.stdout.clone(),
+                        split.stdout.clone(),
+                        finalize.stdout.clone(),
+                        export.stdout.clone(),
+                    ],
+                    &[
+                        quality.stderr.clone(),
+                        split.stderr.clone(),
+                        finalize.stderr.clone(),
+                        export.stderr.clone(),
+                    ],
+                ));
             }
-        } else {
-            success = false;
+        };
+
+        let powerpoint_geometry_started = native_stage_start(
+            &mut log_lines,
+            "validate_powerpoint_text_geometry",
+            &format!("pptx={},svgSource=svg_output", pptx_path.display()),
+        );
+        native_state.set_stage("validate_powerpoint_text_geometry");
+        persist_native_state(&project, &native_state)?;
+        let powerpoint_geometry = match run_native_powerpoint_geometry_check(&project, &pptx_path) {
+            Ok(report) => Some(report),
+            Err(error) if !block_on_quality_failure => {
+                quality_check_passed = false;
+                log_lines.push(format!(
+                    "[Quality Check] stage=validate_powerpoint_text_geometry passed=false blockOnQualityFailure=false action=keep-exported-pptx checkerError={} fallback=false",
+                    single_line_log_value(&error.to_string())
+                ));
+                None
+            }
+            Err(error) => {
+                native_state.set_status("failed");
+                let _ = persist_native_state(&project, &native_state);
+                return Ok(native_failure_result(
+                    error,
+                    "validate_powerpoint_text_geometry",
+                    started,
+                    powerpoint_geometry_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    Some(true),
+                    &[export.stdout.clone()],
+                    &[export.stderr.clone()],
+                ));
+            }
+        };
+        if let Some(powerpoint_geometry) = powerpoint_geometry.as_ref() {
+            log_lines.push(format!(
+            "[PowerPoint Text Geometry] passed={} hardErrors={} warnings={} safeRegionFixes={} renderDir={}",
+            powerpoint_geometry.passed,
+            powerpoint_geometry.hard_errors.len(),
+            powerpoint_geometry.warnings.len(),
+            powerpoint_geometry.safe_fixes.len(),
+            powerpoint_geometry
+                .render_dir
+                .as_deref()
+                .unwrap_or("unknown")
+        ));
+            if !powerpoint_geometry.passed {
+                quality_check_passed = false;
+            }
+            if !powerpoint_geometry.passed && block_on_quality_failure {
+                for slide in &plan.slides {
+                    let issues = powerpoint_geometry.issues_for_page(slide.page);
+                    if issues.is_empty() {
+                        continue;
+                    }
+                    let rule = issues
+                        .first()
+                        .and_then(|issue| issue.get("rule"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("powerpoint_text_geometry_failed")
+                        .to_string();
+                    let summary = format!(
+                        "PowerPoint actual text bounds failed: {}",
+                        serde_json::Value::Array(issues)
+                    );
+                    set_native_page_state(
+                        &mut native_state,
+                        slide.page,
+                        "failed",
+                        Some(summary.clone()),
+                        Some(rule),
+                        Some(summary),
+                        false,
+                    );
+                }
+                native_state.current_stage = "validate_powerpoint_text_geometry".to_string();
+                native_state.set_status("failed");
+                native_state.artifacts.final_pptx_path = None;
+                invalidate_downstream(&project).map_err(AppError::Custom)?;
+                persist_native_state(&project, &native_state)?;
+                let failed_page = powerpoint_geometry.first_page();
+                let failed_file = failed_page
+                    .and_then(|page| plan.slides.iter().find(|slide| slide.page == page))
+                    .map(svg_filename_for_slide)
+                    .unwrap_or_else(|| "unknown.svg".to_string());
+                let quality_failure = NativeQualityFailure {
+                    page_number: failed_page,
+                    file_name: failed_file.clone(),
+                    violated_rule: powerpoint_geometry.first_rule(),
+                    checker_summary: powerpoint_geometry.summary(),
+                };
+                let result = native_failure_result(
+                    AppError::Custom(native_page_validation_error_message(
+                        &project,
+                        "validate_powerpoint_text_geometry",
+                        &quality_failure,
+                    )),
+                    "validate_powerpoint_text_geometry",
+                    started,
+                    powerpoint_geometry_started,
+                    &mut log_lines,
+                    Some(&project),
+                    Some(&slide_plan_path),
+                    Some(&design_spec_path),
+                    Some(false),
+                    &[export.stdout.clone()],
+                    &[export.stderr.clone()],
+                );
+                return Ok(with_native_quality_failure(
+                    result,
+                    "validate_powerpoint_text_geometry",
+                    &project,
+                    failed_page,
+                    &failed_file,
+                    &quality_failure.violated_rule,
+                    &quality_failure.checker_summary,
+                ));
+            }
+            if !powerpoint_geometry.passed {
+                log_lines.push(
+                "[Quality Check] stage=validate_powerpoint_text_geometry passed=false blockOnQualityFailure=false action=keep-exported-pptx fallback=false"
+                    .to_string(),
+            );
+            }
+        }
+        let powerpoint_render_dir = powerpoint_geometry
+            .as_ref()
+            .and_then(|report| report.render_dir.as_deref())
+            .unwrap_or("unknown");
+        native_stage_success(
+            &mut log_lines,
+            "validate_powerpoint_text_geometry",
+            powerpoint_geometry_started,
+            &format!(
+                "pptx={},renderDir={powerpoint_render_dir}",
+                pptx_path.display()
+            ),
+        );
+
+        let export_title = plan.title.clone();
+        let final_pptx_path = match input.output_dir.as_deref() {
+            Some(dir) => match copy_final_pptx(&pptx_path, dir, &export_title) {
+                Ok(path) => Some(path.to_string_lossy().to_string()),
+                Err(error) => {
+                    return Ok(native_failure_result(
+                        AppError::Custom(format!("PPTX 已生成，但复制到导出文件夹失败: {error}")),
+                        "export_pptx",
+                        started,
+                        export_started,
+                        &mut log_lines,
+                        Some(&project),
+                        Some(&slide_plan_path),
+                        Some(&design_spec_path),
+                        Some(true),
+                        &[
+                            quality.stdout.clone(),
+                            split.stdout.clone(),
+                            finalize.stdout.clone(),
+                            export.stdout.clone(),
+                        ],
+                        &[
+                            quality.stderr.clone(),
+                            split.stderr.clone(),
+                            finalize.stderr.clone(),
+                            export.stderr.clone(),
+                        ],
+                    ));
+                }
+            },
+            None => None,
+        };
+        native_stage_success(
+            &mut log_lines,
+            "export_pptx",
+            export_started,
+            &format!("pptx={}", pptx_path.display()),
+        );
+        native_state.current_stage = "completed".to_string();
+        native_state.artifacts.final_pptx_path = Some(pptx_path.to_string_lossy().to_string());
+        native_state.set_status("completed");
+        if let Err(error) = persist_native_state(&project, &native_state) {
+            return Ok(native_failure_result(
+                error,
+                "completed",
+                started,
+                export_started,
+                &mut log_lines,
+                Some(&project),
+                Some(&slide_plan_path),
+                Some(&design_spec_path),
+                Some(true),
+                &[
+                    quality.stdout.clone(),
+                    split.stdout.clone(),
+                    finalize.stdout.clone(),
+                ],
+                &[
+                    quality.stderr.clone(),
+                    split.stderr.clone(),
+                    finalize.stderr.clone(),
+                ],
+            ));
         }
 
-        if let Some(path) = export.output_path.as_deref() {
-            println!("[Done] pptx={}", path);
-            log_lines.push(format!("[Done] pptx={}", path));
-        }
-        let stdout = join_outputs(
-            &log_lines,
-            &[quality.stdout, split.stdout, finalize.stdout, export.stdout],
+        let completed_started = native_stage_start(
+            &mut log_lines,
+            "completed",
+            &format!("project={},pptx={}", project.display(), pptx_path.display()),
         );
-        let stderr = join_outputs(
-            &[],
-            &[quality.stderr, split.stderr, finalize.stderr, export.stderr],
+        native_stage_success(
+            &mut log_lines,
+            "completed",
+            completed_started,
+            &format!(
+                "strictNative=true,blockOnQualityFailure={},qualityCheckPassed={},fallbackUsed=false",
+                block_on_quality_failure, quality_check_passed
+            ),
         );
+        println!("[Done] pptx={}", pptx_path.display());
+
         Ok(PptMasterGenerateResult {
-            success,
+            success: true,
             project_path: Some(project.to_string_lossy().to_string()),
-            pptx_path: export.output_path,
+            pptx_path: Some(pptx_path.to_string_lossy().to_string()),
             final_pptx_path,
             slide_plan_path: Some(slide_plan_path.to_string_lossy().to_string()),
             design_spec_path: Some(design_spec_path.to_string_lossy().to_string()),
-            quality_check_passed: Some(quality_passed),
+            quality_check_passed: Some(quality_check_passed),
             generation_mode: "agent".to_string(),
             exit_code: export.exit_code,
-            stdout,
-            stderr,
-            duration_ms: export.duration_ms,
-            error,
+            stdout: join_outputs(
+                &log_lines,
+                &[quality.stdout, split.stdout, finalize.stdout, export.stdout],
+            ),
+            stderr: join_outputs(
+                &[],
+                &[quality.stderr, split.stderr, finalize.stderr, export.stderr],
+            ),
+            duration_ms: started.elapsed().as_millis(),
+            error: None,
             generation_engine: "ppt_master_native".to_string(),
+            failure_stage: None,
+            failure_type: None,
+            failed_page: None,
+            timed_out_after_seconds: None,
+            failed_svg_file: None,
+            stage: None,
+            page_number: None,
+            svg_path: None,
+            violated_rule: None,
+            checker_summary: None,
+            intermediate_artifact_paths: native_intermediate_artifact_paths(&project),
         })
     }
+}
+
+fn build_native_input_fingerprint(
+    db: &Database,
+    input: &PptMasterGenerateInput,
+    planning_context: &str,
+    title: &str,
+    slide_count: usize,
+    style_mapping: &PptMasterStyleMapping,
+    theme_spec: &NativeThemeSpec,
+) -> Result<(String, NativeStateModel), AppError> {
+    let model = match input.model_id {
+        Some(id) => db.get_ai_model(id)?,
+        None => db.get_default_ai_model()?,
+    };
+    let mut understanding =
+        format_understanding_draft(&effective_understanding_draft(input)).unwrap_or_default();
+    if let Some(PptUnderstandingInput::Legacy(value)) = input.ai_understanding_result.as_ref() {
+        understanding.push_str("\nlegacyUnderstanding:\n");
+        understanding.push_str(value);
+    }
+    if !input.material_sources.is_empty() {
+        understanding.push_str("\nmaterialSources:\n");
+        for source in &input.material_sources {
+            understanding.push_str(&format!(
+                "{}|{}|{}\n",
+                source.id, source.source_type, source.title
+            ));
+        }
+    }
+    let effective_max_output_tokens = model
+        .max_output_tokens
+        .filter(|value| *value > 0)
+        .map(|value| value.min(NATIVE_GENERATION_MAX_OUTPUT_TOKENS))
+        .unwrap_or(NATIVE_GENERATION_MAX_OUTPUT_TOKENS);
+    let fingerprint_input = NativeFingerprintInput {
+        topic: title.to_string(),
+        prompt: input.prompt.clone(),
+        planning_context: planning_context.to_string(),
+        raw_material: input.raw_material.clone().unwrap_or_default(),
+        understanding,
+        extra_requirements: input.extra_requirements.clone().unwrap_or_default(),
+        audience: input.audience.clone().unwrap_or_default(),
+        slide_count,
+        style: style_mapping.user_style.clone(),
+        custom_style: input.custom_style.clone().unwrap_or_default(),
+        visual_suggestions: theme_spec.source_visual_suggestions.clone(),
+        theme_spec: theme_spec.prompt_contract(),
+        mode: style_mapping.mode.clone(),
+        visual_style: style_mapping.visual_style.clone(),
+        layout_bias: style_mapping.layout_bias.clone(),
+        chart_bias: style_mapping.chart_bias.clone(),
+        model_database_id: model.id,
+        model_provider: model.provider.clone(),
+        model_id: model.model_id.clone(),
+        generation_mode: "agent".to_string(),
+        generation_engine: "ppt_master_native".to_string(),
+        generation_spec_version: NATIVE_GENERATION_SPEC_VERSION.to_string(),
+        canvas: NATIVE_CANVAS.to_string(),
+        max_output_tokens: effective_max_output_tokens,
+        timeout_seconds: NATIVE_AI_TIMEOUT_SECS,
+    };
+    let fingerprint = fingerprint_input.fingerprint().map_err(AppError::Custom)?;
+    Ok((
+        fingerprint,
+        NativeStateModel {
+            database_id: model.id,
+            provider: model.provider,
+            model_id: model.model_id,
+        },
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn runtime_path_without_windows_verbatim_prefix(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let value = path.to_string_lossy();
+        if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{unc}"));
+        }
+        if let Some(local) = value.strip_prefix(r"\\?\") {
+            return PathBuf::from(local);
+        }
+    }
+    path.to_path_buf()
+}
+
+fn select_native_project(
+    root: &Path,
+    python_path: &str,
+    title: &str,
+    slide_count: usize,
+    input_fingerprint: &str,
+    model: NativeStateModel,
+    forced_project: Option<PathBuf>,
+    log_lines: &mut Vec<String>,
+) -> Result<(PathBuf, NativeGenerationState, bool), AppError> {
+    if let Some(project) = forced_project {
+        let canonical_project = project.canonicalize().map_err(|error| {
+            AppError::Custom(format!(
+                "显式续跑项目不存在: {} ({error})",
+                project.display()
+            ))
+        })?;
+        let projects_root = root.join("projects").canonicalize().map_err(|error| {
+            AppError::Custom(format!(
+                "ppt-master projects 目录不可用: {} ({error})",
+                root.join("projects").display()
+            ))
+        })?;
+        if !canonical_project.starts_with(&projects_root) {
+            return Err(AppError::InvalidInput(format!(
+                "显式续跑项目不在 ppt-master/projects 内: {}",
+                canonical_project.display()
+            )));
+        }
+        let runtime_project = runtime_path_without_windows_verbatim_prefix(&canonical_project);
+        let mut state = if runtime_project.join(NATIVE_STATE_FILE).is_file() {
+            let state = read_state(&runtime_project).map_err(AppError::Custom)?;
+            if state.input_fingerprint != input_fingerprint {
+                return Err(AppError::InvalidInput(format!(
+                    "原生断点输入指纹不一致，禁止混用旧页面: project={}, cached={}, current={}",
+                    runtime_project.display(),
+                    state.input_fingerprint,
+                    input_fingerprint
+                )));
+            }
+            state
+        } else {
+            log_lines.push(format!(
+                "[Native Resume] bootstrapState=true project={} reason=pre-state-project",
+                runtime_project.display()
+            ));
+            NativeGenerationState::new(
+                input_fingerprint.to_string(),
+                title.to_string(),
+                slide_count,
+                model,
+                &runtime_project,
+            )
+        };
+        state.set_stage("resume_validate");
+        persist_native_state(&runtime_project, &state)?;
+        return Ok((runtime_project, state, true));
+    }
+
+    let force_new_debug_project = cfg!(debug_assertions)
+        && std::env::var("POME_NATIVE_DEBUG_FORCE_NEW_PROJECT").as_deref() == Ok("1");
+    if force_new_debug_project {
+        log_lines.push(
+            "[Native Debug] forceNewProject=true resumeScanSkipped=true fallback=false".to_string(),
+        );
+        let project = init_project_with_project_manager(root, python_path, title, log_lines)?;
+        let state = NativeGenerationState::new(
+            input_fingerprint.to_string(),
+            title.to_string(),
+            slide_count,
+            model,
+            &project,
+        );
+        persist_native_state(&project, &state)?;
+        log_lines.push(format!(
+            "[Native Resume] matched=false fingerprint={} action=create-new-debug-project",
+            input_fingerprint
+        ));
+        return Ok((project, state, false));
+    }
+
+    let (matching, warnings) =
+        find_matching_resume_project(root, input_fingerprint).map_err(AppError::Custom)?;
+    log_lines.extend(warnings);
+    if let Some((project, mut state)) = matching {
+        if state.slide_count != slide_count || state.model != model {
+            return Err(AppError::InvalidInput(format!(
+                "原生断点元数据与当前输入不一致，禁止复用: {}",
+                project.display()
+            )));
+        }
+        if native_planning_artifacts_present(&project)
+            || native_planning_checkpoint_present(&project)
+        {
+            state.set_stage("resume_validate");
+            persist_native_state(&project, &state)?;
+            log_lines.push(format!(
+                "[Native Resume] matched=true fingerprint={} project={}",
+                input_fingerprint,
+                project.display()
+            ));
+            return Ok((project, state, true));
+        }
+        state.set_status("failed");
+        let _ = persist_native_state(&project, &state);
+        log_lines.push(format!(
+            "[Native Resume] matched=true reusable=false reason=incomplete-planning-artifacts project={} action=create-new-project",
+            project.display()
+        ));
+    }
+
+    let project = init_project_with_project_manager(root, python_path, title, log_lines)?;
+    let state = NativeGenerationState::new(
+        input_fingerprint.to_string(),
+        title.to_string(),
+        slide_count,
+        model,
+        &project,
+    );
+    persist_native_state(&project, &state)?;
+    log_lines.push(format!(
+        "[Native Resume] matched=false fingerprint={} action=create-new-project",
+        input_fingerprint
+    ));
+    Ok((project, state, false))
+}
+
+fn native_planning_artifacts_present(project: &Path) -> bool {
+    ["design_spec.md", "spec_lock.md", "slide_plan.json"]
+        .into_iter()
+        .map(|name| project.join(name))
+        .all(|path| path.is_file() && fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0))
+}
+
+fn native_planning_checkpoint_present(project: &Path) -> bool {
+    let path = project.join(NATIVE_PLANNING_CHECKPOINT_FILE);
+    path.is_file() && fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0)
+}
+
+fn persist_native_state(project: &Path, state: &NativeGenerationState) -> Result<(), AppError> {
+    write_state_atomic(project, state)
+        .map(|_| ())
+        .map_err(AppError::Custom)
+}
+
+fn load_native_planning_artifacts(
+    project: &Path,
+    expected_slide_count: usize,
+) -> Result<(SlidePlan, String, PathBuf, PathBuf, PathBuf), AppError> {
+    let design_spec_path = project.join("design_spec.md");
+    let spec_lock_path = project.join("spec_lock.md");
+    let slide_plan_path = project.join("slide_plan.json");
+    for (label, path) in [
+        ("design_spec.md", &design_spec_path),
+        ("spec_lock.md", &spec_lock_path),
+        ("slide_plan.json", &slide_plan_path),
+    ] {
+        if !path.is_file() {
+            return Err(AppError::NotFound(format!(
+                "原生断点缺少可复用规划产物 {label}: {}",
+                path.display()
+            )));
+        }
+        if fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+            == 0
+        {
+            return Err(AppError::Custom(format!(
+                "原生断点规划产物为空 {label}: {}",
+                path.display()
+            )));
+        }
+    }
+    let plan_raw = fs::read_to_string(&slide_plan_path).map_err(|error| {
+        AppError::Custom(format!(
+            "读取原生断点 slide_plan.json 失败: {} ({error})",
+            slide_plan_path.display()
+        ))
+    })?;
+    let plan: SlidePlan = serde_json::from_str(&plan_raw).map_err(|error| {
+        AppError::Custom(format!(
+            "解析原生断点 slide_plan.json 失败: {} ({error})",
+            slide_plan_path.display()
+        ))
+    })?;
+    if plan.slides.len() != expected_slide_count {
+        return Err(AppError::InvalidInput(format!(
+            "原生断点页数与当前输入不一致: expected={}, actual={}, path={}",
+            expected_slide_count,
+            plan.slides.len(),
+            slide_plan_path.display()
+        )));
+    }
+    for (index, slide) in plan.slides.iter().enumerate() {
+        if slide.page != index + 1 {
+            return Err(AppError::InvalidInput(format!(
+                "原生断点 slide_plan 页码不连续: index={}, page={}, path={}",
+                index + 1,
+                slide.page,
+                slide_plan_path.display()
+            )));
+        }
+    }
+    let design_spec = fs::read_to_string(&design_spec_path).map_err(|error| {
+        AppError::Custom(format!(
+            "读取原生断点 design_spec.md 失败: {} ({error})",
+            design_spec_path.display()
+        ))
+    })?;
+    Ok((
+        plan,
+        design_spec,
+        design_spec_path,
+        spec_lock_path,
+        slide_plan_path,
+    ))
+}
+
+fn update_native_state_plan_paths(
+    state: &mut NativeGenerationState,
+    project: &Path,
+    plan: &SlidePlan,
+) {
+    state.artifacts.design_spec_path = project.join("design_spec.md").to_string_lossy().to_string();
+    state.artifacts.spec_lock_path = project.join("spec_lock.md").to_string_lossy().to_string();
+    state.artifacts.slide_plan_path = project
+        .join("slide_plan.json")
+        .to_string_lossy()
+        .to_string();
+    for slide in &plan.slides {
+        let page_state = state.page_mut(slide.page);
+        page_state.svg_path = project
+            .join("svg_output")
+            .join(svg_filename_for_slide(slide))
+            .to_string_lossy()
+            .to_string();
+        page_state.updated_at = native_state_now();
+    }
+}
+
+#[derive(Debug, Default)]
+struct NativeReusePreparation {
+    reusable_pages: HashSet<usize>,
+    upstream_changed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct NativePageValidationFailure {
+    stage: String,
+    violated_rule: String,
+    checker_summary: String,
+    text_geometry: Option<NativeTextGeometryState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeTextGeometryReport {
+    schema_version: u32,
+    #[serde(default)]
+    svg_path: Option<String>,
+    passed: bool,
+    #[serde(default)]
+    hard_errors: Vec<serde_json::Value>,
+    #[serde(default)]
+    warnings: Vec<serde_json::Value>,
+    #[serde(default)]
+    checker_error: Option<String>,
+    #[serde(default)]
+    auto_fix_applied: Vec<serde_json::Value>,
+    #[serde(default)]
+    text_blocks: Vec<serde_json::Value>,
+    #[serde(default)]
+    failure_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativePowerPointGeometryReport {
+    schema_version: u32,
+    passed: bool,
+    #[serde(default)]
+    pptx_path: Option<String>,
+    #[serde(default)]
+    render_dir: Option<String>,
+    #[serde(default)]
+    hard_errors: Vec<serde_json::Value>,
+    #[serde(default)]
+    warnings: Vec<serde_json::Value>,
+    #[serde(default)]
+    safe_fixes: Vec<serde_json::Value>,
+    #[serde(default)]
+    pages: Vec<serde_json::Value>,
+    #[serde(default)]
+    checker_error: Option<String>,
+}
+
+impl NativePowerPointGeometryReport {
+    fn first_page(&self) -> Option<usize> {
+        self.hard_errors
+            .first()
+            .and_then(|issue| issue.get("pageNumber"))
+            .and_then(serde_json::Value::as_u64)
+            .map(|value| value as usize)
+    }
+
+    fn first_rule(&self) -> String {
+        self.hard_errors
+            .first()
+            .and_then(|issue| issue.get("rule"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("powerpoint_text_geometry_checker_failed")
+            .to_string()
+    }
+
+    fn summary(&self) -> String {
+        if let Some(error) = self.checker_error.as_deref() {
+            return format!("PowerPoint geometry checker error: {error}");
+        }
+        format!(
+            "hardErrors={},warnings={},renderDir={},firstIssue={}",
+            self.hard_errors.len(),
+            self.warnings.len(),
+            self.render_dir.as_deref().unwrap_or("unknown"),
+            self.hard_errors
+                .first()
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        )
+    }
+
+    fn issues_for_page(&self, page: usize) -> Vec<serde_json::Value> {
+        self.hard_errors
+            .iter()
+            .filter(|issue| {
+                issue.get("pageNumber").and_then(serde_json::Value::as_u64) == Some(page as u64)
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+impl NativeTextGeometryReport {
+    fn state(&self) -> NativeTextGeometryState {
+        NativeTextGeometryState {
+            passed: self.passed,
+            hard_errors: self.hard_errors.clone(),
+            warnings: self.warnings.clone(),
+            checked_at: native_state_now(),
+        }
+    }
+
+    fn violated_rule(&self) -> String {
+        const RULE_PRIORITY: [&str; 5] = [
+            "text_outside_canvas",
+            "text_text_overlap",
+            "text_obstacle_overlap",
+            "text_exceeds_max_lines",
+            "text_outside_declared_region",
+        ];
+        RULE_PRIORITY
+            .iter()
+            .find_map(|preferred| {
+                self.hard_errors.iter().find(|issue| {
+                    issue.get("rule").and_then(serde_json::Value::as_str) == Some(*preferred)
+                })
+            })
+            .or_else(|| self.hard_errors.first())
+            .and_then(|issue| issue.get("rule"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("text_geometry_checker_failed")
+            .to_string()
+    }
+
+    fn actionable_issues(&self) -> serde_json::Value {
+        const MAX_TARGETS: usize = 24;
+        let mut target_indexes = HashMap::<String, usize>::new();
+        let mut omitted_targets = HashSet::<String>::new();
+        let mut targets = Vec::<serde_json::Value>::new();
+
+        for issue in &self.hard_errors {
+            let key = issue
+                .get("domIndex")
+                .map(|value| format!("dom:{value}"))
+                .or_else(|| {
+                    issue
+                        .get("regionId")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|value| format!("region:{value}"))
+                })
+                .unwrap_or_else(|| format!("issue:{}", targets.len()));
+            let rule = issue
+                .get("rule")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("text_geometry_checker_failed");
+            if let Some(index) = target_indexes.get(&key).copied() {
+                if let Some(rules) = targets[index]
+                    .get_mut("rules")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    let rule_value = serde_json::Value::String(rule.to_string());
+                    if !rules.contains(&rule_value) {
+                        rules.push(rule_value);
+                    }
+                }
+                continue;
+            }
+            if targets.len() >= MAX_TARGETS {
+                omitted_targets.insert(key);
+                continue;
+            }
+
+            let mut target = serde_json::Map::new();
+            target.insert(
+                "rules".to_string(),
+                serde_json::Value::Array(vec![serde_json::Value::String(rule.to_string())]),
+            );
+            for field in [
+                "domIndex",
+                "regionId",
+                "role",
+                "text",
+                "actualBounds",
+                "allowedBounds",
+                "overflow",
+                "collision",
+            ] {
+                if let Some(value) = issue.get(field) {
+                    target.insert(field.to_string(), value.clone());
+                }
+            }
+            target_indexes.insert(key, targets.len());
+            targets.push(serde_json::Value::Object(target));
+        }
+
+        serde_json::json!({
+            "targets": targets,
+            "omittedTargets": omitted_targets.len(),
+        })
+    }
+
+    fn visible_texts(&self) -> Vec<String> {
+        self.text_blocks
+            .iter()
+            .filter_map(|block| block.get("text").and_then(serde_json::Value::as_str))
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn repair_context(&self) -> serde_json::Value {
+        let regions = self
+            .text_blocks
+            .iter()
+            .filter_map(|block| {
+                let region_id = block.get("regionId")?.clone();
+                let region = block.get("region")?.clone();
+                Some(serde_json::json!({
+                    "regionId": region_id,
+                    "role": block.get("role").cloned().unwrap_or(serde_json::Value::Null),
+                    "text": block.get("text").cloned().unwrap_or(serde_json::Value::Null),
+                    "region": region,
+                    "textAnchor": block.get("textAnchor").cloned().unwrap_or(serde_json::Value::Null),
+                    "minFontSize": block.get("minFontSize").cloned().unwrap_or(serde_json::Value::Null),
+                    "maxLines": block.get("maxLines").cloned().unwrap_or(serde_json::Value::Null),
+                    "wrap": block.get("wrap").cloned().unwrap_or(serde_json::Value::Null),
+                }))
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "failureKind": self.failure_kind.clone(),
+            "mustKeepVisibleText": self.visible_texts(),
+            "issues": self.actionable_issues(),
+            "allowedRegions": regions,
+        })
+    }
+
+    fn summary(&self) -> String {
+        if let Some(error) = self.checker_error.as_deref() {
+            return format!("text geometry checker error: {error}");
+        }
+        format!(
+            "hardErrors={},warnings={},actionableIssues={}",
+            self.hard_errors.len(),
+            self.warnings.len(),
+            self.actionable_issues()
+        )
+    }
+}
+
+fn materialize_native_text_geometry_checker() -> Result<PathBuf, AppError> {
+    let directory = std::env::temp_dir().join("pomegranate-native-tools");
+    fs::create_dir_all(&directory).map_err(|error| {
+        AppError::Custom(format!(
+            "创建原生文本几何检查器目录失败: {} ({error})",
+            directory.display()
+        ))
+    })?;
+    let path = directory.join(NATIVE_TEXT_GEOMETRY_CHECKER_FILE);
+    let needs_write = fs::read_to_string(&path)
+        .map(|current| current != NATIVE_TEXT_GEOMETRY_CHECKER_SOURCE)
+        .unwrap_or(true);
+    if needs_write {
+        fs::write(&path, NATIVE_TEXT_GEOMETRY_CHECKER_SOURCE).map_err(|error| {
+            AppError::Custom(format!(
+                "写入原生文本几何检查器失败: {} ({error})",
+                path.display()
+            ))
+        })?;
+    }
+    Ok(path)
+}
+
+fn materialize_native_powerpoint_geometry_checker() -> Result<PathBuf, AppError> {
+    let directory = std::env::temp_dir().join("pomegranate-native-tools");
+    fs::create_dir_all(&directory).map_err(|error| {
+        AppError::Custom(format!(
+            "创建 PowerPoint 文本几何检查器目录失败: {} ({error})",
+            directory.display()
+        ))
+    })?;
+    let path = directory.join(NATIVE_POWERPOINT_GEOMETRY_CHECKER_FILE);
+    let needs_write = fs::read_to_string(&path)
+        .map(|current| current != NATIVE_POWERPOINT_GEOMETRY_CHECKER_SOURCE)
+        .unwrap_or(true);
+    if needs_write {
+        fs::write(&path, NATIVE_POWERPOINT_GEOMETRY_CHECKER_SOURCE).map_err(|error| {
+            AppError::Custom(format!(
+                "写入 PowerPoint 文本几何检查器失败: {} ({error})",
+                path.display()
+            ))
+        })?;
+    }
+    Ok(path)
+}
+
+fn run_native_text_geometry_check(
+    python_path: &str,
+    svg_path: &Path,
+) -> Result<NativeTextGeometryReport, AppError> {
+    let checker = materialize_native_text_geometry_checker()?;
+    let mut command = Command::new(python_path);
+    command
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .arg(&checker)
+        .arg("--svg")
+        .arg(svg_path)
+        .arg("--auto-fix");
+    add_no_window(&mut command);
+    let output = command.output().map_err(|error| {
+        AppError::Custom(format!(
+            "启动原生文本几何检查器失败: python={}, checker={}, svg={} ({error})",
+            python_path,
+            checker.display(),
+            svg_path.display()
+        ))
+    })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let report: NativeTextGeometryReport = serde_json::from_str(&stdout).map_err(|error| {
+        AppError::Custom(format!(
+            "解析原生文本几何检查结果失败: svg={}, exitCode={:?}, stdout={}, stderr={} ({error})",
+            svg_path.display(),
+            output.status.code(),
+            single_line_log_value(&stdout),
+            single_line_log_value(&stderr)
+        ))
+    })?;
+    if let Some(checker_error) = report.checker_error.as_deref() {
+        return Err(AppError::Custom(format!(
+            "原生文本几何检查器执行失败: svg={}, error={}, stderr={}",
+            svg_path.display(),
+            checker_error,
+            single_line_log_value(&stderr)
+        )));
+    }
+    if !matches!(output.status.code(), Some(0 | 2)) {
+        return Err(AppError::Custom(format!(
+            "原生文本几何检查器异常退出: svg={}, exitCode={:?}, stderr={}",
+            svg_path.display(),
+            output.status.code(),
+            single_line_log_value(&stderr)
+        )));
+    }
+    Ok(report)
+}
+
+fn run_native_powerpoint_geometry_check(
+    project: &Path,
+    pptx_path: &Path,
+) -> Result<NativePowerPointGeometryReport, AppError> {
+    let checker = materialize_native_powerpoint_geometry_checker()?;
+    let render_dir = project
+        .join("analysis")
+        .join("powerpoint_text_geometry_render");
+    fs::create_dir_all(&render_dir).map_err(|error| {
+        AppError::Custom(format!(
+            "创建 PowerPoint 文本几何预览目录失败: {} ({error})",
+            render_dir.display()
+        ))
+    })?;
+    let mut command = Command::new("powershell");
+    command
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(&checker)
+        .arg("-PptxPath")
+        .arg(pptx_path)
+        .arg("-SvgDir")
+        .arg(project.join("svg_output"))
+        .arg("-RenderDir")
+        .arg(&render_dir)
+        .arg("-ApplySafeRegionFixes");
+    add_no_window(&mut command);
+    let output = command.output().map_err(|error| {
+        AppError::Custom(format!(
+            "启动 PowerPoint 文本几何检查器失败: checker={}, pptx={} ({error})",
+            checker.display(),
+            pptx_path.display()
+        ))
+    })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let report: NativePowerPointGeometryReport =
+        serde_json::from_str(&stdout).map_err(|error| {
+            AppError::Custom(format!(
+                "解析 PowerPoint 文本几何检查结果失败: exitCode={:?}, stdout={}, stderr={} ({error})",
+                output.status.code(),
+                single_line_log_value(&stdout),
+                single_line_log_value(&stderr)
+            ))
+        })?;
+    if let Some(checker_error) = report.checker_error.as_deref() {
+        return Err(AppError::Custom(format!(
+            "PowerPoint 文本几何检查器执行失败: {checker_error}"
+        )));
+    }
+    if !matches!(output.status.code(), Some(0 | 2)) {
+        return Err(AppError::Custom(format!(
+            "PowerPoint 文本几何检查器异常退出: exitCode={:?}, stderr={}",
+            output.status.code(),
+            single_line_log_value(&stderr)
+        )));
+    }
+    Ok(report)
+}
+
+fn native_pages_requiring_generation(
+    plan: &SlidePlan,
+    reusable_pages: &HashSet<usize>,
+) -> Vec<usize> {
+    plan.slides
+        .iter()
+        .filter(|slide| !reusable_pages.contains(&slide.page))
+        .map(|slide| slide.page)
+        .collect()
+}
+
+fn sorted_page_list(pages: &HashSet<usize>) -> String {
+    let mut pages = pages.iter().copied().collect::<Vec<_>>();
+    pages.sort_unstable();
+    pages
+        .into_iter()
+        .map(|page| format!("P{page:02}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn set_native_page_state(
+    state: &mut NativeGenerationState,
+    page: usize,
+    status: &str,
+    last_error: Option<String>,
+    violated_rule: Option<String>,
+    checker_summary: Option<String>,
+    reused: bool,
+) {
+    let page_state = state.page_mut(page);
+    page_state.status = status.to_string();
+    page_state.last_error = last_error;
+    page_state.violated_rule = violated_rule;
+    page_state.checker_summary = checker_summary;
+    page_state.reused = reused;
+    page_state.updated_at = native_state_now();
+}
+
+fn set_native_text_geometry_state(
+    state: &mut NativeGenerationState,
+    page: usize,
+    geometry: NativeTextGeometryState,
+) {
+    let page_state = state.page_mut(page);
+    page_state.text_geometry = Some(geometry);
+    page_state.updated_at = native_state_now();
+}
+
+fn record_native_pipeline_failure(project: &Path, state: &mut NativeGenerationState, stage: &str) {
+    state.current_stage = stage.to_string();
+    state.set_status("failed");
+    let _ = persist_native_state(project, state);
+}
+
+fn consume_native_powerpoint_repair_marker(svg: &str) -> Option<String> {
+    const MARKERS: [&str; 2] = [
+        " data-pome-powerpoint-repair-ready=\"true\"",
+        " data-pome-powerpoint-repair-ready='true'",
+    ];
+    MARKERS
+        .iter()
+        .find(|marker| svg.contains(**marker))
+        .map(|marker| svg.replacen(marker, "", 1))
+}
+
+fn stored_powerpoint_region_drift_is_safely_recheckable(summary: Option<&str>) -> bool {
+    const PREFIX: &str = "PowerPoint actual text bounds failed: ";
+    let Some(raw) = summary.and_then(|value| value.strip_prefix(PREFIX)) else {
+        return false;
+    };
+    let Ok(issues) = serde_json::from_str::<Vec<serde_json::Value>>(raw) else {
+        return false;
+    };
+    if issues.is_empty() {
+        return false;
+    }
+    issues.iter().all(|issue| {
+        if issue.get("rule").and_then(serde_json::Value::as_str)
+            != Some("powerpoint_text_outside_declared_region")
+        {
+            return false;
+        }
+        let Some(allowed) = issue.get("allowedBounds") else {
+            return false;
+        };
+        let Some(width) = allowed.get("width").and_then(serde_json::Value::as_f64) else {
+            return false;
+        };
+        let Some(height) = allowed.get("height").and_then(serde_json::Value::as_f64) else {
+            return false;
+        };
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+            return false;
+        }
+        let Some(overflow) = issue.get("overflow") else {
+            return false;
+        };
+        let amounts = ["left", "top", "right", "bottom"]
+            .into_iter()
+            .map(|key| overflow.get(key).and_then(serde_json::Value::as_f64))
+            .collect::<Option<Vec<_>>>();
+        let Some(amounts) = amounts else {
+            return false;
+        };
+        if amounts
+            .iter()
+            .any(|amount| !amount.is_finite() || *amount < 0.0)
+        {
+            return false;
+        }
+        let max_overflow = amounts.into_iter().fold(0.0_f64, f64::max);
+        let safe_limit = (width.max(height) * 0.2).clamp(3.0, 12.0);
+        max_overflow > 0.0 && max_overflow <= safe_limit
+    })
+}
+
+fn prepare_existing_native_pages(
+    root: &Path,
+    python_path: &str,
+    project: &Path,
+    plan: &SlidePlan,
+    theme_spec: &NativeThemeSpec,
+    state: &mut NativeGenerationState,
+    log_lines: &mut Vec<String>,
+    started: Instant,
+) -> Result<NativeReusePreparation, AppError> {
+    let svg_output = project.join("svg_output");
+    let mut preparation = NativeReusePreparation::default();
+    let mut structurally_valid = HashSet::new();
+    let mut powerpoint_repair_ready_pages = HashSet::new();
+    for slide in &plan.slides {
+        let file_name = svg_filename_for_slide(slide);
+        let path = svg_output.join(&file_name);
+        state.page_mut(slide.page).svg_path = path.to_string_lossy().to_string();
+        if !path.is_file() {
+            set_native_page_state(
+                state,
+                slide.page,
+                "pending",
+                Some(format!("缺少原生 SVG: {}", path.display())),
+                None,
+                None,
+                false,
+            );
+            persist_native_state(project, state)?;
+            continue;
+        }
+        let mut original = fs::read_to_string(&path).map_err(|error| {
+            AppError::Custom(format!(
+                "读取原生断点 SVG 失败: {} ({error})",
+                path.display()
+            ))
+        })?;
+        if let Some(cleaned) = consume_native_powerpoint_repair_marker(&original) {
+            write_file(&path, &cleaned)?;
+            original = cleaned;
+            powerpoint_repair_ready_pages.insert(slide.page);
+            preparation.upstream_changed = true;
+            log_lines.push(format!(
+                "[Native Resume] page=P{:02} action=consume-powerpoint-repair-marker repairReady=true fallback=false file={}",
+                slide.page, file_name
+            ));
+        }
+        let (normalized, report) = normalize_native_svg_compatibility(&original);
+        if normalized != original {
+            write_file(&path, &normalized)?;
+            preparation.upstream_changed = true;
+            log_lines.push(format!(
+                "[Native Resume] page=P{:02} action=mechanical-repair file={} rgbaColorsNormalized={} groupOpacityNormalized={} filtersRemoved={} malformedClosingTagsRepaired={} duplicateLineCoordinatesRepaired={} fallback=false",
+                slide.page,
+                file_name,
+                report.rgba_colors_normalized,
+                report.group_opacity_normalized,
+                report.filters_removed,
+                report.malformed_closing_tags_repaired,
+                report.duplicate_line_coordinates_repaired
+            ));
+        }
+        match validate_native_svg_text(&file_name, &normalized).and_then(|_| {
+            validate_visible_text_integrity(&normalized).map_err(|error| {
+                AppError::Custom(format!(
+                    "原生 SVG 可见文字完整性检查失败: {file_name} ({error})"
+                ))
+            })
+        }) {
+            Ok(()) => {
+                let theme_validation = validate_svg_theme(&normalized, theme_spec);
+                log_lines.push(format!(
+                    "[Native Theme Check] page=P{:02} passed={} {}",
+                    slide.page, theme_validation.passed, theme_validation.summary
+                ));
+                if theme_validation.passed {
+                    structurally_valid.insert(file_name);
+                } else {
+                    set_native_page_state(
+                        state,
+                        slide.page,
+                        "failed",
+                        Some(theme_validation.summary.clone()),
+                        Some("native_theme_consistency".to_string()),
+                        Some(theme_validation.summary),
+                        false,
+                    );
+                    persist_native_state(project, state)?;
+                }
+            }
+            Err(error) => {
+                set_native_page_state(
+                    state,
+                    slide.page,
+                    "failed",
+                    Some(error.to_string()),
+                    Some("native SVG completeness/canvas".to_string()),
+                    None,
+                    false,
+                );
+                persist_native_state(project, state)?;
+            }
+        }
+    }
+
+    let quality = if structurally_valid.is_empty() {
+        None
+    } else {
+        Some(run_quality_check(root, python_path, project, started)?)
+    };
+    let quality_failures = quality
+        .as_ref()
+        .map(|result| parse_native_quality_failures(&result.stdout, &result.stderr))
+        .unwrap_or_default();
+    let native_issues = scan_native_incompatible_svgs(&svg_output)?;
+    let text_issues = scan_final_text_leaks(&svg_output)?;
+
+    for slide in &plan.slides {
+        let file_name = svg_filename_for_slide(slide);
+        let geometry_path = svg_output.join(&file_name);
+        let prior_powerpoint_failure =
+            state
+                .pages
+                .get(&slide.page.to_string())
+                .is_some_and(|page| {
+                    page.status == "failed"
+                        && page
+                            .violated_rule
+                            .as_deref()
+                            .is_some_and(|rule| rule.starts_with("powerpoint_"))
+                });
+        let repaired_source_ready =
+            prior_powerpoint_failure && powerpoint_repair_ready_pages.contains(&slide.page);
+        let stored_region_drift_recheckable = prior_powerpoint_failure
+            && state
+                .pages
+                .get(&slide.page.to_string())
+                .is_some_and(|page| {
+                    stored_powerpoint_region_drift_is_safely_recheckable(
+                        page.last_error
+                            .as_deref()
+                            .or(page.checker_summary.as_deref()),
+                    )
+                });
+        let powerpoint_retry_without_ai_ready =
+            repaired_source_ready || stored_region_drift_recheckable;
+        if prior_powerpoint_failure
+            && !powerpoint_retry_without_ai_ready
+            && state
+                .pages
+                .get(&slide.page.to_string())
+                .is_some_and(|page| {
+                    page.attempts >= NATIVE_POWERPOINT_GEOMETRY_MAX_AI_ATTEMPTS_PER_PAGE
+                })
+        {
+            return Err(AppError::Custom(format!(
+                "P{:02} PowerPoint 文本几何页内重试已达到上限 {}；保留失败页和中间产物，不调用 fallback",
+                slide.page, NATIVE_POWERPOINT_GEOMETRY_MAX_AI_ATTEMPTS_PER_PAGE
+            )));
+        }
+        if !structurally_valid.contains(&file_name) {
+            continue;
+        }
+        if let Some(failure) = quality_failures
+            .iter()
+            .find(|failure| failure.file_name == file_name)
+        {
+            set_native_page_state(
+                state,
+                slide.page,
+                "failed",
+                Some(failure.checker_summary.clone()),
+                Some(failure.violated_rule.clone()),
+                Some(failure.checker_summary.clone()),
+                false,
+            );
+            log_lines.push(format!(
+                "[Native Resume] page=P{:02} reusable=false violatedRule={} file={}",
+                slide.page, failure.violated_rule, file_name
+            ));
+            persist_native_state(project, state)?;
+            continue;
+        }
+        if quality.as_ref().is_some_and(|result| !result.success) && quality_failures.is_empty() {
+            let summary = quality
+                .as_ref()
+                .map(|result| single_line_log_value(&result.stdout))
+                .unwrap_or_else(|| "SVG Quality Checker failed".to_string());
+            set_native_page_state(
+                state,
+                slide.page,
+                "failed",
+                Some(summary.clone()),
+                Some("SVG Quality Checker hard error".to_string()),
+                Some(summary),
+                false,
+            );
+            persist_native_state(project, state)?;
+            continue;
+        }
+        if let Some(issue) = native_issues
+            .iter()
+            .find(|issue| issue.file_name == file_name)
+        {
+            let detail = summarize_native_issues(std::slice::from_ref(issue));
+            set_native_page_state(
+                state,
+                slide.page,
+                "failed",
+                Some(detail.clone()),
+                Some("DrawingML unsupported SVG element".to_string()),
+                Some(detail),
+                false,
+            );
+            persist_native_state(project, state)?;
+            continue;
+        }
+        if let Some(issue) = text_issues
+            .iter()
+            .find(|issue| issue.file_name == file_name)
+        {
+            let detail = summarize_final_text_issues(std::slice::from_ref(issue));
+            set_native_page_state(
+                state,
+                slide.page,
+                "failed",
+                Some(detail.clone()),
+                Some("visible internal/template text leakage".to_string()),
+                Some(detail),
+                false,
+            );
+            persist_native_state(project, state)?;
+            continue;
+        }
+        let before_geometry = fs::read_to_string(&geometry_path).map_err(|error| {
+            AppError::Custom(format!(
+                "读取文本几何检查前 SVG 失败: {} ({error})",
+                geometry_path.display()
+            ))
+        })?;
+        let geometry = run_native_text_geometry_check(python_path, &geometry_path)?;
+        let geometry_changed = fs::read_to_string(&geometry_path)
+            .map(|current| current != before_geometry)
+            .unwrap_or(false);
+        if geometry_changed {
+            preparation.upstream_changed = true;
+        }
+        set_native_text_geometry_state(state, slide.page, geometry.state());
+        log_lines.push(format!(
+            "[Native Resume] page=P{:02} textGeometryPassed={} hardErrors={} warnings={} autoFixedBlocks={} file={}",
+            slide.page,
+            geometry.passed,
+            geometry.hard_errors.len(),
+            geometry.warnings.len(),
+            geometry.auto_fix_applied.len(),
+            file_name
+        ));
+        if !geometry.passed {
+            let summary = geometry.summary();
+            set_native_page_state(
+                state,
+                slide.page,
+                "failed",
+                Some(summary.clone()),
+                Some(geometry.violated_rule()),
+                Some(summary),
+                false,
+            );
+            state.current_stage = "validate_text_geometry".to_string();
+            persist_native_state(project, state)?;
+            continue;
+        }
+        let density_contract = NativePageDensityContract::for_slide(slide);
+        let density_report_path = project
+            .join("analysis")
+            .join("native_space_utilization")
+            .join(format!("P{:02}.json", slide.page));
+        let density = run_space_utilization_check(
+            python_path,
+            &geometry_path,
+            &density_contract,
+            &density_report_path,
+        )?;
+        log_lines.push(format!(
+            "[Native Resume] page=P{:02} spaceUtilizationPassed={} rhythm={} informationOccupancy={:.4} combinedOccupancy={:.4} occupiedZones={} file={}",
+            slide.page,
+            density.passed,
+            density.page_rhythm,
+            density.information_occupancy_ratio,
+            density.combined_occupancy_ratio,
+            density.occupied_zone_count,
+            file_name
+        ));
+        if !density.passed {
+            let summary = density.summary();
+            set_native_page_state(
+                state,
+                slide.page,
+                "failed",
+                Some(summary.clone()),
+                Some(density.violated_rule()),
+                Some(summary),
+                false,
+            );
+            state.current_stage = "validate_space_utilization".to_string();
+            persist_native_state(project, state)?;
+            continue;
+        }
+        if prior_powerpoint_failure && !powerpoint_retry_without_ai_ready {
+            log_lines.push(format!(
+                "[Native Resume] page=P{:02} reusable=false reason=previous-powerpoint-text-geometry-failure action=regenerate-page-only fallback=false file={}",
+                slide.page, file_name
+            ));
+            persist_native_state(project, state)?;
+            continue;
+        }
+        if repaired_source_ready {
+            log_lines.push(format!(
+                "[Native Resume] page=P{:02} action=verify-repaired-source previousFailure=powerpoint-text-geometry oneTimeRepairMarker=true fallback=false file={}",
+                slide.page, file_name
+            ));
+        }
+        if stored_region_drift_recheckable {
+            log_lines.push(format!(
+                "[Native Resume] page=P{:02} action=reuse-for-powerpoint-region-recheck previousFailure=bounded-font-engine-drift aiCalled=false fallback=false file={}",
+                slide.page, file_name
+            ));
+        }
+        preparation.reusable_pages.insert(slide.page);
+        set_native_page_state(state, slide.page, "validated", None, None, None, true);
+        log_lines.push(format!(
+            "[Native Resume] page=P{:02} action=reuse status=validated aiCalled=false file={}",
+            slide.page, file_name
+        ));
+        persist_native_state(project, state)?;
+    }
+
+    if preparation.upstream_changed {
+        invalidate_downstream(project).map_err(AppError::Custom)?;
+        state.artifacts.final_pptx_path = None;
+        persist_native_state(project, state)?;
+    }
+    Ok(preparation)
+}
+
+fn validate_generated_native_page(
+    root: &Path,
+    python_path: &str,
+    project: &Path,
+    file_name: &str,
+    page_number: usize,
+    theme_spec: &NativeThemeSpec,
+    density_contract: &NativePageDensityContract,
+    log_lines: &mut Vec<String>,
+    started: Instant,
+) -> Result<
+    (
+        Option<NativePageValidationFailure>,
+        PptMasterExportResult,
+        Option<NativeTextGeometryReport>,
+    ),
+    AppError,
+> {
+    let quality = run_quality_check(root, python_path, project, started)?;
+    if let Some(failure) =
+        native_page_quality_failure(file_name, quality.success, &quality.stdout, &quality.stderr)
+    {
+        return Ok((Some(failure), quality, None));
+    }
+    let svg_output = project.join("svg_output");
+    if let Some(issue) = scan_native_incompatible_svgs(&svg_output)?
+        .into_iter()
+        .find(|issue| issue.file_name == file_name)
+    {
+        return Ok((
+            Some(NativePageValidationFailure {
+                stage: "validate_svgs".to_string(),
+                violated_rule: "DrawingML unsupported SVG element".to_string(),
+                checker_summary: summarize_native_issues(std::slice::from_ref(&issue)),
+                text_geometry: None,
+            }),
+            quality,
+            None,
+        ));
+    }
+    let svg_path = svg_output.join(file_name);
+    let svg = fs::read_to_string(&svg_path).map_err(|error| {
+        AppError::Custom(format!(
+            "读取原生 SVG 做主题与文字检查失败: {} ({error})",
+            svg_path.display()
+        ))
+    })?;
+    if let Err(error) = validate_visible_text_integrity(&svg) {
+        return Ok((
+            Some(NativePageValidationFailure {
+                stage: "validate_visible_text_integrity".to_string(),
+                violated_rule: error.clone(),
+                checker_summary: format!("file={file_name},integrityError={error}"),
+                text_geometry: None,
+            }),
+            quality,
+            None,
+        ));
+    }
+    let theme_validation = validate_svg_theme(&svg, theme_spec);
+    log_lines.push(format!(
+        "[Native Theme Check] file={} passed={} {}",
+        file_name, theme_validation.passed, theme_validation.summary
+    ));
+    if !theme_validation.passed {
+        return Ok((
+            Some(NativePageValidationFailure {
+                stage: "validate_theme_consistency".to_string(),
+                violated_rule: "page_does_not_follow_native_theme_spec".to_string(),
+                checker_summary: theme_validation.summary,
+                text_geometry: None,
+            }),
+            quality,
+            None,
+        ));
+    }
+    let geometry = run_native_text_geometry_check(python_path, &svg_path)?;
+    if !geometry.passed {
+        let state = geometry.state();
+        return Ok((
+            Some(NativePageValidationFailure {
+                stage: "validate_text_geometry".to_string(),
+                violated_rule: geometry.violated_rule(),
+                checker_summary: geometry.summary(),
+                text_geometry: Some(state),
+            }),
+            quality,
+            Some(geometry),
+        ));
+    }
+    if let Some(issue) = scan_final_text_leaks(&svg_output)?
+        .into_iter()
+        .find(|issue| issue.file_name == file_name)
+    {
+        return Ok((
+            Some(NativePageValidationFailure {
+                stage: "validate_svgs".to_string(),
+                violated_rule: "visible internal/template text leakage".to_string(),
+                checker_summary: summarize_final_text_issues(std::slice::from_ref(&issue)),
+                text_geometry: Some(geometry.state()),
+            }),
+            quality,
+            Some(geometry),
+        ));
+    }
+    let report_path = project
+        .join("analysis")
+        .join("native_space_utilization")
+        .join(format!("P{page_number:02}.json"));
+    let space =
+        run_space_utilization_check(python_path, &svg_path, density_contract, &report_path)?;
+    log_lines.push(format!(
+        "[Space Utilization] file={} passed={} rhythm={} informationOccupancy={:.4} combinedOccupancy={:.4} occupiedZones={} report={}",
+        file_name,
+        space.passed,
+        space.page_rhythm,
+        space.information_occupancy_ratio,
+        space.combined_occupancy_ratio,
+        space.occupied_zone_count,
+        report_path.display()
+    ));
+    if !space.passed {
+        return Ok((
+            Some(NativePageValidationFailure {
+                stage: "validate_space_utilization".to_string(),
+                violated_rule: space.violated_rule(),
+                checker_summary: space.summary(),
+                text_geometry: Some(geometry.state()),
+            }),
+            quality,
+            Some(geometry),
+        ));
+    }
+    Ok((None, quality, Some(geometry)))
+}
+
+fn native_page_quality_failure(
+    file_name: &str,
+    quality_success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> Option<NativePageValidationFailure> {
+    let failures = parse_native_quality_failures(stdout, stderr);
+    if let Some(failure) = failures
+        .iter()
+        .find(|failure| failure.file_name == file_name)
+    {
+        return Some(NativePageValidationFailure {
+            stage: "validate_svgs".to_string(),
+            violated_rule: failure.violated_rule.clone(),
+            checker_summary: failure.checker_summary.clone(),
+            text_geometry: None,
+        });
+    }
+    if !quality_success && failures.is_empty() {
+        return Some(NativePageValidationFailure {
+            stage: "validate_svgs".to_string(),
+            violated_rule: "SVG Quality Checker hard error".to_string(),
+            checker_summary: single_line_log_value(stdout),
+            text_geometry: None,
+        });
+    }
+    None
+}
+
+#[cfg(test)]
+fn injected_native_failure_page() -> Option<usize> {
+    std::env::var("POME_NATIVE_TEST_FAIL_BEFORE_PAGE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+}
+
+#[cfg(not(test))]
+fn injected_native_failure_page() -> Option<usize> {
+    None
 }
 
 async fn generate_slide_plan_with_ai(
@@ -1313,6 +4867,7 @@ fn resolve_style_mapping(
     root: &Path,
     style: &str,
     input: &PptMasterGenerateInput,
+    theme_spec: &NativeThemeSpec,
 ) -> PptMasterStyleMapping {
     let user_style = style.trim().to_string();
     let (default_mode, default_visual, default_layouts, default_charts): (
@@ -1358,10 +4913,22 @@ fn resolve_style_mapping(
             Vec::new(),
             vec!["vertical_list", "journey_map", "kpi_cards"],
         )
+    } else if theme_spec.theme_name == "red-heritage" {
+        (
+            "narrative",
+            "vintage-poster",
+            Vec::new(),
+            vec![
+                "timeline",
+                "process_flow",
+                "comparison_columns",
+                "vertical_list",
+            ],
+        )
     } else {
         (
-            "pyramid",
-            "swiss-minimal",
+            theme_spec.preferred_mode(),
+            theme_spec.preferred_visual_style(),
             Vec::new(),
             vec!["kpi_cards", "comparison_columns", "process_flow"],
         )
@@ -1559,19 +5126,328 @@ async fn ppt_ai_chat_with_timeout(
     input: PluginAiChatInput,
     context: &str,
 ) -> Result<String, AppError> {
-    let (_cancel_tx, cancel_rx) = watch::channel(false);
-    match timeout(
-        Duration::from_secs(AI_PPT_TIMEOUT_SECS),
-        AiService::plugin_chat_sync(db, input, cancel_rx),
+    // Keep this guard in the generic entry point so a newly added native SVG repair
+    // cannot silently fall back to the legacy 120-second PPT AI timeout.
+    if is_native_svg_repair_request_id(&input.request_id) {
+        let prompt_chars = input
+            .messages
+            .iter()
+            .map(|message| message.content.chars().count())
+            .sum();
+        let svg_file = context
+            .rsplit_once(['：', ':'])
+            .map(|(_, value)| value.trim())
+            .filter(|value| value.to_ascii_lowercase().ends_with(".svg"))
+            .unwrap_or("unknown.svg");
+        return ppt_native_svg_repair_chat_with_timeout(
+            db,
+            input,
+            context,
+            svg_file,
+            0,
+            prompt_chars,
+        )
+        .await;
+    }
+    ppt_ai_chat_with_policy(
+        db,
+        input,
+        context,
+        PptAiRequestPolicy {
+            timeout_secs: AI_PPT_TIMEOUT_SECS,
+            max_output_tokens: None,
+            svg_chars: None,
+            prompt_chars: None,
+            failure_type: None,
+            timeout_source: "hardcoded",
+            svg_file: None,
+            disable_thinking: false,
+            force_json_output: false,
+        },
     )
     .await
-    {
-        Ok(result) => result,
-        Err(_) => Err(AppError::Custom(format!(
-            "{} 超时：超过 {} 秒，已停止生成，请检查模型/API 或降低页数。",
-            context, AI_PPT_TIMEOUT_SECS
-        ))),
+}
+
+async fn ppt_native_generation_chat_with_timeout(
+    db: &Database,
+    input: PluginAiChatInput,
+    context: &str,
+) -> Result<String, AppError> {
+    let force_json_output = input.request_id.starts_with("ppt_master_agent_design_plan");
+    let prompt_chars = input
+        .messages
+        .iter()
+        .map(|message| message.content.chars().count())
+        .sum();
+    ppt_ai_chat_with_policy(
+        db,
+        input,
+        context,
+        PptAiRequestPolicy {
+            timeout_secs: NATIVE_AI_TIMEOUT_SECS,
+            max_output_tokens: Some(NATIVE_GENERATION_MAX_OUTPUT_TOKENS),
+            svg_chars: None,
+            prompt_chars: Some(prompt_chars),
+            failure_type: Some("native_ai_timeout"),
+            timeout_source: "ppt_master_native",
+            svg_file: None,
+            disable_thinking: true,
+            force_json_output,
+        },
+    )
+    .await
+}
+
+async fn ppt_native_structured_chat_with_timeout(
+    db: &Database,
+    input: PluginAiChatInput,
+    context: &str,
+    max_output_tokens: i64,
+) -> Result<PptAiResponse, AppError> {
+    let prompt_chars = input
+        .messages
+        .iter()
+        .map(|message| message.content.chars().count())
+        .sum();
+    ppt_ai_chat_with_policy_detailed(
+        db,
+        input,
+        context,
+        PptAiRequestPolicy {
+            timeout_secs: NATIVE_AI_TIMEOUT_SECS,
+            max_output_tokens: Some(max_output_tokens),
+            svg_chars: None,
+            prompt_chars: Some(prompt_chars),
+            failure_type: Some("native_planning_ai_failed"),
+            timeout_source: "ppt_master_native_structured_planning",
+            svg_file: None,
+            disable_thinking: true,
+            force_json_output: true,
+        },
+    )
+    .await
+}
+
+#[derive(Debug, Clone)]
+struct PptAiRequestPolicy {
+    timeout_secs: u64,
+    max_output_tokens: Option<i64>,
+    svg_chars: Option<usize>,
+    prompt_chars: Option<usize>,
+    failure_type: Option<&'static str>,
+    timeout_source: &'static str,
+    svg_file: Option<String>,
+    disable_thinking: bool,
+    force_json_output: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PptAiResponse {
+    content: String,
+    input_characters: usize,
+    estimated_input_tokens: usize,
+    output_characters: usize,
+    elapsed_ms: u128,
+    finish_reason: Option<String>,
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+}
+
+async fn ppt_ai_chat_with_policy(
+    db: &Database,
+    input: PluginAiChatInput,
+    context: &str,
+    policy: PptAiRequestPolicy,
+) -> Result<String, AppError> {
+    let response = ppt_ai_chat_with_policy_detailed(db, input, context, policy).await?;
+    if response.finish_reason.as_deref() == Some("length") {
+        return Err(AppError::Custom(format!(
+            "{context} stopped with finish_reason=length; outputCharacters={}",
+            response.output_characters
+        )));
     }
+    Ok(response.content)
+}
+
+async fn ppt_ai_chat_with_policy_detailed(
+    db: &Database,
+    input: PluginAiChatInput,
+    context: &str,
+    policy: PptAiRequestPolicy,
+) -> Result<PptAiResponse, AppError> {
+    let model = match input.model_id {
+        Some(id) => db.get_ai_model(id)?,
+        None => db.get_default_ai_model()?,
+    };
+    let max_output_tokens = policy.max_output_tokens.map(|requested| {
+        model
+            .max_output_tokens
+            .filter(|configured| *configured > 0)
+            .map(|configured| requested.min(configured))
+            .unwrap_or(requested)
+    });
+    let request_chars = input
+        .messages
+        .iter()
+        .map(|message| message.role.chars().count() + message.content.chars().count() + 16)
+        .sum::<usize>();
+    let estimated_tokens = input
+        .messages
+        .iter()
+        .map(|message| estimate_mixed_text_tokens(&message.content))
+        .sum::<usize>();
+    let progress = AiRequestProgress::default();
+    let started = Instant::now();
+    println!(
+        "[PPT AI Request] context={} resolvedTimeoutSeconds={} timeoutSource={} svgFile={} thinkingMode={} responseFormat={} stage=request_start requestCharacters={} modelId={} model_db_id={} provider={} api_url={} started_at={} estimated_tokens={} svg_chars={} prompt_chars={} max_output_tokens={} stream={}",
+        context,
+        policy.timeout_secs,
+        policy.timeout_source,
+        policy.svg_file.as_deref().unwrap_or("n/a"),
+        if policy.disable_thinking { "disabled" } else { "provider_default" },
+        if policy.force_json_output { "json_object" } else { "text" },
+        request_chars,
+        model.model_id,
+        model.id,
+        model.provider,
+        sanitize_api_url_for_log(&model.api_url),
+        chrono::Utc::now().to_rfc3339(),
+        estimated_tokens,
+        policy
+            .svg_chars
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_string()),
+        policy
+            .prompt_chars
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_string()),
+        max_output_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "model_default".to_string()),
+        !policy.force_json_output,
+    );
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+    let result = await_ppt_ai_network(
+        AiService::plugin_chat_sync_with_options(
+            db,
+            input,
+            cancel_rx,
+            max_output_tokens,
+            Some(&progress),
+            policy.disable_thinking,
+            policy.force_json_output,
+        ),
+        policy.timeout_secs,
+        context,
+        policy.failure_type,
+        &progress,
+    )
+    .await;
+    let snapshot = progress.snapshot();
+    let elapsed_ms = started.elapsed().as_millis();
+    let output_characters = result
+        .as_ref()
+        .map(|content| content.chars().count())
+        .unwrap_or(0);
+    println!(
+        "[PPT AI Response] context={} elapsed_ms={} response_headers_received={} first_response_received={} partial_response_received={} stream_completed={} first_response_after_ms={} partial_response_after_ms={} finish_reason={} prompt_tokens={} completion_tokens={} total_tokens={} response_characters={} result={}",
+        context,
+        elapsed_ms,
+        snapshot.response_headers_received,
+        snapshot.first_response_received,
+        snapshot.partial_response_received,
+        snapshot.stream_completed,
+        snapshot
+            .first_response_after_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_string()),
+        snapshot
+            .partial_response_after_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_string()),
+        snapshot.finish_reason.as_deref().unwrap_or("n/a"),
+        snapshot
+            .prompt_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_string()),
+        snapshot
+            .completion_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_string()),
+        snapshot
+            .total_tokens
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "n/a".to_string()),
+        snapshot.response_characters.unwrap_or(output_characters),
+        if result.is_ok() { "ok" } else { "error" },
+    );
+    result.map(|content| PptAiResponse {
+        content,
+        input_characters: request_chars,
+        estimated_input_tokens: estimated_tokens,
+        output_characters,
+        elapsed_ms,
+        finish_reason: snapshot.finish_reason,
+        prompt_tokens: snapshot.prompt_tokens,
+        completion_tokens: snapshot.completion_tokens,
+        total_tokens: snapshot.total_tokens,
+    })
+}
+
+async fn await_ppt_ai_network<F>(
+    future: F,
+    timeout_secs: u64,
+    context: &str,
+    failure_type: Option<&str>,
+    progress: &AiRequestProgress,
+) -> Result<String, AppError>
+where
+    F: std::future::Future<Output = Result<String, AppError>>,
+{
+    match timeout(Duration::from_secs(timeout_secs), future).await {
+        Ok(result) => result,
+        Err(_) => {
+            let snapshot = progress.snapshot();
+            let stage = if !snapshot.response_headers_received {
+                "connect_or_wait_response_headers"
+            } else if !snapshot.first_response_received {
+                "wait_first_body_chunk"
+            } else if snapshot.partial_response_received && !snapshot.stream_completed {
+                "read_stream_completion"
+            } else {
+                "read_response"
+            };
+            let prefix = failure_type
+                .map(|value| format!("{}: ", value))
+                .unwrap_or_default();
+            Err(AppError::Custom(format!(
+                "{}{} 超时：超过 {} 秒，stage={}，已停止生成。",
+                prefix, context, timeout_secs, stage
+            )))
+        }
+    }
+}
+
+fn estimate_mixed_text_tokens(value: &str) -> usize {
+    let mut cjk = 0usize;
+    let mut other = 0usize;
+    for character in value.chars() {
+        if ('\u{3400}'..='\u{9fff}').contains(&character) {
+            cjk += 1;
+        } else {
+            other += 1;
+        }
+    }
+    cjk + (other + 3) / 4
+}
+
+fn sanitize_api_url_for_log(value: &str) -> String {
+    value
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn effective_understanding_draft(input: &PptMasterGenerateInput) -> PptUnderstandingDraftInput {
@@ -1586,7 +5462,10 @@ fn effective_understanding_draft(input: &PptMasterGenerateInput) -> PptUnderstan
             }
         }
     };
-    overwrite(&mut draft.understanding_summary, &input.understanding_summary);
+    overwrite(
+        &mut draft.understanding_summary,
+        &input.understanding_summary,
+    );
     overwrite(&mut draft.key_priorities, &input.key_priorities);
     overwrite(&mut draft.narrative_mainline, &input.narrative_mainline);
     overwrite(
@@ -1646,10 +5525,16 @@ fn build_generation_planning_context(
     let mut parts = Vec::new();
     let understanding = format_understanding_draft(&effective_understanding_draft(input));
     if let Some(value) = understanding.as_deref() {
-        parts.push(format!("[User-Edited Structured AI Understanding]\n{}", value));
+        parts.push(format!(
+            "[User-Edited Structured AI Understanding]\n{}",
+            value
+        ));
     }
     if let Some(value) = trimmed_option(&input.planning_context) {
-        if understanding.as_deref().is_none_or(|draft| draft.trim() != value) {
+        if understanding
+            .as_deref()
+            .is_none_or(|draft| draft.trim() != value)
+        {
             parts.push(format!("[Planning Context Mirror]\n{}", value));
         }
     }
@@ -1683,6 +5568,45 @@ fn build_generation_planning_context(
             .to_string(),
     );
     parts.join("\n\n")
+}
+
+fn build_stable_visible_material(
+    input: &PptMasterGenerateInput,
+    compatibility_prompt: &str,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(value) = trimmed_option(&input.raw_material) {
+        parts.push(value.to_string());
+    } else {
+        let draft = effective_understanding_draft(input);
+        for value in [
+            draft.understanding_summary,
+            draft.key_priorities,
+            draft.narrative_mainline,
+        ] {
+            if !value.trim().is_empty() {
+                parts.push(value);
+            }
+        }
+        if let Some(value) = trimmed_option(&input.planning_context) {
+            parts.push(value.to_string());
+        }
+        if let Some(value) = legacy_understanding_text(input) {
+            parts.push(value.to_string());
+        }
+    }
+    if let Some(value) = trimmed_option(&input.extra_requirements) {
+        parts.push(value.to_string());
+    }
+    if parts.is_empty() && !compatibility_prompt.trim().is_empty() {
+        parts.push(compatibility_prompt.trim().to_string());
+    }
+    parts
+        .into_iter()
+        .map(|value| sanitize_visible_text(&value))
+        .filter(|value| !value.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn trimmed_option(value: &Option<String>) -> Option<&str> {
@@ -1726,7 +5650,10 @@ fn log_planning_input(
             "hasStructuredUnderstanding={}",
             format_understanding_draft(&understanding).is_some()
         ),
-        format!("hasLegacyPrompt={}", !compatibility_prompt.trim().is_empty()),
+        format!(
+            "hasLegacyPrompt={}",
+            !compatibility_prompt.trim().is_empty()
+        ),
         format!("hasPlanningContext={}", has_text(&input.planning_context)),
         format!(
             "hasUnderstandingSummary={}",
@@ -1764,6 +5691,648 @@ fn log_planning_input(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn generate_native_structured_slide_plan(
+    db: &Database,
+    input: &PptMasterGenerateInput,
+    project: &Path,
+    input_fingerprint: &str,
+    title: &str,
+    audience: &str,
+    slide_count: usize,
+    style: &str,
+    theme_spec: &NativeThemeSpec,
+    model_id: Option<i64>,
+    log_lines: &mut Vec<String>,
+) -> Result<SlidePlan, AppError> {
+    let mut checkpoint = load_or_create_checkpoint(project, input_fingerprint, slide_count)
+        .map_err(AppError::Custom)?;
+    if let Some(existing) = checkpoint.theme_spec.as_ref() {
+        if existing != theme_spec {
+            return Err(AppError::Custom(
+                "native planning checkpoint theme does not match current input fingerprint"
+                    .to_string(),
+            ));
+        }
+    } else {
+        checkpoint.theme_spec = Some(theme_spec.clone());
+        persist_native_planning_checkpoint(project, &checkpoint).map_err(AppError::Custom)?;
+    }
+    let raw_material = input.raw_material.as_deref().unwrap_or("");
+    let material_index = NativeMaterialIndex::new(raw_material);
+    let deck_context =
+        build_native_deck_outline_context(input, title, audience, slide_count, style, theme_spec);
+    log_lines.push(format!(
+        "[Native Planning Context] phase=deck_outline rawMaterialCharacters={} materialUnits={} contextCharacters={} fullRawMaterialInjected=false",
+        material_index.raw_characters(),
+        material_index.unit_count(),
+        deck_context.chars().count()
+    ));
+
+    let mut outline_was_generated = false;
+    let outline = if checkpoint.outline.status == "validated" {
+        match read_outline(project, slide_count) {
+            Ok(outline) => {
+                log_lines.push(format!(
+                    "[Native Planning Resume] phase=deck_outline reused=true path={}",
+                    checkpoint.outline.path
+                ));
+                outline
+            }
+            Err(error) => {
+                checkpoint.outline.status = "pending".to_string();
+                checkpoint.outline.attempts = 0;
+                checkpoint.outline.last_error_kind = Some(
+                    NativePlanningErrorKind::SchemaValidation
+                        .as_str()
+                        .to_string(),
+                );
+                checkpoint.outline.last_error = Some(error);
+                checkpoint.outline.updated_at = native_state_now();
+                persist_native_planning_checkpoint(project, &checkpoint)
+                    .map_err(AppError::Custom)?;
+                outline_was_generated = true;
+                generate_native_deck_outline(
+                    db,
+                    project,
+                    slide_count,
+                    model_id,
+                    &deck_context,
+                    &mut checkpoint,
+                )
+                .await?
+            }
+        }
+    } else {
+        outline_was_generated = true;
+        generate_native_deck_outline(
+            db,
+            project,
+            slide_count,
+            model_id,
+            &deck_context,
+            &mut checkpoint,
+        )
+        .await?
+    };
+
+    if outline_was_generated {
+        for index in 1..=slide_count {
+            let state = checkpoint.slide_mut(index, project);
+            state.status = "pending".to_string();
+            state.attempts = 0;
+            state.last_error_kind = None;
+            state.last_error = None;
+            state.updated_at = native_state_now();
+            let path = native_planning::slide_spec_path(project, index);
+            if path.is_file() {
+                fs::remove_file(&path).map_err(|error| {
+                    AppError::Custom(format!(
+                        "invalidate stale SlideSpec failed: {} ({error})",
+                        path.display()
+                    ))
+                })?;
+            }
+        }
+        persist_native_planning_checkpoint(project, &checkpoint).map_err(AppError::Custom)?;
+    }
+
+    let outline_json = serde_json::to_string(&outline)
+        .map_err(|error| AppError::Custom(format!("serialize DeckOutline failed: {error}")))?;
+    let mut specs = Vec::with_capacity(slide_count);
+    for outline_slide in &outline.slides {
+        let page_index = outline_slide.index;
+        let reusable = checkpoint
+            .slide_specs
+            .get(&page_index.to_string())
+            .is_some_and(|state| state.status == "validated");
+        if reusable {
+            match read_slide_spec(project, page_index) {
+                Ok(spec) => {
+                    log_lines.push(format!(
+                        "[Native Planning Resume] phase=slide_spec page=P{page_index:02} reused=true"
+                    ));
+                    specs.push(spec);
+                    continue;
+                }
+                Err(error) => {
+                    let state = checkpoint.slide_mut(page_index, project);
+                    state.status = "pending".to_string();
+                    state.attempts = 0;
+                    state.last_error_kind = Some(
+                        NativePlanningErrorKind::SchemaValidation
+                            .as_str()
+                            .to_string(),
+                    );
+                    state.last_error = Some(error);
+                    state.updated_at = native_state_now();
+                    persist_native_planning_checkpoint(project, &checkpoint)
+                        .map_err(AppError::Custom)?;
+                }
+            }
+        }
+
+        let evidence_query = format!(
+            "{} {} {}",
+            outline_slide.evidence_query, outline_slide.title, outline_slide.core_message
+        );
+        let evidence = material_index.retrieve(&evidence_query, page_index, slide_count);
+        let spec_context = build_native_slide_spec_context(
+            &outline_json,
+            outline_slide,
+            &evidence,
+            audience,
+            style,
+            theme_spec,
+        );
+        log_lines.push(format!(
+            "[Native Planning Context] phase=slide_spec page=P{page_index:02} retrievedUnits={} retrievedCharacters={} contextCharacters={} fullRawMaterialInjected=false",
+            evidence.len(),
+            evidence.iter().map(|item| item.chars().count()).sum::<usize>(),
+            spec_context.chars().count()
+        ));
+        let spec = generate_native_slide_spec(
+            db,
+            project,
+            page_index,
+            model_id,
+            &spec_context,
+            &mut checkpoint,
+        )
+        .await?;
+        specs.push(spec);
+    }
+
+    checkpoint.status = "validated".to_string();
+    checkpoint.updated_at = native_state_now();
+    persist_native_planning_checkpoint(project, &checkpoint).map_err(AppError::Custom)?;
+    Ok(assemble_slide_plan(&outline, &specs, audience, style))
+}
+
+async fn generate_native_deck_outline(
+    db: &Database,
+    project: &Path,
+    slide_count: usize,
+    model_id: Option<i64>,
+    original_prompt: &str,
+    checkpoint: &mut NativePlanningCheckpoint,
+) -> Result<DeckOutline, AppError> {
+    let start_attempt = checkpoint.outline.attempts.saturating_add(1);
+    let mut previous_error = checkpoint.outline.last_error.clone();
+    for attempt in start_attempt..=NATIVE_PLANNING_MAX_ATTEMPTS {
+        let prompt = native_planning_attempt_prompt(original_prompt, previous_error.as_deref());
+        checkpoint.outline.status = "generating".to_string();
+        checkpoint.outline.attempts = attempt;
+        checkpoint.outline.updated_at = native_state_now();
+        persist_native_planning_checkpoint(project, checkpoint).map_err(AppError::Custom)?;
+        let request_id = format!("ppt_master_agent_design_plan_outline_{attempt}");
+        let input = PluginAiChatInput {
+            request_id: request_id.clone(),
+            model_id,
+            messages: vec![PluginAiMessage {
+                role: "user".to_string(),
+                content: prompt.clone(),
+            }],
+        };
+        let request_started = Instant::now();
+        let response = ppt_native_structured_chat_with_timeout(
+            db,
+            input,
+            &format!("DeckOutline attempt {attempt}/{NATIVE_PLANNING_MAX_ATTEMPTS}"),
+            4_096,
+        )
+        .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                let contract_error = NativePlanningContractError {
+                    kind: NativePlanningErrorKind::Network,
+                    summary: error.to_string(),
+                };
+                checkpoint.record_metric(native_planning_error_metric(
+                    request_id,
+                    "deck_outline",
+                    None,
+                    attempt,
+                    &prompt,
+                    request_started.elapsed().as_millis(),
+                    &contract_error,
+                ));
+                record_outline_contract_failure(checkpoint, &contract_error);
+                persist_native_planning_checkpoint(project, checkpoint)
+                    .map_err(AppError::Custom)?;
+                previous_error = Some(contract_error.summary.clone());
+                if attempt == NATIVE_PLANNING_MAX_ATTEMPTS {
+                    return Err(native_planning_contract_app_error(
+                        "deck_outline",
+                        None,
+                        &contract_error,
+                    ));
+                }
+                continue;
+            }
+        };
+        if let Some(contract_error) = planning_finish_reason_error(&response) {
+            checkpoint.record_metric(native_planning_response_metric(
+                request_id,
+                "deck_outline",
+                None,
+                attempt,
+                &response,
+                Some(&contract_error),
+            ));
+            record_outline_contract_failure(checkpoint, &contract_error);
+            persist_native_planning_checkpoint(project, checkpoint).map_err(AppError::Custom)?;
+            previous_error = Some(contract_error.summary.clone());
+            if attempt == NATIVE_PLANNING_MAX_ATTEMPTS {
+                return Err(native_planning_contract_app_error(
+                    "deck_outline",
+                    None,
+                    &contract_error,
+                ));
+            }
+            continue;
+        }
+        match parse_deck_outline(&response.content, slide_count) {
+            Ok(outline) => {
+                write_outline(project, &outline).map_err(AppError::Custom)?;
+                checkpoint.record_metric(native_planning_response_metric(
+                    request_id,
+                    "deck_outline",
+                    None,
+                    attempt,
+                    &response,
+                    None,
+                ));
+                checkpoint.outline.status = "validated".to_string();
+                checkpoint.outline.last_error_kind = None;
+                checkpoint.outline.last_error = None;
+                checkpoint.outline.updated_at = native_state_now();
+                persist_native_planning_checkpoint(project, checkpoint)
+                    .map_err(AppError::Custom)?;
+                return Ok(outline);
+            }
+            Err(contract_error) => {
+                checkpoint.record_metric(native_planning_response_metric(
+                    request_id,
+                    "deck_outline",
+                    None,
+                    attempt,
+                    &response,
+                    Some(&contract_error),
+                ));
+                record_outline_contract_failure(checkpoint, &contract_error);
+                persist_native_planning_checkpoint(project, checkpoint)
+                    .map_err(AppError::Custom)?;
+                previous_error = Some(contract_error.summary.clone());
+                if attempt == NATIVE_PLANNING_MAX_ATTEMPTS {
+                    return Err(native_planning_contract_app_error(
+                        "deck_outline",
+                        None,
+                        &contract_error,
+                    ));
+                }
+            }
+        }
+    }
+    Err(AppError::Custom(
+        "native planning DeckOutline retry budget exhausted".to_string(),
+    ))
+}
+
+async fn generate_native_slide_spec(
+    db: &Database,
+    project: &Path,
+    page_index: usize,
+    model_id: Option<i64>,
+    original_prompt: &str,
+    checkpoint: &mut NativePlanningCheckpoint,
+) -> Result<SlideSpec, AppError> {
+    let start_attempt = checkpoint
+        .slide_specs
+        .get(&page_index.to_string())
+        .map(|state| state.attempts.saturating_add(1))
+        .unwrap_or(1);
+    let mut previous_error = checkpoint
+        .slide_specs
+        .get(&page_index.to_string())
+        .and_then(|state| state.last_error.clone());
+    for attempt in start_attempt..=NATIVE_PLANNING_MAX_ATTEMPTS {
+        let prompt = native_planning_attempt_prompt(original_prompt, previous_error.as_deref());
+        {
+            let state = checkpoint.slide_mut(page_index, project);
+            state.status = "generating".to_string();
+            state.attempts = attempt;
+            state.updated_at = native_state_now();
+        }
+        persist_native_planning_checkpoint(project, checkpoint).map_err(AppError::Custom)?;
+        let request_id = format!("ppt_master_agent_design_plan_slide_{page_index:02}_{attempt}");
+        let input = PluginAiChatInput {
+            request_id: request_id.clone(),
+            model_id,
+            messages: vec![PluginAiMessage {
+                role: "user".to_string(),
+                content: prompt.clone(),
+            }],
+        };
+        let request_started = Instant::now();
+        let response = ppt_native_structured_chat_with_timeout(
+            db,
+            input,
+            &format!("SlideSpec P{page_index:02} attempt {attempt}/{NATIVE_PLANNING_MAX_ATTEMPTS}"),
+            4_096,
+        )
+        .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                let contract_error = NativePlanningContractError {
+                    kind: NativePlanningErrorKind::Network,
+                    summary: error.to_string(),
+                };
+                checkpoint.record_metric(native_planning_error_metric(
+                    request_id,
+                    "slide_spec",
+                    Some(page_index),
+                    attempt,
+                    &prompt,
+                    request_started.elapsed().as_millis(),
+                    &contract_error,
+                ));
+                record_slide_contract_failure(checkpoint, project, page_index, &contract_error);
+                persist_native_planning_checkpoint(project, checkpoint)
+                    .map_err(AppError::Custom)?;
+                previous_error = Some(contract_error.summary.clone());
+                if attempt == NATIVE_PLANNING_MAX_ATTEMPTS {
+                    return Err(native_planning_contract_app_error(
+                        "slide_spec",
+                        Some(page_index),
+                        &contract_error,
+                    ));
+                }
+                continue;
+            }
+        };
+        if let Some(contract_error) = planning_finish_reason_error(&response) {
+            checkpoint.record_metric(native_planning_response_metric(
+                request_id,
+                "slide_spec",
+                Some(page_index),
+                attempt,
+                &response,
+                Some(&contract_error),
+            ));
+            record_slide_contract_failure(checkpoint, project, page_index, &contract_error);
+            persist_native_planning_checkpoint(project, checkpoint).map_err(AppError::Custom)?;
+            previous_error = Some(contract_error.summary.clone());
+            if attempt == NATIVE_PLANNING_MAX_ATTEMPTS {
+                return Err(native_planning_contract_app_error(
+                    "slide_spec",
+                    Some(page_index),
+                    &contract_error,
+                ));
+            }
+            continue;
+        }
+        match parse_slide_spec(&response.content, page_index) {
+            Ok(spec) => {
+                write_slide_spec(project, page_index, &spec).map_err(AppError::Custom)?;
+                checkpoint.record_metric(native_planning_response_metric(
+                    request_id,
+                    "slide_spec",
+                    Some(page_index),
+                    attempt,
+                    &response,
+                    None,
+                ));
+                {
+                    let state = checkpoint.slide_mut(page_index, project);
+                    state.status = "validated".to_string();
+                    state.last_error_kind = None;
+                    state.last_error = None;
+                    state.updated_at = native_state_now();
+                }
+                persist_native_planning_checkpoint(project, checkpoint)
+                    .map_err(AppError::Custom)?;
+                return Ok(spec);
+            }
+            Err(contract_error) => {
+                checkpoint.record_metric(native_planning_response_metric(
+                    request_id,
+                    "slide_spec",
+                    Some(page_index),
+                    attempt,
+                    &response,
+                    Some(&contract_error),
+                ));
+                record_slide_contract_failure(checkpoint, project, page_index, &contract_error);
+                persist_native_planning_checkpoint(project, checkpoint)
+                    .map_err(AppError::Custom)?;
+                previous_error = Some(contract_error.summary.clone());
+                if attempt == NATIVE_PLANNING_MAX_ATTEMPTS {
+                    return Err(native_planning_contract_app_error(
+                        "slide_spec",
+                        Some(page_index),
+                        &contract_error,
+                    ));
+                }
+            }
+        }
+    }
+    Err(AppError::Custom(format!(
+        "native planning SlideSpec P{page_index:02} retry budget exhausted"
+    )))
+}
+
+fn build_native_deck_outline_context(
+    input: &PptMasterGenerateInput,
+    title: &str,
+    audience: &str,
+    slide_count: usize,
+    style: &str,
+    theme_spec: &NativeThemeSpec,
+) -> String {
+    let understanding = format_understanding_draft(&effective_understanding_draft(input))
+        .unwrap_or_else(|| "No structured understanding was provided.".to_string());
+    let extra_requirements = trimmed_option(&input.extra_requirements).unwrap_or("none");
+    let schema = deck_outline_schema().to_string();
+    format!(
+        "Return JSON only for a DeckOutline. Do not output markdown, SVG, long body copy, coordinates, or full source material.\n\
+         Required JSON Schema (enforced again by Rust; unknown fields are rejected):\n{schema}\n\n\
+         Planning rules:\n\
+         - page_count must equal {slide_count}; indices must be unique and continuous from 1.\n\
+         - slide 1 must be cover; later slides must not be cover.\n\
+         - Every title and core_message must be distinct.\n\
+         - evidence_query is a concise retrieval query for local source selection, not visible copy.\n\
+         - Build a coherent narrative for the requested subject and audience.\n\
+         - Do not invent facts, numbers, dates, rankings, or quotations.\n\
+         - Use only these slide_type enum values: cover, section, overview, timeline, process, comparison, data, quote, image, profile, content, summary.\n\n\
+         deck_title: {title}\nAudience: {audience}\nStyle: {style}\nExtra requirements: {extra_requirements}\n\
+         Deck-wide NativeThemeSpec (planning context only; never render field names as visible copy):\n{theme_contract}\n\n\
+         Structured material summary:\n{understanding}"
+        ,
+        theme_contract = theme_spec.prompt_contract()
+    )
+}
+
+fn build_native_slide_spec_context(
+    outline_json: &str,
+    outline_slide: &native_planning::DeckOutlineSlide,
+    evidence: &[String],
+    audience: &str,
+    style: &str,
+    theme_spec: &NativeThemeSpec,
+) -> String {
+    let slide_json = serde_json::to_string(outline_slide).unwrap_or_else(|_| "{}".to_string());
+    let evidence_json = serde_json::to_string(evidence).unwrap_or_else(|_| "[]".to_string());
+    let schema = slide_spec_schema().to_string();
+    format!(
+        "Return JSON only for exactly one SlideSpec. Do not output markdown, SVG, coordinates, or fields outside the Schema.\n\
+         Required JSON Schema (enforced again by Rust; unknown fields are rejected):\n{schema}\n\n\
+         Rules:\n\
+         - index must match the requested page.\n\
+         - visible_content contains 1-6 concise, presentation-ready strings grounded in retrieved evidence.\n\
+         - evidence contains 1-8 faithful source facts or paraphrases; do not invent details.\n\
+         - speaker_notes may expand context but must stay within the Schema limit.\n\
+         - Use one layout_intent enum value: hero, section, editorial_split, timeline, process, comparison, data_focus, quote_focus, image_focus, profile, card_grid, summary.\n\
+         - Preserve the current page's role and avoid taking over adjacent pages.\n\n\
+         Audience: {audience}\nStyle: {style}\nDeck-wide NativeThemeSpec (use as visual guidance only; do not output it as fields or visible text): {theme_contract}\nDeckOutline: {outline_json}\nCurrent outline slide: {slide_json}\nRetrieved local source units: {evidence_json}",
+        theme_contract = theme_spec.prompt_contract()
+    )
+}
+
+fn native_planning_attempt_prompt(original_prompt: &str, previous_error: Option<&str>) -> String {
+    match previous_error {
+        Some(error) => format!(
+            "{original_prompt}\n\nSTRUCTURED RETRY (final attempt): The prior output failed validation: {}. Return a complete JSON object matching the Schema. Do not include or reconstruct the previous response.",
+            truncate_for_log(error, 480)
+        ),
+        None => original_prompt.to_string(),
+    }
+}
+
+fn planning_finish_reason_error(response: &PptAiResponse) -> Option<NativePlanningContractError> {
+    match response.finish_reason.as_deref() {
+        Some("stop") | None => None,
+        Some(reason) => Some(NativePlanningContractError {
+            kind: NativePlanningErrorKind::FinishReason,
+            summary: format!(
+                "finish_reason={reason}; outputCharacters={}",
+                response.output_characters
+            ),
+        }),
+    }
+}
+
+fn native_planning_response_metric(
+    request_id: String,
+    phase: &str,
+    page_index: Option<usize>,
+    attempt: usize,
+    response: &PptAiResponse,
+    error: Option<&NativePlanningContractError>,
+) -> NativePlanningRequestMetric {
+    let (json_parse_result, schema_validation_result) = match error.map(|error| error.kind) {
+        None => ("passed", "passed"),
+        Some(NativePlanningErrorKind::JsonSyntax) => ("failed", "not_run"),
+        Some(NativePlanningErrorKind::SchemaValidation) => ("passed", "failed"),
+        Some(NativePlanningErrorKind::FinishReason | NativePlanningErrorKind::Network) => {
+            ("not_run", "not_run")
+        }
+    };
+    NativePlanningRequestMetric {
+        request_id,
+        phase: phase.to_string(),
+        page_index,
+        attempt,
+        input_characters: response.input_characters,
+        estimated_input_tokens: response.estimated_input_tokens,
+        output_characters: response.output_characters,
+        elapsed_ms: response.elapsed_ms,
+        finish_reason: response.finish_reason.clone(),
+        prompt_tokens: response.prompt_tokens,
+        completion_tokens: response.completion_tokens,
+        total_tokens: response.total_tokens,
+        json_parse_result: json_parse_result.to_string(),
+        schema_validation_result: schema_validation_result.to_string(),
+        error_kind: error.map(|error| error.kind.as_str().to_string()),
+        error_summary: error.map(|error| error.summary.clone()),
+    }
+}
+
+fn native_planning_error_metric(
+    request_id: String,
+    phase: &str,
+    page_index: Option<usize>,
+    attempt: usize,
+    prompt: &str,
+    elapsed_ms: u128,
+    error: &NativePlanningContractError,
+) -> NativePlanningRequestMetric {
+    NativePlanningRequestMetric {
+        request_id,
+        phase: phase.to_string(),
+        page_index,
+        attempt,
+        input_characters: prompt.chars().count(),
+        estimated_input_tokens: estimate_mixed_text_tokens(prompt),
+        output_characters: 0,
+        elapsed_ms,
+        finish_reason: None,
+        prompt_tokens: None,
+        completion_tokens: None,
+        total_tokens: None,
+        json_parse_result: "not_run".to_string(),
+        schema_validation_result: "not_run".to_string(),
+        error_kind: Some(error.kind.as_str().to_string()),
+        error_summary: Some(error.summary.clone()),
+    }
+}
+
+fn record_outline_contract_failure(
+    checkpoint: &mut NativePlanningCheckpoint,
+    error: &NativePlanningContractError,
+) {
+    checkpoint.outline.status = "failed".to_string();
+    checkpoint.outline.last_error_kind = Some(error.kind.as_str().to_string());
+    checkpoint.outline.last_error = Some(error.summary.clone());
+    checkpoint.outline.updated_at = native_state_now();
+    checkpoint.status = "failed".to_string();
+    checkpoint.updated_at = native_state_now();
+}
+
+fn record_slide_contract_failure(
+    checkpoint: &mut NativePlanningCheckpoint,
+    project: &Path,
+    page_index: usize,
+    error: &NativePlanningContractError,
+) {
+    let state = checkpoint.slide_mut(page_index, project);
+    state.status = "failed".to_string();
+    state.last_error_kind = Some(error.kind.as_str().to_string());
+    state.last_error = Some(error.summary.clone());
+    state.updated_at = native_state_now();
+    checkpoint.status = "failed".to_string();
+    checkpoint.updated_at = native_state_now();
+}
+
+fn native_planning_contract_app_error(
+    phase: &str,
+    page_index: Option<usize>,
+    error: &NativePlanningContractError,
+) -> AppError {
+    AppError::Custom(format!(
+        "native_planning_{}; stage={phase}; page={}; error={}",
+        error.kind.as_str(),
+        page_index
+            .map(|index| format!("P{index:02}"))
+            .unwrap_or_else(|| "deck".to_string()),
+        error.summary
+    ))
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 async fn generate_agent_design_plan(
     db: &Database,
     skill_text: &str,
@@ -1777,8 +6346,11 @@ async fn generate_agent_design_plan(
         "You are the ppt-master Strategist. Return strict JSON only, no markdown.\n\
          The following prompt includes Pomegranate AI understanding sections. Treat storyline and recommended page structure as the primary planning source.\n\n\
          Required top-level JSON fields: title, subtitle, audience, style, theme, themeAllocation, slides.\n\
+         theme MUST be an object with exactly these string fields: {{\"name\":\"...\",\"primary\":\"#RRGGBB\",\"secondary\":\"#RRGGBB\",\"accent\":\"#RRGGBB\",\"background\":\"#RRGGBB\"}}. Never return theme as prose or a plain string.\n\
          themeAllocation must be an array of {{pageId, assignedTheme, exclusiveScope}}. Each assignedTheme must be unique; exclusiveScope must say what this page owns and what it does not cover.\n\
          Required slide JSON fields per page: page, pageIndex, pageId, type, layout, title, subtitle, pageTheme, mainClaim, contentScope, mustInclude, mustAvoid, bullets, visualHint, pageRhythm, chartRef, chartType, fileStem, speakerNote.\n\n\
+         page and pageIndex MUST be JSON integers (1, 2, 3...), never labels such as \"封面\" or \"第二页\".\n\
+         mustInclude, mustAvoid, and bullets MUST always be JSON arrays of strings, including when empty or containing only one item. Never return those fields as plain strings.\n\n\
          Dynamic page planning algorithm:\n\
          - Do not treat any example structure as a fixed template.\n\
          - Infer a themePool from user topic, raw material, AI understanding, audience, style, extra requirements, and requested slideCount.\n\
@@ -1801,18 +6373,18 @@ async fn generate_agent_design_plan(
          Original planning request follows:\n\nRequested slideCount: {slide_count}\nSuggested title: {title}\nSelected style: {style}\n\nppt-master rules excerpt:\n{skill_excerpt}\n\nUser planning context:\n{prompt}",
         skill_excerpt = skill_excerpt(skill_text)
     );
-    let input = PluginAiChatInput {
-        request_id: "ppt_master_agent_design_plan".to_string(),
+    request_native_slide_plan_with_json_retry(
+        db,
         model_id,
-        messages: vec![PluginAiMessage {
-            role: "user".to_string(),
-            content: ai_prompt,
-        }],
-    };
-    let raw = ppt_ai_chat_with_timeout(db, input, "AI 生成 slide_plan").await?;
-    parse_slide_plan_json(&raw)
+        "ppt_master_agent_design_plan",
+        "AI generate slide_plan",
+        ai_prompt,
+    )
+    .await
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 async fn regenerate_agent_design_plan_with_dedup(
     db: &Database,
     skill_text: &str,
@@ -1847,16 +6419,109 @@ async fn regenerate_agent_design_plan_with_dedup(
          Current plan to repair:\n{current_json}",
         skill_excerpt = skill_excerpt(skill_text)
     );
-    let input = PluginAiChatInput {
-        request_id: "ppt_master_agent_design_plan_dedup".to_string(),
+    request_native_slide_plan_with_json_retry(
+        db,
         model_id,
-        messages: vec![PluginAiMessage {
-            role: "user".to_string(),
-            content: ai_prompt,
-        }],
-    };
-    let raw = ppt_ai_chat_with_timeout(db, input, "AI 修正 slide_plan 去重").await?;
-    parse_slide_plan_json(&raw)
+        "ppt_master_agent_design_plan_dedup",
+        "AI repair slide_plan de-duplication",
+        ai_prompt,
+    )
+    .await
+}
+
+#[cfg(test)]
+fn native_plan_json_request_id(base_request_id: &str, attempt: usize) -> String {
+    if attempt <= 1 {
+        base_request_id.to_string()
+    } else {
+        format!("{base_request_id}_json_retry_{attempt}")
+    }
+}
+
+#[cfg(test)]
+fn build_native_plan_json_retry_prompt(original_prompt: &str, parse_error: &str) -> String {
+    let parse_error = truncate_for_prompt(parse_error, 400);
+    format!(
+        "{original_prompt}\n\n\
+         JSON CORRECTION RETRY (final attempt):\n\
+         - The previous response was not valid JSON. Parser error: {parse_error}\n\
+         - Return one complete JSON object only. Do not use markdown fences or commentary.\n\
+         - Check every array/object separator, comma, quote, escape sequence, and closing bracket.\n\
+         - Preserve all required fields and exactly the requested slide count.\n\
+         - Do not abbreviate, truncate, or append text after the closing brace."
+    )
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+async fn request_native_slide_plan_with_json_retry(
+    db: &Database,
+    model_id: Option<i64>,
+    base_request_id: &str,
+    context: &str,
+    original_prompt: String,
+) -> Result<SlidePlan, AppError> {
+    let mut parse_errors = Vec::new();
+
+    for attempt in 1..=NATIVE_PLAN_JSON_MAX_ATTEMPTS {
+        let prompt = if attempt == 1 {
+            original_prompt.clone()
+        } else {
+            build_native_plan_json_retry_prompt(
+                &original_prompt,
+                parse_errors
+                    .last()
+                    .map(String::as_str)
+                    .unwrap_or("unknown JSON parse error"),
+            )
+        };
+        let input = PluginAiChatInput {
+            request_id: native_plan_json_request_id(base_request_id, attempt),
+            model_id,
+            messages: vec![PluginAiMessage {
+                role: "user".to_string(),
+                content: prompt,
+            }],
+        };
+        let attempt_context =
+            format!("{context} (JSON attempt {attempt}/{NATIVE_PLAN_JSON_MAX_ATTEMPTS})");
+        let raw = ppt_native_generation_chat_with_timeout(db, input, &attempt_context).await?;
+
+        match parse_native_slide_plan_json(&raw) {
+            Ok(plan) => {
+                println!(
+                    "[Native Plan Parse] context={} attempt={}/{} status=valid responseChars={}",
+                    context,
+                    attempt,
+                    NATIVE_PLAN_JSON_MAX_ATTEMPTS,
+                    raw.chars().count()
+                );
+                return Ok(plan);
+            }
+            Err(error) => {
+                let parse_error = error.to_string();
+                println!(
+                    "[Native Plan Parse] context={} attempt={}/{} status=invalid responseChars={} error={} action={}",
+                    context,
+                    attempt,
+                    NATIVE_PLAN_JSON_MAX_ATTEMPTS,
+                    raw.chars().count(),
+                    parse_error,
+                    if attempt < NATIVE_PLAN_JSON_MAX_ATTEMPTS {
+                        "retry-json-only"
+                    } else {
+                        "fail-strict-native"
+                    }
+                );
+                parse_errors.push(parse_error);
+            }
+        }
+    }
+
+    Err(AppError::Custom(format!(
+        "{context} returned malformed slide_plan JSON after {NATIVE_PLAN_JSON_MAX_ATTEMPTS} attempts; no fallback was used; parse_errors={}",
+        parse_errors.join(" | ")
+    )))
 }
 
 async fn generate_ppt_master_driven_slide_svg(
@@ -1866,11 +6531,18 @@ async fn generate_ppt_master_driven_slide_svg(
     design_spec: &str,
     spec_lock_path: &Path,
     mapping: &PptMasterStyleMapping,
+    theme_spec: &NativeThemeSpec,
     plan: &SlidePlan,
     slide: &Slide,
     prev_title: &str,
     next_title: &str,
     model_id: Option<i64>,
+    retry_feedback: Option<&str>,
+    density_contract: &NativePageDensityContract,
+    geometry_repair_svg: Option<&str>,
+    geometry_must_keep_text: Option<&[String]>,
+    density_relayout_svg: Option<&str>,
+    density_must_keep_text: Option<&[String]>,
 ) -> Result<String, AppError> {
     let spec_lock = fs::read_to_string(spec_lock_path).map_err(|e| {
         AppError::Custom(format!(
@@ -1891,9 +6563,10 @@ async fn generate_ppt_master_driven_slide_svg(
          - Pomegranate reloaded spec_lock.md from disk immediately before this page.\n\
          - Use ONLY colors, font families, and font sizes declared in spec_lock.md.\n\
          - Do not introduce colors or font sizes outside the lock.\n\
-         - Apply page_rhythm strictly: anchor = large visual center and few words; dense = structured proof/chart/matrix; breathing = whitespace plus one strong claim and minimal support.\n\
+         - Apply page_rhythm strictly: anchor = large visual center and few words; breathing = purposeful whitespace plus one strong claim and support; balanced = a main region plus supporting information across the effective canvas; dense = structured proof/chart/matrix without crowding.\n\
          - If page_chart is not none, borrow that ppt-master chart type's information structure.\n\
-         - Forbidden SVG: <use>, <symbol>, visual defs + use references, <foreignObject>, <style>, class, filter, mask, clipPath unless explicitly supported, textPath, animation, script, iframe, external href image, rgba(), group opacity, HTML named entities such as &nbsp; &mdash; &copy;.\n\
+         - Forbidden SVG: <use>, <symbol>, <pattern>, visual defs + use references, <foreignObject>, <style>, class, filter, mask, every <clipPath> and every clip-path attribute, textPath, animation, script, iframe, external href image, rgba(), group opacity, HTML named entities such as &nbsp; &mdash; &copy;.\n\
+         - {clip_path_rule}\n\
          - Repeated graphics must be expanded as real rect/path/text/circle/line/polyline/polygon elements. Never use <use href=\"#...\">.\n",
         page = slide.page,
         file_name = svg_filename_for_slide(slide),
@@ -1901,6 +6574,27 @@ async fn generate_ppt_master_driven_slide_svg(
         page_chart = chart_reference_for_slide(slide, mapping).unwrap_or_else(|| "none".to_string()),
         mode = mapping.mode,
         visual_style = mapping.visual_style,
+        clip_path_rule = NATIVE_EXECUTOR_CLIP_PATH_RULE,
+    );
+    let text_geometry_contract = format!(
+        "Native text geometry contract:\n\
+         - Allocate a non-overlapping text region before writing every visible text block. Never rely on SVG automatic wrapping.\n\
+         - Every visible <text> MUST declare text-anchor plus data-pome-role, data-pome-region-id, data-pome-region-x, data-pome-region-y, data-pome-region-width, data-pome-region-height, data-pome-min-font-size, data-pome-wrap, data-pome-max-lines, data-pome-line-height, and data-pome-safe-padding. Missing metadata is a hard page error.\n\
+         - Allowed roles: title, subtitle, body, metric, unit, caption, label, footer. Region coordinates are absolute coordinates in the 1280×720 viewBox.\n\
+         - data-pome-region-x/y/width/height describe the OUTER allocated rectangle, not the text baseline. Place region-y above the glyph ascender and reserve enough height for the full measured glyph bbox; reserve the real measured width for end-anchored footer/page-number text.\n\
+         - data-pome-safe-padding is space inside that outer rectangle. A bbox outside the outer rectangle is a hard error; a bbox inside it but short of safe padding is a warning.\n\
+         - Chinese multiline body text MUST use explicit tspans. The first tspan MUST have absolute x and y; later lines MUST have explicit x and dy. A first line with dy only is invalid because SVG resolves it from the implicit baseline y=0.\n\
+         - data-pome-line-height MUST match the actual tspan baseline interval. For mixed-size rich text, size the region from the final aggregate browser bbox, not only the parent font size.\n\
+         - Metrics, units, and explanations MUST use separate regions and must not share a baseline area.\n\
+         - Keep each measured text bbox inside its declared region and keep the declared safe padding from borders. Region coordinates are in canvas space; text-anchor=start/middle/end and transform/translate must be evaluated by their final canvas bbox.\n\
+         - Keep font size at or above data-pome-min-font-size. If content does not fit, shorten non-core wording before reducing only that block; never shrink the whole page.\n\
+         - Mark icons or graphics that text must avoid with data-pome-obstacle=\"true\" and the matching data-pome-region-id. Use data-pome-allow-overlap=\"true\" only for intentional decorative text overlap.\n\
+         - Before submitting, verify every text/tspan aggregate bbox fits its declared region and that title/body/metric/unit blocks do not overlap.\n\
+         - Example: <text text-anchor=\"start\" data-pome-role=\"body\" data-pome-region-id=\"card-1-body\" data-pome-region-x=\"120\" data-pome-region-y=\"220\" data-pome-region-width=\"280\" data-pome-region-height=\"72\" data-pome-min-font-size=\"14\" data-pome-wrap=\"true\" data-pome-max-lines=\"3\" data-pome-line-height=\"20\" data-pome-safe-padding=\"10\"><tspan x=\"130\" y=\"242\">first line</tspan><tspan x=\"130\" dy=\"20\">second line</tspan></text>\n\
+         {retry_feedback}",
+        retry_feedback = retry_feedback
+            .map(|value| format!("\nPage-only retry feedback (must be fixed):\n{}", value))
+            .unwrap_or_default()
     );
     let current_page_task = format!(
         "Current page task contract:\n\
@@ -1912,9 +6606,10 @@ async fn generate_ppt_master_driven_slide_svg(
          - mustAvoid: {must_avoid}\n\
          - pageRhythm: {page_rhythm}\n\
          - chartType: {chart_type}\n\n\
+         [Universal page density contract]\n{density_contract}\n\n\
          Execution rule: render ONLY this page contract. Do not re-plan the deck. Do not pull another page's theme into this page. Use the global storyline only as background.\n\
          Final visible text boundary: you are generating the final user-visible PPT page. Do not render internal field names, prompt words, template labels, developer terminology, agent workflow terminology, or product names.\n\
-         Never render these visible terms: Prompt, confirmedPrompt, MVP, Demo, Pomegranate, PPT Master, Executor, Agent, Workflow, fallback, legacy, native, spec_lock, design_spec, slide_plan, pageTheme, contentScope, chartType, chartRef, background pain point, core solution, technical flow, closed-loop validation.\n\
+         Never render these visible terms: Prompt, confirmedPrompt, MVP, Demo, Pomegranate, PPT Master, Executor, Agent, Workflow, fallback, legacy fallback, legacy_fallback, legacy mode, native, spec_lock, design_spec, slide_plan, pageTheme, contentScope, chartType, chartRef, background pain point, core solution, technical flow, closed-loop validation. The ordinary semantic noun legacy is allowed only when it clearly describes the user's subject, such as historical or cultural legacy.\n\
          Visible page text must come from user material, AI understanding, current slide pageTheme/mainClaim/mustInclude, or reasonable non-fabricated summary. If content is insufficient, use a more general topic summary; never fill with template placeholders.\n\
          Fact safety: do not invent exact numbers, rankings, award counts, fellow counts, laboratory counts, or years. If a precise data point is not explicitly sourced, write 示意数据, 可替换数据位, 代表性方向, or 长期积累 instead.\n",
         title = slide.title,
@@ -1933,8 +6628,9 @@ async fn generate_ppt_master_driven_slide_svg(
         },
         page_rhythm = page_rhythm_for_slide(slide),
         chart_type = chart_reference_for_slide(slide, mapping).unwrap_or_else(|| "none".to_string()),
+        density_contract = density_contract.prompt_contract(),
     );
-    let ai_prompt = format!(
+    let full_ai_prompt = format!(
         "你是 ppt-master Executor。请按照 ppt-master 的设计体系逐页手写 SVG，而不是生成简单占位框。\n\
          只输出完整 SVG，不要 markdown，不要解释。\n\n\
          硬性要求：\n\
@@ -1943,7 +6639,12 @@ async fn generate_ppt_master_driven_slide_svg(
          3. 视觉设计由 ppt-master reference 驱动：读取 locked mode 与 locked visual_style 的语义，不要退化成普通卡片模板。\n\
          4. 如本页有 page_charts，应借鉴对应 charts 模板的信息结构；如本页有 page_layouts，应继承对应 layout 的结构精神。\n\
          5. 不要使用外部网络图片；不要使用 forbidden 中禁止的 SVG 元素。\n\
-         6. 每页要有明确视觉层级、留白节奏和页面角色差异。\n\n\
+         6. 每页要有明确视觉层级、留白节奏和页面角色差异。\n\
+         7. 禁止生成任何 <clipPath> 或 clip-path 属性，包括普通图形、剪影、头像、卡片和装饰；直接绘制最终边界，不得依赖裁剪。\n\
+         8. NativeThemeSpec 是整套页面唯一且不可重新解释的全局主题合同；每页必须使用 primary/secondary/accent 至少一种，并遵守背景、线条、装饰与 forbidden_colors。不要把主题字段渲染成可见文字。\n\n\
+         【NativeThemeSpec — deck-wide immutable】\n{theme_contract}\n\n\
+         【Native text geometry contract】\n{text_geometry_contract}\n\n\
+         [Universal page density contract — theme-independent]\n{density_contract}\n\n\
          【ppt-master SKILL 摘要】\n{skill_excerpt}\n\n\
          【Executor Base 摘要】\n{executor_excerpt}\n\n\
          【Shared Standards 摘要】\n{standards_excerpt}\n\n\
@@ -1959,26 +6660,118 @@ async fn generate_ppt_master_driven_slide_svg(
          【全局标题】{deck_title}\n【总页数】{total}\n【上一页标题】{prev_title}\n【下一页标题】{next_title}\n\n\
          【当前页 JSON】\n{slide_json}\n\n\
          请输出完整 SVG：",
-        skill_excerpt = skill_excerpt(skill_text),
-        executor_excerpt = truncate_for_prompt(&resources.executor_base, 6500),
-        standards_excerpt = truncate_for_prompt(&resources.shared_standards, 5000),
-        modes_index = truncate_for_prompt(&resources.modes_index, 2600),
-        visual_styles_index = truncate_for_prompt(&resources.visual_styles_index, 4200),
+        skill_excerpt = truncate_for_prompt(&skill_excerpt(skill_text), 1200),
+        theme_contract = theme_spec.prompt_contract(),
+        executor_excerpt = truncate_for_prompt(&resources.executor_base, 3000),
+        standards_excerpt = truncate_for_prompt(&resources.shared_standards, 2400),
+        modes_index = truncate_for_prompt(&resources.modes_index, 400),
+        visual_styles_index = truncate_for_prompt(&resources.visual_styles_index, 450),
         mode = mapping.mode,
-        mode_reference = truncate_for_prompt(&mapping.mode_reference, 3600),
+        mode_reference = truncate_for_prompt(&mapping.mode_reference, 1600),
         visual_style = mapping.visual_style,
-        visual_reference = truncate_for_prompt(&mapping.visual_style_reference, 4200),
-        layouts_index = truncate_for_prompt(&resources.layouts_index, 2200),
-        charts_index = truncate_for_prompt(&resources.charts_index, 4200),
+        visual_reference = truncate_for_prompt(&mapping.visual_style_reference, 1800),
+        layouts_index = truncate_for_prompt(&resources.layouts_index, 350),
+        charts_index = truncate_for_prompt(&resources.charts_index, 500),
         locked_page_context = locked_page_context,
-        design_spec = format!("{}\n\n{}", current_page_task, design_spec),
-        spec_lock = spec_lock,
+        text_geometry_contract = text_geometry_contract,
+        density_contract = density_contract.prompt_contract(),
+        design_spec = format!(
+            "{}\n\n{}",
+            current_page_task,
+            truncate_for_prompt(design_spec, 1800)
+        ),
+        spec_lock = truncate_for_prompt(&spec_lock, 4000),
         deck_title = plan.title,
         total = plan.slides.len(),
         prev_title = prev_title,
         next_title = next_title,
         slide_json = serde_json::to_string_pretty(slide).unwrap_or_default()
     );
+    let ai_prompt = if let Some(current_svg) = geometry_repair_svg {
+        let slide_spec = spec_lock_path
+            .parent()
+            .map(|project| {
+                project
+                    .join("slide_specs")
+                    .join(format!("slide-{:02}.json", slide.page))
+            })
+            .and_then(|path| fs::read_to_string(path).ok())
+            .unwrap_or_else(|| serde_json::to_string_pretty(slide).unwrap_or_default());
+        format!(
+            "You are performing one page-local SVG text-geometry repair.\n\
+             Return only one complete SVG. Do not re-plan the deck and do not use any fallback.\n\
+             Preserve every visible text string exactly, in the same DOM order. Do not delete, summarize, rewrite, or add visible content.\n\
+             You may only adjust the failed text elements inside their declared regions: x/y, text-anchor, tspan line breaks/dy, line height, local font size down to data-pome-min-font-size, and a small local region correction inside the 1280x720 canvas.\n\
+             Keep all non-failed graphics, colors, hierarchy, and page structure unchanged. The same deck-wide NativeThemeSpec remains mandatory.\n\
+             Re-check text-to-text and text-to-obstacle collisions after the repair.\n\n\
+             [NativeThemeSpec — deck-wide immutable]\n{theme_contract}\n\n\
+             [Current SlideSpec]\n{slide_spec}\n\n\
+             [Must keep visible text]\n{must_keep}\n\n\
+             [Geometry failure elements and allowed regions]\n{repair_context}\n\n\
+             [Current SVG]\n{current_svg}\n",
+            theme_contract = theme_spec.prompt_contract(),
+            slide_spec = slide_spec,
+            must_keep = serde_json::to_string_pretty(
+                &geometry_must_keep_text.unwrap_or_default()
+            )
+            .unwrap_or_default(),
+            repair_context = retry_feedback.unwrap_or("{}"),
+            current_svg = current_svg,
+        )
+    } else if let Some(current_svg) = density_relayout_svg {
+        let slide_spec = spec_lock_path
+            .parent()
+            .map(|project| {
+                project
+                    .join("slide_specs")
+                    .join(format!("slide-{:02}.json", slide.page))
+            })
+            .and_then(|path| fs::read_to_string(path).ok())
+            .unwrap_or_else(|| serde_json::to_string_pretty(slide).unwrap_or_default());
+        format!(
+            "You are performing exactly one page-local SVG space-utilization relayout.\n\
+             Return only one complete 1280x720 SVG. Do not re-plan the deck and do not use any fallback.\n\
+             Preserve every current visible text string and every mustInclude fact. Do not delete, rewrite, repeat, or invent facts.\n\
+             Keep the immutable NativeThemeSpec, font minimums, text-region metadata, and all geometry rules.\n\
+             Redistribute existing information to remove the reported non-functional dead whitespace. Use a semantic main region and supporting regions. You may change local structure, positions, scale of the true focal point, relationship lines, stage labels, data bars, quote emphasis, or section backgrounds.\n\
+             Do not add empty cards or meaningless rectangles, and do not turn the page into a card grid unless the current facts are genuinely parallel.\n\
+             Re-check text regions, collisions, and canvas bounds before returning.\n\n\
+             [NativeThemeSpec — deck-wide immutable]\n{theme_contract}\n\n\
+             [Universal density contract]\n{density_contract}\n\n\
+             [Current SlideSpec]\n{slide_spec}\n\n\
+             [Must include facts]\n{must_include}\n\n\
+             [Must keep current visible text]\n{must_keep}\n\n\
+             [Measured dead-whitespace report]\n{repair_context}\n\n\
+             [Current SVG]\n{current_svg}\n",
+            theme_contract = theme_spec.prompt_contract(),
+            density_contract = density_contract.prompt_contract(),
+            slide_spec = slide_spec,
+            must_include = serde_json::to_string_pretty(&slide.must_include).unwrap_or_default(),
+            must_keep = serde_json::to_string_pretty(
+                &density_must_keep_text.unwrap_or_default()
+            )
+            .unwrap_or_default(),
+            repair_context = retry_feedback.unwrap_or("{}"),
+            current_svg = current_svg,
+        )
+    } else {
+        full_ai_prompt
+    };
+    if let Some(project) = spec_lock_path.parent() {
+        let input_dir = project.join("analysis").join("native_executor_inputs");
+        let _ = fs::create_dir_all(&input_dir);
+        let suffix = if geometry_repair_svg.is_some() {
+            "geometry-repair"
+        } else if density_relayout_svg.is_some() {
+            "density-relayout"
+        } else {
+            "generate"
+        };
+        let _ = write_file(
+            &input_dir.join(format!("P{:02}-{suffix}.txt", slide.page)),
+            &ai_prompt,
+        );
+    }
     let input = PluginAiChatInput {
         request_id: format!("ppt_master_native_svg_{:02}", slide.page),
         model_id,
@@ -1987,10 +6780,30 @@ async fn generate_ppt_master_driven_slide_svg(
             content: ai_prompt,
         }],
     };
-    let raw =
-        ppt_ai_chat_with_timeout(db, input, &format!("AI 生成第 {} 页 SVG", slide.page)).await?;
-    extract_svg(&raw)
-        .ok_or_else(|| AppError::Custom(format!("第 {} 页 AI 未返回完整 SVG", slide.page)))
+    let raw = ppt_native_generation_chat_with_timeout(
+        db,
+        input,
+        &format!("AI 生成第 {} 页 SVG", slide.page),
+    )
+    .await?;
+    let has_svg_start = raw.contains("<svg");
+    let has_svg_end = raw.contains("</svg>");
+    println!(
+        "[Native Executor Response] page=P{:02} responseChars={} hasSvgStart={} hasSvgEnd={}",
+        slide.page,
+        raw.chars().count(),
+        has_svg_start,
+        has_svg_end
+    );
+    extract_svg(&raw).ok_or_else(|| {
+        AppError::Custom(format!(
+            "第 {} 页 AI 未返回完整 SVG：responseChars={}，hasSvgStart={}，hasSvgEnd={}",
+            slide.page,
+            raw.chars().count(),
+            has_svg_start,
+            has_svg_end
+        ))
+    })
 }
 
 async fn generate_agent_slide_svg(
@@ -2042,11 +6855,20 @@ async fn repair_agent_svgs_once(
     svg_output: &Path,
     quality_error: &str,
     model_id: Option<i64>,
+    attempts_by_file: &mut HashMap<String, usize>,
+    log_lines: &mut Vec<String>,
 ) -> Result<(), AppError> {
     for slide in &plan.slides {
         let filename = svg_filename_for_slide(slide);
         let path = svg_output.join(&filename);
         if !path.is_file() {
+            continue;
+        }
+        if !reserve_native_svg_repair_attempt(attempts_by_file, &filename) {
+            log_lines.push(format!(
+                "[SVG Repair] skipped, max attempts reached: file={} max_attempts={}",
+                filename, NATIVE_SVG_REPAIR_MAX_ATTEMPTS_PER_PAGE
+            ));
             continue;
         }
         let old_svg = fs::read_to_string(&path).unwrap_or_default();
@@ -2075,8 +6897,21 @@ async fn repair_agent_svgs_once(
                 },
             ],
         };
-        let raw =
-            ppt_ai_chat_with_timeout(db, input, &format!("AI 修复 SVG：{}", filename)).await?;
+        let svg_chars = old_svg.chars().count();
+        let prompt_chars = input
+            .messages
+            .iter()
+            .map(|message| message.content.chars().count())
+            .sum();
+        let raw = ppt_native_svg_repair_chat_with_timeout(
+            db,
+            input,
+            &format!("AI 修复 SVG：{}", filename),
+            &filename,
+            svg_chars,
+            prompt_chars,
+        )
+        .await?;
         if let Some(svg) = extract_svg(&raw) {
             write_file(&path, &svg)?;
         }
@@ -2086,22 +6921,21 @@ async fn repair_agent_svgs_once(
 
 async fn repair_native_svg_issues_once(
     db: &Database,
-    design_spec: &str,
-    spec_lock: &str,
-    plan: &SlidePlan,
     svg_output: &Path,
     issues: &[NativeSvgIssue],
     model_id: Option<i64>,
+    attempts_by_file: &mut HashMap<String, usize>,
     log_lines: &mut Vec<String>,
 ) -> Result<(), AppError> {
-    let mut repaired = Vec::new();
+    let mut processed_this_pass = Vec::new();
     for issue in issues {
-        if repaired
+        if processed_this_pass
             .iter()
             .any(|name: &String| name == &issue.file_name)
         {
             continue;
         }
+        processed_this_pass.push(issue.file_name.clone());
         let path = svg_output.join(&issue.file_name);
         if !path.is_file() {
             log_lines.push(format!(
@@ -2110,34 +6944,34 @@ async fn repair_native_svg_issues_once(
             ));
             continue;
         }
+        if !reserve_native_svg_repair_attempt(attempts_by_file, &issue.file_name) {
+            log_lines.push(format!(
+                "[Native Compat] repair skipped, max attempts reached: file={} max_attempts={}",
+                issue.file_name, NATIVE_SVG_REPAIR_MAX_ATTEMPTS_PER_PAGE
+            ));
+            continue;
+        }
         let old_svg = fs::read_to_string(&path).unwrap_or_default();
-        let slide_json = slide_json_for_svg_file(plan, &issue.file_name);
-        let prompt = format!(
-            "You are repairing a ppt-master SVG for native DrawingML PPTX export. Output only the complete fixed SVG, no markdown.\n\n\
-             Failed file: {file_name}\n\
-             Error type: {issue_type}\n\
-             Unsupported elements: {unsupported}\n\
-             Converter detail: {detail}\n\n\
-             Hard requirements:\n\
-             - Preserve the visual intent and page content.\n\
-             - Keep <svg width=\"1280\" height=\"720\" viewBox=\"0 0 1280 720\">.\n\
-             - Do not use <use>, <symbol>, visual defs + use references, <foreignObject>, HTML inside SVG, external href images, <filter>, <mask>, <clipPath>, or unsupported <pattern>.\n\
-             - Expand any <use href=\"#...\"> reference into actual rect/path/text/circle/line elements.\n\
-             - Do not rely on external assets or browser-only SVG features.\n\
-             - Use native-safe elements: svg, g, rect, circle, ellipse, line, polyline, polygon, path, text, tspan only when simple, linearGradient/radialGradient only for paint server definitions.\n\n\
-             design_spec.md:\n{design_spec}\n\n\
-             spec_lock.md:\n{spec_lock}\n\n\
-             Slide JSON:\n{slide_json}\n\n\
-             Original SVG:\n{old_svg}",
-            file_name = issue.file_name,
-            issue_type = issue.issue_type,
-            unsupported = issue.unsupported_elements.join(", "),
-            detail = issue.detail,
-            design_spec = design_spec,
-            spec_lock = spec_lock,
-            slide_json = slide_json,
-            old_svg = old_svg,
-        );
+        let prompt = build_native_svg_repair_prompt(issue, &old_svg);
+        let svg_chars = old_svg.chars().count();
+        let prompt_chars = prompt.chars().count();
+        let max_output_tokens = native_svg_repair_output_tokens(svg_chars);
+        let resolved_timeout = native_svg_repair_timeout(db);
+        let attempt = attempts_by_file
+            .get(&issue.file_name)
+            .copied()
+            .unwrap_or_default();
+        log_lines.push(format!(
+            "[Native Compat AI] file={} attempt={}/{} svg_chars={} prompt_chars={} estimated_tokens={} max_output_tokens={} timeout_secs={}",
+            issue.file_name,
+            attempt,
+            NATIVE_SVG_REPAIR_MAX_ATTEMPTS_PER_PAGE,
+            svg_chars,
+            prompt_chars,
+            estimate_mixed_text_tokens(&prompt),
+            max_output_tokens,
+            resolved_timeout.seconds,
+        ));
         let input = PluginAiChatInput {
             request_id: format!("ppt_master_native_svg_compat_repair_{}", issue.file_name),
             model_id,
@@ -2146,10 +6980,13 @@ async fn repair_native_svg_issues_once(
                 content: prompt,
             }],
         };
-        let raw = ppt_ai_chat_with_timeout(
+        let raw = ppt_native_svg_repair_chat_with_timeout(
             db,
             input,
             &format!("AI 修复 native 兼容 SVG：{}", issue.file_name),
+            &issue.file_name,
+            svg_chars,
+            prompt_chars,
         )
         .await?;
         if let Some(svg) = extract_svg(&raw) {
@@ -2158,7 +6995,6 @@ async fn repair_native_svg_issues_once(
                 "[Native Compat] repaired unsupported SVG elements in svg_output/{}",
                 issue.file_name
             ));
-            repaired.push(issue.file_name.clone());
         } else {
             log_lines.push(format!(
                 "[Native Compat] repair failed, AI did not return SVG for {}",
@@ -2169,6 +7005,115 @@ async fn repair_native_svg_issues_once(
     Ok(())
 }
 
+fn build_native_svg_repair_prompt(issue: &NativeSvgIssue, old_svg: &str) -> String {
+    format!(
+        "Repair this SVG for native DrawingML PPTX export. Output only the complete fixed SVG, no markdown or explanation.\n\n\
+         Failed file: {file_name}\n\
+         Error type: {issue_type}\n\
+         Unsupported elements: {unsupported}\n\
+         Converter detail: {detail}\n\n\
+         Change only the detected incompatibility. Preserve all text, geometry, colors, dimensions, and visual hierarchy that are unrelated to the issue.\n\
+         Replace unsupported nodes with equivalent native-safe svg/g/rect/circle/ellipse/line/polyline/polygon/path/text/tspan elements.\n\
+         Do not add use, symbol, foreignObject, external images, filter, mask, clipPath, or unsupported pattern elements.\n\n\
+         SVG to repair:\n{old_svg}",
+        file_name = issue.file_name,
+        issue_type = issue.issue_type,
+        unsupported = issue.unsupported_elements.join(", "),
+        detail = issue.detail,
+        old_svg = old_svg,
+    )
+}
+
+fn reserve_native_svg_repair_attempt(
+    attempts_by_file: &mut HashMap<String, usize>,
+    file_name: &str,
+) -> bool {
+    let attempts = attempts_by_file.entry(file_name.to_string()).or_default();
+    if *attempts >= NATIVE_SVG_REPAIR_MAX_ATTEMPTS_PER_PAGE {
+        return false;
+    }
+    *attempts += 1;
+    true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResolvedNativeSvgRepairTimeout {
+    seconds: u64,
+    source: &'static str,
+}
+
+fn native_svg_repair_timeout(db: &Database) -> ResolvedNativeSvgRepairTimeout {
+    match db.get_config(NATIVE_SVG_REPAIR_TIMEOUT_CONFIG_KEY) {
+        Ok(configured) => resolve_native_svg_repair_timeout(configured.as_deref()),
+        Err(error) => {
+            println!(
+                "[PPT Native SVG Repair Config] key={} read_failed={} fallbackSeconds={}",
+                NATIVE_SVG_REPAIR_TIMEOUT_CONFIG_KEY, error, NATIVE_SVG_REPAIR_TIMEOUT_DEFAULT_SECS,
+            );
+            ResolvedNativeSvgRepairTimeout {
+                seconds: NATIVE_SVG_REPAIR_TIMEOUT_DEFAULT_SECS,
+                source: "default",
+            }
+        }
+    }
+}
+
+fn resolve_native_svg_repair_timeout(configured: Option<&str>) -> ResolvedNativeSvgRepairTimeout {
+    match configured.and_then(|value| value.trim().parse::<u64>().ok()) {
+        Some(seconds) => ResolvedNativeSvgRepairTimeout {
+            seconds: seconds.clamp(
+                NATIVE_SVG_REPAIR_TIMEOUT_MIN_SECS,
+                NATIVE_SVG_REPAIR_TIMEOUT_MAX_SECS,
+            ),
+            source: "config",
+        },
+        None => ResolvedNativeSvgRepairTimeout {
+            seconds: NATIVE_SVG_REPAIR_TIMEOUT_DEFAULT_SECS,
+            source: "default",
+        },
+    }
+}
+
+fn is_native_svg_repair_request_id(request_id: &str) -> bool {
+    request_id.starts_with("ppt_master_agent_svg_repair_")
+        || request_id.starts_with("ppt_master_native_svg_compat_repair_")
+        || request_id.starts_with("ppt_master_final_text_guard_repair_")
+}
+
+async fn ppt_native_svg_repair_chat_with_timeout(
+    db: &Database,
+    input: PluginAiChatInput,
+    context: &str,
+    svg_file: &str,
+    svg_chars: usize,
+    prompt_chars: usize,
+) -> Result<String, AppError> {
+    let resolved_timeout = native_svg_repair_timeout(db);
+    let max_output_tokens = native_svg_repair_output_tokens(svg_chars.max(1));
+    ppt_ai_chat_with_policy(
+        db,
+        input,
+        context,
+        PptAiRequestPolicy {
+            timeout_secs: resolved_timeout.seconds,
+            max_output_tokens: Some(max_output_tokens),
+            svg_chars: Some(svg_chars),
+            prompt_chars: Some(prompt_chars),
+            failure_type: Some("native_svg_repair_timeout"),
+            timeout_source: resolved_timeout.source,
+            svg_file: Some(svg_file.to_string()),
+            disable_thinking: true,
+            force_json_output: false,
+        },
+    )
+    .await
+}
+
+fn native_svg_repair_output_tokens(svg_chars: usize) -> i64 {
+    let proportional_limit = (svg_chars as i64 + 2) / 3 + 1_024;
+    proportional_limit.clamp(2_048, NATIVE_SVG_REPAIR_MAX_OUTPUT_TOKENS)
+}
+
 async fn repair_final_text_leaks_once(
     db: &Database,
     design_spec: &str,
@@ -2177,6 +7122,7 @@ async fn repair_final_text_leaks_once(
     svg_output: &Path,
     issues: &[FinalTextIssue],
     model_id: Option<i64>,
+    attempts_by_file: &mut HashMap<String, usize>,
     log_lines: &mut Vec<String>,
 ) -> Result<(), AppError> {
     let mut repaired = Vec::new();
@@ -2189,6 +7135,13 @@ async fn repair_final_text_leaks_once(
         }
         let path = svg_output.join(&issue.file_name);
         if !path.is_file() {
+            continue;
+        }
+        if !reserve_native_svg_repair_attempt(attempts_by_file, &issue.file_name) {
+            log_lines.push(format!(
+                "[Final Text Guard] {} repair skipped: max attempts reached ({})",
+                issue.file_name, NATIVE_SVG_REPAIR_MAX_ATTEMPTS_PER_PAGE
+            ));
             continue;
         }
         let old_svg = fs::read_to_string(&path).unwrap_or_default();
@@ -2224,10 +7177,19 @@ async fn repair_final_text_leaks_once(
                 content: prompt,
             }],
         };
-        let raw = ppt_ai_chat_with_timeout(
+        let svg_chars = old_svg.chars().count();
+        let prompt_chars = input
+            .messages
+            .iter()
+            .map(|message| message.content.chars().count())
+            .sum();
+        let raw = ppt_native_svg_repair_chat_with_timeout(
             db,
             input,
             &format!("AI 修复 final text leakage: {}", issue.file_name),
+            &issue.file_name,
+            svg_chars,
+            prompt_chars,
         )
         .await?;
         if let Some(svg) = extract_svg(&raw) {
@@ -2254,6 +7216,7 @@ async fn enforce_final_text_guard(
     plan: &SlidePlan,
     svg_output: &Path,
     model_id: Option<i64>,
+    attempts_by_file: &mut HashMap<String, usize>,
     log_lines: &mut Vec<String>,
 ) -> Result<(), AppError> {
     log_lines.push("[Final Text Guard] scan start".to_string());
@@ -2283,6 +7246,7 @@ async fn enforce_final_text_guard(
         svg_output,
         &issues,
         model_id,
+        attempts_by_file,
         log_lines,
     )
     .await?;
@@ -2411,7 +7375,9 @@ fn banned_final_text_terms() -> &'static [&'static str] {
         "Agent",
         "Workflow",
         "fallback",
-        "legacy",
+        "legacy fallback",
+        "legacy_fallback",
+        "legacy mode",
         "native",
         "spec_lock",
         "design_spec",
@@ -2570,6 +7536,440 @@ fn extract_svg(raw: &str) -> Option<String> {
     Some(raw[start..end + "</svg>".len()].trim().to_string())
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct NativeSvgNormalizationReport {
+    rgba_colors_normalized: usize,
+    group_opacity_normalized: usize,
+    filters_removed: usize,
+    malformed_closing_tags_repaired: usize,
+    duplicate_line_coordinates_repaired: usize,
+}
+
+fn normalize_native_svg_compatibility(svg: &str) -> (String, NativeSvgNormalizationReport) {
+    let mut rgba_colors_normalized = 0;
+    let rgba_normalized = native_opening_tag_regex()
+        .replace_all(svg, |captures: &regex::Captures<'_>| {
+            let tag = captures.get(0).map_or("", |value| value.as_str());
+            let (normalized, count) = normalize_native_rgba_tag(tag);
+            rgba_colors_normalized += count;
+            normalized
+        })
+        .into_owned();
+    let (line_coordinate_normalized, duplicate_line_coordinates_repaired) =
+        normalize_duplicate_native_line_coordinate_attributes(&rgba_normalized);
+    let mut normalized_count = 0;
+    let group_normalized = native_group_opacity_regex()
+        .replace_all(
+            &line_coordinate_normalized,
+            |captures: &regex::Captures<'_>| {
+                normalized_count += 1;
+                let before = captures.name("before").map_or("", |value| value.as_str());
+                let after = captures.name("after").map_or("", |value| value.as_str());
+                let opacity = captures.name("opacity").map_or("1", |value| value.as_str());
+                let remaining_attributes = format!("{before}{after}");
+                let lower = remaining_attributes.to_ascii_lowercase();
+                let fill_opacity = if lower.contains("fill-opacity") {
+                    String::new()
+                } else {
+                    format!(" fill-opacity=\"{opacity}\"")
+                };
+                let stroke_opacity = if lower.contains("stroke-opacity") {
+                    String::new()
+                } else {
+                    format!(" stroke-opacity=\"{opacity}\"")
+                };
+                format!("<g{before}{fill_opacity}{stroke_opacity}{after}>")
+            },
+        )
+        .into_owned();
+    let filter_definition_count = native_filter_definition_regex()
+        .find_iter(&group_normalized)
+        .count();
+    let without_filter_definitions = native_filter_definition_regex()
+        .replace_all(&group_normalized, "")
+        .into_owned();
+    let filter_reference_count = native_filter_reference_regex()
+        .find_iter(&without_filter_definitions)
+        .count();
+    let without_filter_references = native_filter_reference_regex()
+        .replace_all(&without_filter_definitions, "")
+        .into_owned();
+    let (normalized, malformed_closing_tags_repaired) =
+        normalize_duplicate_native_svg_closing_tags(&without_filter_references);
+    (
+        normalized,
+        NativeSvgNormalizationReport {
+            rgba_colors_normalized,
+            group_opacity_normalized: normalized_count,
+            filters_removed: filter_definition_count + filter_reference_count,
+            malformed_closing_tags_repaired,
+            duplicate_line_coordinates_repaired,
+        },
+    )
+}
+
+fn normalize_duplicate_native_line_coordinate_attributes(svg: &str) -> (String, usize) {
+    let mut repaired = 0;
+    let normalized = native_line_opening_tag_regex()
+        .replace_all(svg, |captures: &regex::Captures<'_>| {
+            let tag = captures.get(0).map_or("", |value| value.as_str());
+            let attributes = native_line_coordinate_attribute_regex()
+                .captures_iter(tag)
+                .filter_map(|attribute| {
+                    let name = attribute.name("name")?;
+                    let value = attribute.name("value")?;
+                    Some((
+                        name.start(),
+                        name.end(),
+                        name.as_str().to_ascii_lowercase(),
+                        value.as_str().trim().to_string(),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            if attributes.len() != 4 {
+                return tag.to_string();
+            }
+
+            let repair_candidates = [
+                ("x1", "x2", "y1", "y2"),
+                ("x2", "x1", "y1", "y2"),
+                ("y1", "y2", "x1", "x2"),
+                ("y2", "y1", "x1", "x2"),
+            ];
+            for (duplicate, missing, other_start, other_end) in repair_candidates {
+                let count = |name: &str| {
+                    attributes
+                        .iter()
+                        .filter(|(_, _, attribute, _)| attribute == name)
+                        .count()
+                };
+                if count(duplicate) != 2
+                    || count(missing) != 0
+                    || count(other_start) != 1
+                    || count(other_end) != 1
+                {
+                    continue;
+                }
+                let duplicate_values = attributes
+                    .iter()
+                    .filter(|(_, _, attribute, _)| attribute == duplicate)
+                    .map(|(_, _, _, value)| value)
+                    .collect::<Vec<_>>();
+                if duplicate_values.len() != 2 || duplicate_values[0] != duplicate_values[1] {
+                    continue;
+                }
+                let Some((start, end, _, _)) = attributes
+                    .iter()
+                    .find(|(_, _, attribute, _)| attribute == duplicate)
+                else {
+                    continue;
+                };
+                let mut fixed = tag.to_string();
+                fixed.replace_range(*start..*end, missing);
+                repaired += 1;
+                return fixed;
+            }
+            tag.to_string()
+        })
+        .into_owned();
+    (normalized, repaired)
+}
+
+fn normalize_native_rgba_tag(tag: &str) -> (String, usize) {
+    let mut normalized = tag.to_string();
+    let mut count = 0;
+
+    loop {
+        let Some(captures) = native_rgba_color_attribute_regex().captures(&normalized) else {
+            break;
+        };
+        let Some(full) = captures.get(0) else {
+            break;
+        };
+        let attribute = captures
+            .name("attribute")
+            .map_or("", |value| value.as_str())
+            .to_ascii_lowercase();
+        let quote = captures.name("quote").map_or("\"", |value| value.as_str());
+        let Some(red) = captures
+            .name("red")
+            .and_then(|value| value.as_str().parse::<u16>().ok())
+        else {
+            break;
+        };
+        let Some(green) = captures
+            .name("green")
+            .and_then(|value| value.as_str().parse::<u16>().ok())
+        else {
+            break;
+        };
+        let Some(blue) = captures
+            .name("blue")
+            .and_then(|value| value.as_str().parse::<u16>().ok())
+        else {
+            break;
+        };
+        let Some(alpha) = captures
+            .name("alpha")
+            .and_then(|value| value.as_str().parse::<f64>().ok())
+        else {
+            break;
+        };
+        if red > 255 || green > 255 || blue > 255 || !(0.0..=1.0).contains(&alpha) {
+            break;
+        }
+
+        let opacity_attribute = match attribute.as_str() {
+            "fill" => "fill-opacity",
+            "stroke" => "stroke-opacity",
+            "stop-color" => "stop-opacity",
+            _ => break,
+        };
+        let hex_attribute = format!("{attribute}={quote}#{red:02X}{green:02X}{blue:02X}{quote}");
+
+        let existing_opacity = native_opacity_attribute_regex()
+            .captures_iter(&normalized)
+            .find(|candidate| {
+                candidate
+                    .name("attribute")
+                    .is_some_and(|value| value.as_str().eq_ignore_ascii_case(opacity_attribute))
+            })
+            .and_then(|candidate| {
+                let full = candidate.get(0)?;
+                let value = candidate.name("value")?.as_str().parse::<f64>().ok()?;
+                Some((
+                    full.range(),
+                    value,
+                    candidate.name("quote")?.as_str().to_string(),
+                ))
+            });
+
+        if let Some((opacity_range, existing_value, opacity_quote)) = existing_opacity {
+            let combined = format_svg_opacity(existing_value * alpha);
+            normalized.replace_range(
+                opacity_range,
+                &format!("{opacity_attribute}={opacity_quote}{combined}{opacity_quote}"),
+            );
+            let Some(updated_rgba) = native_rgba_color_attribute_regex().find(&normalized) else {
+                break;
+            };
+            normalized.replace_range(updated_rgba.range(), &hex_attribute);
+        } else {
+            normalized.replace_range(
+                full.range(),
+                &format!(
+                    "{hex_attribute} {opacity_attribute}={quote}{}{quote}",
+                    format_svg_opacity(alpha)
+                ),
+            );
+        }
+        count += 1;
+    }
+
+    (normalized, count)
+}
+
+fn format_svg_opacity(value: f64) -> String {
+    let value = value.clamp(0.0, 1.0);
+    let formatted = format!("{value:.6}");
+    let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_duplicate_native_svg_closing_tags(svg: &str) -> (String, usize) {
+    let mut normalized = svg.to_string();
+    let mut repaired = 0;
+    for (invalid, valid) in [
+        ("</texttext>", "</text>"),
+        ("</tspantspan>", "</tspan>"),
+        ("</gg>", "</g>"),
+        ("</defsdefs>", "</defs>"),
+        ("</svgsvg>", "</svg>"),
+    ] {
+        let count = normalized.matches(invalid).count();
+        if count > 0 {
+            normalized = normalized.replace(invalid, valid);
+            repaired += count;
+        }
+    }
+    (normalized, repaired)
+}
+
+fn native_opening_tag_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?s)<[A-Za-z][^<>]*>"#).expect("valid regex"))
+}
+
+fn native_rgba_color_attribute_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)(?P<attribute>fill|stroke|stop-color)\s*=\s*(?P<quote>[\"'])rgba\(\s*(?P<red>[0-9]{1,3})\s*,\s*(?P<green>[0-9]{1,3})\s*,\s*(?P<blue>[0-9]{1,3})\s*,\s*(?P<alpha>(?:0(?:\.[0-9]+)?|1(?:\.0+)?))\s*\)[\"']"#,
+        )
+        .expect("valid regex")
+    })
+}
+
+fn native_opacity_attribute_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)(?P<attribute>fill-opacity|stroke-opacity|stop-opacity)\s*=\s*(?P<quote>[\"'])(?P<value>(?:0(?:\.[0-9]+)?|1(?:\.0+)?))[\"']"#,
+        )
+        .expect("valid regex")
+    })
+}
+
+fn native_group_opacity_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)<g(?P<before>[^>]*)\sopacity\s*=\s*[\"'](?P<opacity>[0-9]*\.?[0-9]+)[\"'](?P<after>[^>]*)>"#,
+        )
+        .expect("valid regex")
+    })
+}
+
+fn native_line_opening_tag_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?is)<line\b[^>]*>"#).expect("valid regex"))
+}
+
+fn native_line_coordinate_attribute_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)(?P<name>x1|x2|y1|y2)\s*=\s*(?P<quote>[\"'])(?P<value>[^\"']*)[\"']"#)
+            .expect("valid regex")
+    })
+}
+
+fn native_filter_definition_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?is)<filter\b[^>]*>.*?</filter\s*>"#).expect("valid regex"))
+}
+
+fn native_filter_reference_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?i)\sfilter\s*=\s*[\"'][^\"']*[\"']"#).expect("valid regex"))
+}
+
+fn validate_native_svg_text(file_name: &str, svg: &str) -> Result<(), AppError> {
+    let trimmed = svg.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Custom(format!("原生 SVG 为空: {file_name}")));
+    }
+    if trimmed.contains("```") {
+        return Err(AppError::Custom(format!(
+            "原生 SVG 混入 Markdown 代码块标记: {file_name}"
+        )));
+    }
+    if !trimmed.contains("<svg") || !trimmed.ends_with("</svg>") {
+        return Err(AppError::Custom(format!(
+            "原生 SVG 不完整或混入说明文字: {file_name}"
+        )));
+    }
+    if !native_view_box_regex().is_match(trimmed) {
+        return Err(AppError::Custom(format!(
+            "原生 SVG viewBox 必须为 0 0 1280 720: {file_name}"
+        )));
+    }
+    if !native_width_regex().is_match(trimmed) || !native_height_regex().is_match(trimmed) {
+        return Err(AppError::Custom(format!(
+            "原生 SVG width/height 必须为 1280/720: {file_name}"
+        )));
+    }
+    Ok(())
+}
+
+fn native_view_box_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)\bviewBox\s*=\s*["']\s*0\s+0\s+1280\s+720\s*["']"#).expect("valid regex")
+    })
+}
+
+fn native_width_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)\bwidth\s*=\s*["']\s*1280(?:\.0+)?\s*["']"#).expect("valid regex")
+    })
+}
+
+fn native_height_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"(?i)\bheight\s*=\s*["']\s*720(?:\.0+)?\s*["']"#).expect("valid regex")
+    })
+}
+
+fn validate_native_svg_set(plan: &SlidePlan, svg_output: &Path) -> Result<(), AppError> {
+    if !svg_output.is_dir() {
+        return Err(AppError::NotFound(format!(
+            "原生 SVG 目录不存在: {}",
+            svg_output.display()
+        )));
+    }
+
+    for slide in &plan.slides {
+        let file_name = svg_filename_for_slide(slide);
+        let path = svg_output.join(&file_name);
+        if !path.is_file() {
+            return Err(AppError::NotFound(format!(
+                "原生模式缺少 SVG: {file_name} ({})",
+                path.display()
+            )));
+        }
+        let svg = fs::read_to_string(&path).map_err(|error| {
+            AppError::Custom(format!("读取原生 SVG 失败: {file_name} ({error})"))
+        })?;
+        validate_native_svg_text(&file_name, &svg)?;
+    }
+
+    let actual_svg_count = fs::read_dir(svg_output)?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
+        })
+        .count();
+    if actual_svg_count != plan.slides.len() {
+        return Err(AppError::Custom(format!(
+            "原生 SVG 页数不符合 slide_plan: expected={}, actual={}, dir={}",
+            plan.slides.len(),
+            actual_svg_count,
+            svg_output.display()
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_native_svg_files_exist(plan: &SlidePlan, svg_output: &Path) -> Result<(), AppError> {
+    if !svg_output.is_dir() {
+        return Err(AppError::NotFound(format!(
+            "原生 SVG 目录不存在: {}",
+            svg_output.display()
+        )));
+    }
+    for slide in &plan.slides {
+        let file_name = svg_filename_for_slide(slide);
+        let path = svg_output.join(&file_name);
+        if !path.is_file() {
+            return Err(AppError::NotFound(format!(
+                "原生模式缺少 SVG: {file_name} ({})",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn skill_excerpt(skill_text: &str) -> String {
     skill_text
         .lines()
@@ -2594,6 +7994,147 @@ fn truncate_for_prompt(text: &str, max_chars: usize) -> String {
     let mut out: String = text.chars().take(max_chars).collect();
     out.push_str("\n...[truncated]\n");
     out
+}
+
+#[cfg(test)]
+fn parse_native_slide_plan_json(raw: &str) -> Result<SlidePlan, AppError> {
+    let trimmed = raw.trim();
+    let stripped = trimmed
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    let json_text = if serde_json::from_str::<serde_json::Value>(stripped).is_ok() {
+        stripped
+    } else {
+        let start = raw
+            .find('{')
+            .ok_or_else(|| AppError::Custom("AI 返回中找不到 JSON 起点".into()))?;
+        let end = raw
+            .rfind('}')
+            .ok_or_else(|| AppError::Custom("AI 返回中找不到 JSON 终点".into()))?;
+        if end <= start {
+            return Err(AppError::Custom("AI 返回 JSON 范围无效".into()));
+        }
+        &raw[start..=end]
+    };
+    let mut value = serde_json::from_str::<serde_json::Value>(json_text).map_err(|error| {
+        AppError::Custom(format!("AI 返回的 slide_plan JSON 无法解析: {error}"))
+    })?;
+
+    // Native rendering always applies the locked Pomegranate/ppt-master theme after planning.
+    // Some single-turn models return a prose theme description even when asked for an object;
+    // normalize only that non-executed field while keeping every page contract strict.
+    value["theme"] = serde_json::to_value(default_theme())
+        .map_err(|error| AppError::Custom(format!("序列化 native 默认主题失败: {error}")))?;
+    for (field, fallback) in [
+        ("title", ""),
+        ("subtitle", ""),
+        ("audience", ""),
+        ("style", ""),
+    ] {
+        normalize_native_string_field(&mut value, field, fallback);
+    }
+    normalize_native_object_array_field(&mut value, "themeAllocation");
+    if let Some(allocations) = value
+        .get_mut("themeAllocation")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for allocation in allocations {
+            for field in ["pageId", "assignedTheme", "exclusiveScope"] {
+                normalize_native_string_field(allocation, field, "");
+            }
+        }
+    }
+    if let Some(slides) = value
+        .get_mut("slides")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for (index, slide) in slides.iter_mut().enumerate() {
+            if let Some(object) = slide.as_object_mut() {
+                let page_number = serde_json::Value::Number(serde_json::Number::from(index + 1));
+                object.insert("page".to_string(), page_number.clone());
+                object.insert("pageIndex".to_string(), page_number);
+            }
+            let page_title = format!("第 {} 页", index + 1);
+            let page_id = format!("P{:02}", index + 1);
+            let file_stem = format!("slide_{}", index + 1);
+            for (field, fallback) in [
+                ("pageId", page_id.as_str()),
+                ("type", if index == 0 { "cover" } else { "content" }),
+                ("layout", ""),
+                ("title", page_title.as_str()),
+                ("subtitle", ""),
+                ("visualHint", ""),
+                ("pageTheme", ""),
+                ("mainClaim", ""),
+                ("coreMessage", ""),
+                ("contentScope", ""),
+                ("relation", ""),
+                ("density", ""),
+                ("visualIntent", ""),
+                ("pageRhythm", ""),
+                ("chartRef", ""),
+                ("chartType", ""),
+                ("fileStem", file_stem.as_str()),
+                ("speakerNote", ""),
+            ] {
+                normalize_native_string_field(slide, field, fallback);
+            }
+            for field in ["bullets", "evidence", "mustInclude", "mustAvoid"] {
+                normalize_native_string_array_field(slide, field);
+            }
+            normalize_native_object_array_field(slide, "contentBlocks");
+        }
+    }
+
+    serde_json::from_value::<SlidePlan>(value)
+        .map_err(|error| AppError::Custom(format!("AI 返回的 slide_plan JSON 无法解析: {error}")))
+}
+
+#[cfg(test)]
+fn normalize_native_string_field(value: &mut serde_json::Value, field: &str, fallback: &str) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    if !object.get(field).is_some_and(serde_json::Value::is_string) {
+        object.insert(
+            field.to_string(),
+            serde_json::Value::String(fallback.to_string()),
+        );
+    }
+}
+
+#[cfg(test)]
+fn normalize_native_string_array_field(value: &mut serde_json::Value, field: &str) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let current = object
+        .entry(field.to_string())
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    if current.is_null() {
+        *current = serde_json::Value::Array(Vec::new());
+        return;
+    }
+    if let Some(text) = current.as_str() {
+        let trimmed = text.trim();
+        *current = if trimmed.is_empty() {
+            serde_json::Value::Array(Vec::new())
+        } else {
+            serde_json::Value::Array(vec![serde_json::Value::String(trimmed.to_string())])
+        };
+    }
+}
+
+#[cfg(test)]
+fn normalize_native_object_array_field(value: &mut serde_json::Value, field: &str) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    if !object.get(field).is_some_and(serde_json::Value::is_array) {
+        object.insert(field.to_string(), serde_json::Value::Array(Vec::new()));
+    }
 }
 
 fn parse_slide_plan_json(raw: &str) -> Result<SlidePlan, AppError> {
@@ -3069,7 +8610,470 @@ fn normalize_slide_plan(
     plan
 }
 
+fn stable_markdown_link_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(r"(?i)\[([^\]\r\n]{1,160})\]\(\s*(?:https?://|www\.)[^)\r\n]*\)")
+            .expect("valid stable markdown link regex")
+    })
+}
+
+fn stable_raw_url_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(r"(?i)(?:https?://|www\.)[^\s<>{}\[\]，。；;！!？?]+")
+            .expect("valid stable raw URL regex")
+    })
+}
+
+fn stable_url_fragment_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(
+            r"(?i)(?:[a-z0-9-]+\.)?(?:wikipedia(?:\.org)?|org/wiki|wiki/|cite_note)[^\s，。；;！!？?]*",
+        )
+        .expect("valid stable URL fragment regex")
+    })
+}
+
+fn stable_percent_encoded_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(r"(?i)[^\s，。；;！!？?]*%[0-9a-f]{2}[^\s，。；;！!？?]*")
+            .expect("valid stable percent-encoded URL regex")
+    })
+}
+
+fn stable_malformed_citation_prefix_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(
+            r"(?m)(^|[\s，。；;！？!?])\d{1,3}\s*[（(]\s*\[\s*(?:\\+\s*)?\[\s*(?:注\s*)?\d{1,3}(?:\s*[-–—]\s*\d{1,3})?\s*\]?\s*[（(]?",
+        )
+        .expect("valid stable malformed citation prefix regex")
+    })
+}
+
+fn stable_escaped_citation_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(r"\[\s*(?:\\+\s*)?\[\s*(?:注\s*)?\d{1,3}(?:\s*[-–—]\s*\d{1,3})?\s*\]?")
+            .expect("valid stable escaped citation regex")
+    })
+}
+
+fn stable_bracketed_citation_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(
+            r"(?:\[\s*(?:注\s*)?\d{1,3}(?:\s*[-–—]\s*\d{1,3})?\s*\]|【\s*(?:注\s*)?\d{1,3}(?:\s*[-–—]\s*\d{1,3})?\s*】|\\+\]\])",
+        )
+        .expect("valid stable bracketed citation regex")
+    })
+}
+
+fn stable_orphan_note_prefix_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(r"(?m)(^|[\s，。；;：:])注\s*\d{1,3}\s*[（(]")
+            .expect("valid stable orphan note prefix regex")
+    })
+}
+
+fn stable_leading_reference_cluster_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(r"(?m)^\s*\d{1,3}\s*[（(]\s*\d{1,4}\s*([，。；;：:\p{Han}A-Za-z])")
+            .expect("valid stable leading reference cluster regex")
+    })
+}
+
+fn stable_trailing_reference_cluster_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(r"(?m)(^|[\s，。；;])(?:注\s*)?\d{1,3}\s*[（(]\s*\d{1,3}\s*$")
+            .expect("valid stable trailing reference cluster regex")
+    })
+}
+
+fn stable_isolated_reference_number_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(r"(?m)^\s*(?:注\s*)?[1-9]\d{0,2}\s*$")
+            .expect("valid stable isolated reference number regex")
+    })
+}
+
+fn stable_leading_reference_number_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(r"(?m)^\s*(?:注\s*)?[1-9]\d{0,2}\s*[，,]\s*")
+            .expect("valid stable leading reference number regex")
+    })
+}
+
+fn stable_empty_parentheses_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(r"(?:\(\s*\)|（\s*）)").expect("valid stable empty parentheses regex")
+    })
+}
+
+fn stable_orphan_parenthesized_reference_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(r"(?m)\s*[（(]\s*\d{1,4}\s*(?:$|([，。；;]))")
+            .expect("valid stable orphan parenthesized reference regex")
+    })
+}
+
+fn stable_orphan_opening_parenthesis_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(r"\s*[（(]\s*([，。；;])")
+            .expect("valid stable orphan opening parenthesis regex")
+    })
+}
+
+fn stable_html_tag_regex() -> &'static Regex {
+    static VALUE: OnceLock<Regex> = OnceLock::new();
+    VALUE.get_or_init(|| Regex::new(r"<[^>\r\n]+>").expect("valid stable HTML tag regex"))
+}
+
+fn split_stable_visible_clauses(value: &str) -> Vec<String> {
+    let mut clauses = Vec::new();
+    let mut current = String::new();
+    for ch in value.chars() {
+        if matches!(
+            ch,
+            '\n' | '\r' | '。' | '！' | '？' | '!' | '?' | '；' | ';'
+        ) {
+            let trimmed = current.trim();
+            if !trimmed.is_empty() {
+                clauses.push(trimmed.to_string());
+            }
+            current.clear();
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.trim().is_empty() {
+        clauses.push(current.trim().to_string());
+    }
+    clauses
+}
+
+fn looks_like_stable_design_instruction(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    let page_directive = normalized.starts_with("slide ")
+        || normalized.starts_with("page ")
+        || value.trim_start().starts_with("本页")
+        || value.trim_start().starts_with("该页")
+        || (value.trim_start().starts_with('第')
+            && value.chars().take(12).collect::<String>().contains('页'));
+    let design_action = [
+        "建议",
+        "可用",
+        "采用",
+        "布局",
+        "排版",
+        "视觉",
+        "图表",
+        "卡片",
+        "配图",
+        "半透明",
+        "标题",
+        "副标题",
+        "页脚",
+        "横线",
+        "居中",
+        "左侧",
+        "右侧",
+        "背景",
+        "呈现方式",
+        "visual advice",
+        "design advice",
+        "layout intent",
+        "visual intent",
+    ]
+    .iter()
+    .any(|token| normalized.contains(&token.to_ascii_lowercase()));
+    let planning_heading = [
+        "visual expression advice",
+        "suggested page structure",
+        "page recommendation",
+        "diversity reason",
+        "视觉与表达建议",
+        "建议页面结构",
+    ]
+    .iter()
+    .any(|token| normalized.contains(&token.to_ascii_lowercase()));
+    let cover_directive = (value.trim_start().starts_with("封面")
+        || normalized.starts_with("cover"))
+        && design_action;
+    let outline_marker = value.trim().chars().count() <= 16
+        && value.trim_start().starts_with('第')
+        && value.contains("部分");
+    let cover_heading = value.trim().starts_with("封面·总览")
+        || value.trim().starts_with("封面总览")
+        || value.trim().eq_ignore_ascii_case("cover overview");
+    let question_residue = value.trim().chars().count() <= 20
+        && value.trim().ends_with("部分")
+        && value.contains("评价");
+    page_directive && design_action
+        || cover_directive
+        || planning_heading
+        || outline_marker
+        || cover_heading
+        || question_residue
+}
+
+fn looks_like_stable_internal_question(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    let question_form = value.contains("是否")
+        || value.contains("请说明")
+        || value.contains("希望用何种")
+        || value.contains("如需展示")
+        || normalized.contains("should this")
+        || normalized.contains("please confirm");
+    let production_topic = [
+        "ppt",
+        "汇报",
+        "页面",
+        "展示",
+        "措辞",
+        "视觉处理",
+        "呈现方式",
+        "平衡度",
+        "图表",
+        "评价部分",
+        "不同视角",
+        "价值引导",
+        "展开",
+        "陈述",
+        "采用",
+        "保留",
+        "需要",
+    ]
+    .iter()
+    .any(|token| normalized.contains(&token.to_ascii_lowercase()));
+    question_form && production_topic || value.trim().starts_with("若有倾向")
+}
+
+fn looks_like_stable_internal_metadata(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    [
+        "user-edited structured ai understanding",
+        "user-edited struct",
+        "structured ai understanding",
+        "planning context mirror",
+        "legacy ai understanding result",
+        "legacy prompt - compatibility only",
+        "fact safety rules",
+        "pomegranate planning context",
+        "fallback reason",
+        "ai understanding result",
+        "本材料源自",
+        "材料来源",
+        "素材来源",
+        "文中提到",
+    ]
+    .iter()
+    .any(|token| normalized.contains(token))
+}
+
+fn remove_unmatched_stable_square_brackets(value: &str) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut keep = vec![true; chars.len()];
+    let mut ascii_open = Vec::new();
+    let mut wide_open = Vec::new();
+    for (index, ch) in chars.iter().enumerate() {
+        match ch {
+            '[' => ascii_open.push(index),
+            ']' => {
+                if ascii_open.pop().is_none() {
+                    keep[index] = false;
+                }
+            }
+            '【' => wide_open.push(index),
+            '】' => {
+                if wide_open.pop().is_none() {
+                    keep[index] = false;
+                }
+            }
+            _ => {}
+        }
+    }
+    for index in ascii_open.into_iter().chain(wide_open) {
+        keep[index] = false;
+    }
+    chars
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(ch, keep)| keep.then_some(ch))
+        .collect()
+}
+
+fn remove_redundant_stable_backslashes(value: &str) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut output = String::with_capacity(value.len());
+    for (index, ch) in chars.iter().enumerate() {
+        if *ch == '\\'
+            && chars
+                .get(index + 1)
+                .is_none_or(|next| matches!(next, '[' | ']' | '*' | '#' | '_' | '`' | '\\'))
+        {
+            continue;
+        }
+        output.push(*ch);
+    }
+    output
+}
+
+fn clean_stable_reference_artifacts(value: &str) -> String {
+    if value.trim().is_empty() {
+        return String::new();
+    }
+    let mut cleaned = stable_markdown_link_regex()
+        .replace_all(value, "$1")
+        .into_owned();
+    cleaned = stable_html_tag_regex()
+        .replace_all(&cleaned, " ")
+        .into_owned();
+    cleaned = stable_raw_url_regex()
+        .replace_all(&cleaned, " ")
+        .into_owned();
+    cleaned = stable_url_fragment_regex()
+        .replace_all(&cleaned, " ")
+        .into_owned();
+    cleaned = stable_percent_encoded_regex()
+        .replace_all(&cleaned, " ")
+        .into_owned();
+    cleaned = stable_malformed_citation_prefix_regex()
+        .replace_all(&cleaned, "$1")
+        .into_owned();
+    cleaned = stable_escaped_citation_regex()
+        .replace_all(&cleaned, " ")
+        .into_owned();
+    cleaned = stable_bracketed_citation_regex()
+        .replace_all(&cleaned, " ")
+        .into_owned();
+    cleaned = stable_orphan_note_prefix_regex()
+        .replace_all(&cleaned, "$1")
+        .into_owned();
+    cleaned = stable_leading_reference_cluster_regex()
+        .replace_all(&cleaned, "$1")
+        .into_owned();
+    cleaned = stable_trailing_reference_cluster_regex()
+        .replace_all(&cleaned, "$1")
+        .into_owned();
+    cleaned = stable_isolated_reference_number_regex()
+        .replace_all(&cleaned, " ")
+        .into_owned();
+    cleaned = stable_leading_reference_number_regex()
+        .replace_all(&cleaned, "")
+        .into_owned();
+    cleaned = stable_orphan_parenthesized_reference_regex()
+        .replace_all(&cleaned, "$1")
+        .into_owned();
+    cleaned = stable_orphan_opening_parenthesis_regex()
+        .replace_all(&cleaned, "$1")
+        .into_owned();
+    cleaned = stable_empty_parentheses_regex()
+        .replace_all(&cleaned, " ")
+        .into_owned();
+    cleaned = remove_redundant_stable_backslashes(&cleaned);
+    cleaned = remove_unmatched_stable_square_brackets(&cleaned);
+    let decoded = cleaned
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'");
+    decoded
+        .trim_start_matches(|ch: char| {
+            ch.is_whitespace() || matches!(ch, '，' | ',' | '；' | ';' | '：' | ':')
+        })
+        .to_string()
+}
+
+fn stable_markdown_heading_prefix(value: &str) -> Option<(usize, &str)> {
+    let trimmed = value.trim_start();
+    let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
+    if !(1..=3).contains(&hashes) {
+        return None;
+    }
+    let remainder = &trimmed[hashes..];
+    remainder
+        .chars()
+        .next()
+        .is_some_and(char::is_whitespace)
+        .then(|| (hashes, remainder.trim_start()))
+}
+
+fn strip_stable_list_prefix(value: &str) -> &str {
+    let trimmed = value.trim_start();
+    for marker in ["- ", "* ", "> ", "• ", "· "] {
+        if let Some(remainder) = trimmed.strip_prefix(marker) {
+            return remainder.trim_start();
+        }
+    }
+    trimmed
+}
+
+fn sanitize_visible_text(value: &str) -> String {
+    if value.trim().is_empty() {
+        return String::new();
+    }
+    let cleaned = clean_stable_reference_artifacts(value);
+
+    let mut visible = Vec::new();
+    for raw_line in cleaned.lines() {
+        let (heading_level, line) = stable_markdown_heading_prefix(raw_line).map_or(
+            (None, strip_stable_list_prefix(raw_line)),
+            |(level, body)| (Some(level), body),
+        );
+        let mut line_clauses = Vec::new();
+        for clause in split_stable_visible_clauses(line) {
+            let clause = clause.trim();
+            if clause.is_empty()
+                || looks_like_stable_internal_metadata(clause)
+                || looks_like_stable_design_instruction(clause)
+                || looks_like_stable_internal_question(clause)
+            {
+                continue;
+            }
+            let lower = clause.to_ascii_lowercase();
+            if lower.contains("http")
+                || lower.contains("cite_note")
+                || lower.contains("org/wiki")
+                || lower.contains("wikipedia")
+                || lower.contains("](")
+            {
+                continue;
+            }
+            let collapsed = clause.split_whitespace().collect::<Vec<_>>().join(" ");
+            if collapsed
+                .chars()
+                .any(|ch| ch.is_alphanumeric() || ('\u{3400}'..='\u{9fff}').contains(&ch))
+            {
+                line_clauses.push(collapsed);
+            }
+        }
+        if !line_clauses.is_empty() {
+            let mut line = line_clauses.join("；");
+            if let Some(level) = heading_level {
+                line = format!("{} {}", "#".repeat(level), line);
+            }
+            visible.push(line);
+        }
+    }
+    visible.join("\n")
+}
+
 fn extract_material_units(text: &str) -> Vec<String> {
+    let text = sanitize_visible_text(text);
     let mut units = Vec::new();
     let mut current = String::new();
     for ch in text.chars() {
@@ -3103,6 +9107,18 @@ fn push_material_unit(units: &mut Vec<String>, value: &str) {
 }
 
 fn is_internal_or_placeholder_unit(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    if looks_like_stable_internal_metadata(value)
+        || looks_like_stable_design_instruction(value)
+        || looks_like_stable_internal_question(value)
+        || lower.contains("http://")
+        || lower.contains("https://")
+        || lower.contains("cite_note")
+        || lower.contains("org/wiki")
+        || lower.contains("wikipedia")
+    {
+        return true;
+    }
     let banned = [
         "[Confirmed Prompt]",
         "[Pomegranate Planning Context]",
@@ -3188,9 +9204,9 @@ fn content_blocks_from_units(units: &[String], fallback_label: &str) -> Vec<Cont
         .filter(|unit| !is_internal_or_placeholder_unit(unit))
         .take(6)
         .enumerate()
-        .map(|(idx, unit)| {
+        .filter_map(|(idx, unit)| {
             let label = title_from_material_unit(unit, idx);
-            ContentBlock {
+            let block = ContentBlock {
                 label: if label.trim().is_empty() {
                     fallback_label.chars().take(12).collect()
                 } else {
@@ -3198,7 +9214,8 @@ fn content_blocks_from_units(units: &[String], fallback_label: &str) -> Vec<Cont
                 },
                 text: unit.chars().take(52).collect(),
                 detail: unit.chars().skip(52).take(90).collect(),
-            }
+            };
+            sanitize_visible_block(&block, idx)
         })
         .collect()
 }
@@ -3404,6 +9421,739 @@ fn enrich_plan_from_material(plan: &mut SlidePlan, material: &str) {
     }
 }
 
+fn sanitize_visible_list(values: &[String], limit: usize) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    values
+        .iter()
+        .map(|value| sanitize_visible_text(value))
+        .filter(|value| !value.trim().is_empty() && seen.insert(value.to_ascii_lowercase()))
+        .take(limit)
+        .collect()
+}
+
+fn strip_stable_label_prefixes(value: &str, label: &str) -> String {
+    let mut remaining = value.trim();
+    let prefixes = [format!("{}:", label.trim()), format!("{}：", label.trim())];
+    loop {
+        let next = prefixes
+            .iter()
+            .find_map(|prefix| remaining.strip_prefix(prefix))
+            .map(str::trim);
+        match next {
+            Some(value) if value != remaining => remaining = value,
+            _ => break,
+        }
+    }
+    remaining.to_string()
+}
+
+fn clean_stable_block_label(value: &str) -> String {
+    let trimmed = value.trim();
+    for (open, close) in [('（', '）'), ('(', ')')] {
+        if trimmed.contains(open) && !trimmed.contains(close) {
+            return trimmed
+                .split(open)
+                .next()
+                .unwrap_or(trimmed)
+                .trim()
+                .to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn repair_stable_split_numeric_boundary(text: &mut String, detail: &mut String) {
+    if !detail
+        .trim_start()
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_digit())
+    {
+        return;
+    }
+    let trimmed_text = text.trim_end();
+    let ends_in_split_number = trimmed_text
+        .chars()
+        .last()
+        .is_some_and(|ch| ch.is_ascii_digit());
+    let ends_in_numeric_connector = ["达到", "约为", "总计", "共计"]
+        .iter()
+        .any(|suffix| trimmed_text.ends_with(suffix));
+    if !ends_in_split_number && !ends_in_numeric_connector {
+        return;
+    }
+    *text = format!("{}{}", trimmed_text, detail.trim_start());
+    detail.clear();
+}
+
+fn sanitize_visible_block(block: &ContentBlock, index: usize) -> Option<ContentBlock> {
+    let mut label = sanitize_visible_text(&block.label);
+    let mut text = sanitize_visible_text(&block.text);
+    let mut detail = sanitize_visible_text(&block.detail);
+    text = strip_stable_label_prefixes(&text, &label);
+    repair_stable_split_numeric_boundary(&mut text, &mut detail);
+    if label.is_empty() && text.is_empty() && detail.is_empty() {
+        return None;
+    }
+    if text.is_empty() {
+        text = if detail.is_empty() {
+            label.clone()
+        } else {
+            detail.clone()
+        };
+    }
+    if text.chars().count() < 4 && detail.is_empty() {
+        text = label.clone();
+    }
+    if label.is_empty() {
+        label = title_from_material_unit(&text, index);
+    }
+    label = clean_stable_block_label(&label);
+    if detail == text || detail == label || (!detail.is_empty() && text.contains(&detail)) {
+        detail.clear();
+    }
+    Some(ContentBlock {
+        label: label.chars().take(28).collect(),
+        text: text.chars().take(120).collect(),
+        detail: detail.chars().take(140).collect(),
+    })
+}
+
+fn stable_plan_visible_pool(plan: &SlidePlan, material: &str) -> Vec<String> {
+    let mut units = extract_material_units(material);
+    for slide in &plan.slides {
+        for value in [
+            &slide.title,
+            &slide.subtitle,
+            &slide.main_claim,
+            &slide.core_message,
+            &slide.content_scope,
+        ] {
+            units.extend(extract_material_units(value));
+        }
+        for block in &slide.content_blocks {
+            units.extend(extract_material_units(&format!(
+                "{}；{}；{}",
+                block.label, block.text, block.detail
+            )));
+        }
+        for value in slide.bullets.iter().chain(slide.evidence.iter()) {
+            units.extend(extract_material_units(value));
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    units.retain(|unit| {
+        !unit.trim().is_empty()
+            && !is_internal_or_placeholder_unit(unit)
+            && seen.insert(unit.to_ascii_lowercase())
+    });
+    units
+}
+
+fn stable_semantic_terms(value: &str, deck_title: &str) -> std::collections::HashSet<String> {
+    fn collect_terms(value: &str) -> std::collections::HashSet<String> {
+        let mut terms = std::collections::HashSet::new();
+        let mut cjk_run = Vec::new();
+        let mut ascii = String::new();
+        let flush_ascii = |ascii: &mut String, terms: &mut std::collections::HashSet<String>| {
+            if ascii.len() >= 2 {
+                terms.insert(ascii.to_ascii_lowercase());
+            }
+            ascii.clear();
+        };
+        let flush_cjk = |run: &mut Vec<char>, terms: &mut std::collections::HashSet<String>| {
+            if run.len() == 1 {
+                terms.insert(run[0].to_string());
+            } else {
+                for pair in run.windows(2) {
+                    terms.insert(pair.iter().collect());
+                }
+            }
+            run.clear();
+        };
+        for ch in value.chars().chain(std::iter::once(' ')) {
+            if ('\u{3400}'..='\u{9fff}').contains(&ch) {
+                flush_ascii(&mut ascii, &mut terms);
+                cjk_run.push(ch);
+            } else if ch.is_ascii_alphanumeric() {
+                flush_cjk(&mut cjk_run, &mut terms);
+                ascii.push(ch);
+            } else {
+                flush_ascii(&mut ascii, &mut terms);
+                flush_cjk(&mut cjk_run, &mut terms);
+            }
+        }
+        terms
+    }
+
+    let mut terms = collect_terms(value);
+    for generic in collect_terms(deck_title) {
+        terms.remove(&generic);
+    }
+    for generic in [
+        "页面", "内容", "核心", "主题", "分析", "观点", "情况", "相关", "主要", "展示", "page",
+        "slide", "content", "theme",
+    ] {
+        terms.remove(generic);
+    }
+    terms
+}
+
+fn stable_semantic_similarity(anchor: &str, candidate: &str, deck_title: &str) -> f32 {
+    let anchor_terms = stable_semantic_terms(anchor, deck_title);
+    let candidate_terms = stable_semantic_terms(candidate, deck_title);
+    if anchor_terms.is_empty() || candidate_terms.is_empty() {
+        return 0.0;
+    }
+    let overlap = anchor_terms.intersection(&candidate_terms).count() as f32;
+    overlap / anchor_terms.len().min(candidate_terms.len()) as f32
+}
+
+fn stable_block_semantic_text(block: &ContentBlock) -> String {
+    format!("{} {} {}", block.label, block.text, block.detail)
+        .trim()
+        .to_string()
+}
+
+fn stable_block_message(block: &ContentBlock) -> String {
+    let value = if block.text.trim().is_empty() {
+        stable_block_semantic_text(block)
+    } else if block.detail.trim().is_empty() {
+        block.text.trim().to_string()
+    } else {
+        format!("{}{}", block.text.trim(), block.detail.trim())
+    };
+    value.chars().take(160).collect()
+}
+
+fn stable_short_label(value: &str, limit: usize) -> String {
+    value
+        .split(['（', '(', '：', ':'])
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .chars()
+        .take(limit)
+        .collect()
+}
+
+fn stable_semantic_block_pool(plan: &SlidePlan) -> Vec<ContentBlock> {
+    let mut pool = Vec::new();
+    for slide in &plan.slides {
+        pool.extend(slide.content_blocks.iter().cloned());
+        let mut visible_units = slide.bullets.clone();
+        visible_units.extend(slide.evidence.iter().cloned());
+        pool.extend(content_blocks_from_units(&visible_units, &slide.title));
+    }
+    let mut seen = std::collections::HashSet::new();
+    pool.retain(|block| {
+        let key = stable_block_semantic_text(block).to_ascii_lowercase();
+        !key.is_empty() && seen.insert(key)
+    });
+    pool
+}
+
+fn prefer_complete_stable_blocks(blocks: &mut [ContentBlock], pool: &[ContentBlock]) {
+    for block in blocks {
+        let topic = normalize_topic_key(&block.label);
+        if topic.is_empty() {
+            continue;
+        }
+        let current_length = stable_block_semantic_text(block).chars().count();
+        if let Some(candidate) = pool
+            .iter()
+            .filter(|candidate| normalize_topic_key(&candidate.label) == topic)
+            .max_by_key(|candidate| stable_block_semantic_text(candidate).chars().count())
+        {
+            if stable_block_semantic_text(candidate).chars().count() > current_length + 8 {
+                *block = candidate.clone();
+            }
+        }
+    }
+}
+
+fn repair_stable_semantic_consistency(plan: &mut SlidePlan) {
+    let deck_title = plan.title.clone();
+    let pool = stable_semantic_block_pool(plan);
+
+    for slide in &mut plan.slides {
+        let signals = [
+            slide.relation.trim().to_ascii_lowercase(),
+            slide.chart_type.trim().to_ascii_lowercase(),
+            slide.layout.trim().to_ascii_lowercase(),
+        ];
+        let structured_semantic = signals.iter().any(|value| {
+            [
+                StableLayoutKind::Timeline,
+                StableLayoutKind::Process,
+                StableLayoutKind::Comparison,
+            ]
+            .iter()
+            .any(|layout| stable_layout_aliases(*layout).contains(&value.as_str()))
+        });
+        let anchor = format!("{} {}", slide.title, slide.page_theme);
+        let anchor_terms = stable_semantic_terms(&anchor, &deck_title);
+        if !structured_semantic && !anchor_terms.is_empty() && slide.page > 1 {
+            let mut used = std::collections::HashSet::new();
+            let mut used_topics = std::collections::HashSet::new();
+            for block in &mut slide.content_blocks {
+                let current = stable_block_semantic_text(block);
+                let current_score = stable_semantic_similarity(&anchor, &current, &deck_title);
+                if let Some((replacement, score)) = pool
+                    .iter()
+                    .map(|candidate| {
+                        let display = stable_block_semantic_text(candidate);
+                        let score = stable_semantic_similarity(&anchor, &display, &deck_title);
+                        (candidate, display, score)
+                    })
+                    .filter(|(_, display, score)| {
+                        *score >= 0.16 && !used.contains(&display.to_ascii_lowercase())
+                    })
+                    .filter(|(candidate, _, _)| {
+                        let topic = normalize_topic_key(&candidate.label);
+                        topic.is_empty() || !used_topics.contains(&topic)
+                    })
+                    .max_by(|left, right| {
+                        left.2
+                            .total_cmp(&right.2)
+                            .then_with(|| left.1.chars().count().cmp(&right.1.chars().count()))
+                    })
+                    .map(|(candidate, _, score)| (candidate.clone(), score))
+                {
+                    let replacement_text = stable_block_semantic_text(&replacement);
+                    let richer_same_subject = replacement_text.chars().count()
+                        > current.chars().count() + 18
+                        && score + 0.02 >= current_score
+                        && stable_semantic_similarity(&current, &replacement_text, &deck_title)
+                            >= 0.45;
+                    if score > current_score + 0.06 || richer_same_subject {
+                        *block = replacement;
+                    }
+                }
+                used.insert(stable_block_semantic_text(block).to_ascii_lowercase());
+                let topic = normalize_topic_key(&block.label);
+                if !topic.is_empty() {
+                    used_topics.insert(topic);
+                }
+            }
+
+            let core = stable_core_message(slide);
+            if stable_semantic_similarity(&anchor, &core, &deck_title) < 0.15 {
+                if let Some(best) = slide.content_blocks.iter().max_by(|left, right| {
+                    stable_semantic_similarity(
+                        &anchor,
+                        &stable_block_semantic_text(left),
+                        &deck_title,
+                    )
+                    .total_cmp(&stable_semantic_similarity(
+                        &anchor,
+                        &stable_block_semantic_text(right),
+                        &deck_title,
+                    ))
+                }) {
+                    let replacement = stable_block_message(best);
+                    if stable_semantic_similarity(&anchor, &replacement, &deck_title) >= 0.18 {
+                        slide.core_message = replacement.clone();
+                        slide.main_claim = replacement.clone();
+                        slide.subtitle = replacement;
+                    }
+                }
+            } else if stable_semantic_similarity(&anchor, &slide.subtitle, &deck_title) < 0.12 {
+                slide.subtitle = core;
+            }
+        }
+
+        prefer_complete_stable_blocks(&mut slide.content_blocks, &pool);
+        let comparison = signals.iter().any(|value| {
+            stable_layout_aliases(StableLayoutKind::Comparison).contains(&value.as_str())
+        });
+        if comparison && slide.content_blocks.len() >= 2 {
+            let mut labels = std::collections::HashSet::new();
+            slide.content_blocks.retain(|block| {
+                let key = normalize_topic_key(&block.label);
+                !key.is_empty() && labels.insert(key)
+            });
+            slide.content_blocks.truncate(2);
+        }
+        if comparison && slide.content_blocks.len() >= 2 {
+            let left = slide.content_blocks[0].label.trim();
+            let right = slide.content_blocks[1].label.trim();
+            if !left.is_empty() && !right.is_empty() && left != right {
+                let left_short = stable_short_label(left, 16);
+                let right_short = stable_short_label(right, 16);
+                slide.title = format!("{} vs {}", left_short, right_short);
+                slide.page_theme = slide.title.clone();
+                slide.core_message = format!("对照{}与{}的关键差异", left_short, right_short);
+                slide.main_claim = slide.core_message.clone();
+                slide.subtitle = slide.core_message.clone();
+            }
+        }
+        let category = signals.iter().any(|value| {
+            stable_layout_aliases(StableLayoutKind::CategoryGrid).contains(&value.as_str())
+        });
+        if category && !comparison && slide.content_blocks.len() >= 2 {
+            let mut labels = std::collections::HashSet::new();
+            slide.content_blocks.retain(|block| {
+                let key = normalize_topic_key(&block.label);
+                !key.is_empty() && labels.insert(key)
+            });
+        }
+        if category && !comparison && slide.content_blocks.len() >= 2 {
+            let current_anchor = format!("{} {}", slide.title, slide.page_theme);
+            let matching = slide
+                .content_blocks
+                .iter()
+                .filter(|block| {
+                    stable_semantic_similarity(
+                        &current_anchor,
+                        &content_block_display(block),
+                        &deck_title,
+                    ) >= 0.08
+                })
+                .count();
+            let core_matches = stable_semantic_similarity(
+                &current_anchor,
+                &stable_core_message(slide),
+                &deck_title,
+            ) >= 0.18;
+            if matching < 2 {
+                let first = stable_short_label(&slide.content_blocks[0].label, 14);
+                let second = stable_short_label(&slide.content_blocks[1].label, 14);
+                slide.title = format!("{}：多维观察", deck_title);
+                slide.page_theme = slide.title.clone();
+                slide.core_message = if core_matches {
+                    format!(
+                        "{}；并从{}与{}等维度展开",
+                        stable_core_message(slide),
+                        first,
+                        second
+                    )
+                } else {
+                    format!("从{}与{}等维度展开", first, second)
+                };
+                slide.main_claim = slide.core_message.clone();
+                slide.subtitle = slide.core_message.clone();
+            }
+        }
+
+        let timeline = signals.iter().any(|value| {
+            stable_layout_aliases(StableLayoutKind::Timeline).contains(&value.as_str())
+        });
+        if timeline {
+            let with_year = slide
+                .content_blocks
+                .iter()
+                .filter(|block| extract_year_token(block).is_some())
+                .count();
+            if with_year >= 2 {
+                slide
+                    .content_blocks
+                    .retain(|block| extract_year_token(block).is_some());
+                slide
+                    .content_blocks
+                    .sort_by_key(|block| extract_year_token(block));
+                if let (Some(first), Some(last)) =
+                    (slide.content_blocks.first(), slide.content_blocks.last())
+                {
+                    let first_label = extract_year_token(first)
+                        .unwrap_or_else(|| stable_short_label(&first.label, 20));
+                    let last_label = extract_year_token(last)
+                        .unwrap_or_else(|| stable_short_label(&last.label, 20));
+                    slide.core_message =
+                        format!("从{}到{}，关键事件沿时间推进", first_label, last_label);
+                    slide.main_claim = slide.core_message.clone();
+                    slide.subtitle = slide.core_message.clone();
+                }
+            }
+        }
+        let process = signals.iter().any(|value| {
+            stable_layout_aliases(StableLayoutKind::Process).contains(&value.as_str())
+        });
+        if process {
+            let mut labels = std::collections::HashSet::new();
+            slide.content_blocks.retain(|block| {
+                let key = normalize_topic_key(&block.label);
+                !key.is_empty() && labels.insert(key)
+            });
+            if slide.content_blocks.len() < 3 {
+                let process_anchor = format!("{} {}", slide.title, slide.page_theme);
+                let mut candidates: Vec<(ContentBlock, f32, usize)> = pool
+                    .iter()
+                    .filter_map(|candidate| {
+                        let label_key = normalize_topic_key(&candidate.label);
+                        if label_key.is_empty() || labels.contains(&label_key) {
+                            return None;
+                        }
+                        let semantic_text = stable_block_semantic_text(candidate);
+                        let score = stable_semantic_similarity(
+                            &process_anchor,
+                            &semantic_text,
+                            &deck_title,
+                        );
+                        (score >= 0.08).then_some((
+                            candidate.clone(),
+                            score,
+                            semantic_text.chars().count(),
+                        ))
+                    })
+                    .collect();
+                candidates.sort_by(|left, right| {
+                    right
+                        .1
+                        .total_cmp(&left.1)
+                        .then_with(|| right.2.cmp(&left.2))
+                });
+                for (candidate, _, _) in candidates {
+                    let label_key = normalize_topic_key(&candidate.label);
+                    if labels.insert(label_key) {
+                        slide.content_blocks.push(candidate);
+                    }
+                    if slide.content_blocks.len() >= 3 {
+                        break;
+                    }
+                }
+            }
+            let with_year = slide
+                .content_blocks
+                .iter()
+                .filter(|block| extract_year_token(block).is_some())
+                .count();
+            if with_year >= 2 {
+                slide
+                    .content_blocks
+                    .sort_by_key(|block| extract_year_token(block));
+                if let (Some(first), Some(last)) =
+                    (slide.content_blocks.first(), slide.content_blocks.last())
+                {
+                    let first_short = stable_short_label(&first.label, 12);
+                    let last_short = stable_short_label(&last.label, 12);
+                    slide.title = format!("{}到{}的阶段演进", first_short, last_short);
+                    slide.page_theme = slide.title.clone();
+                    slide.core_message =
+                        format!("从{}到{}，阶段关系依次展开", first_short, last_short);
+                    slide.main_claim = slide.core_message.clone();
+                    slide.subtitle = slide.core_message.clone();
+                }
+            }
+        }
+        dedup_content_blocks(&mut slide.content_blocks);
+    }
+}
+
+fn repair_stable_summary_page(plan: &mut SlidePlan) {
+    if plan.slides.len() < 2 {
+        return;
+    }
+    let deck_title = plan.title.clone();
+    let mut representatives = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for slide in plan
+        .slides
+        .iter()
+        .skip(1)
+        .take(plan.slides.len().saturating_sub(2))
+    {
+        if let Some(block) = slide.content_blocks.iter().find(|block| {
+            let display = content_block_display(block);
+            !display.trim().is_empty()
+                && !is_internal_or_placeholder_unit(&display)
+                && seen.insert(normalize_topic_key(&display))
+        }) {
+            representatives.push(block.clone());
+        }
+        if representatives.len() == 4 {
+            break;
+        }
+    }
+    if representatives.len() < 2 {
+        return;
+    }
+    let summary = plan
+        .slides
+        .last_mut()
+        .expect("plan has at least two slides");
+    summary.title = format!("{}：关键脉络与核心结论", deck_title);
+    summary.page_theme = "总结与回望".to_string();
+    summary.core_message = format!("沿关键阶段与主要事件回看{}", deck_title);
+    summary.main_claim = summary.core_message.clone();
+    summary.subtitle = summary.core_message.clone();
+    summary.content_scope = summary.core_message.clone();
+    summary.content_blocks = representatives;
+    summary.bullets = summary
+        .content_blocks
+        .iter()
+        .map(content_block_display)
+        .take(4)
+        .collect();
+    summary.evidence = summary.bullets.clone();
+    summary.relation = "summary".to_string();
+    summary.chart_type = "summary".to_string();
+    summary.layout = "summary".to_string();
+}
+
+fn assign_stable_page_rhythm(plan: &mut SlidePlan) {
+    let total = plan.slides.len();
+    for (index, slide) in plan.slides.iter_mut().enumerate() {
+        let explicit = slide.page_rhythm.trim().to_ascii_lowercase();
+        let rhythm = if index == 0 || index + 1 == total {
+            "anchor"
+        } else if matches!(
+            explicit.as_str(),
+            "anchor" | "breathing" | "balanced" | "dense"
+        ) {
+            explicit.as_str()
+        } else {
+            let semantic = format!(
+                "{} {} {}",
+                slide.relation.to_ascii_lowercase(),
+                slide.chart_type.to_ascii_lowercase(),
+                slide.layout.to_ascii_lowercase()
+            );
+            if semantic.contains("highlight")
+                || semantic.contains("quote")
+                || slide.content_blocks.len() <= 2
+            {
+                "breathing"
+            } else if semantic.contains("timeline")
+                || semantic.contains("process")
+                || semantic.contains("compare")
+                || semantic.contains("matrix")
+                || semantic.contains("cause")
+                || semantic.contains("hierarchy")
+            {
+                "dense"
+            } else {
+                "balanced"
+            }
+        };
+        slide.page_rhythm = rhythm.to_string();
+        slide.density = rhythm.to_string();
+    }
+}
+
+fn prepare_stable_plan_for_render(plan: &mut SlidePlan, visible_material: &str) {
+    plan.title = sanitize_visible_text(&plan.title);
+    plan.subtitle = sanitize_visible_text(&plan.subtitle);
+    plan.audience = sanitize_visible_text(&plan.audience);
+    let pool = stable_plan_visible_pool(plan, visible_material);
+    let total = plan.slides.len();
+
+    for (index, slide) in plan.slides.iter_mut().enumerate() {
+        slide.title = sanitize_visible_text(&slide.title);
+        slide.subtitle = sanitize_visible_text(&slide.subtitle);
+        slide.page_theme = sanitize_visible_text(&slide.page_theme);
+        slide.main_claim = sanitize_visible_text(&slide.main_claim);
+        slide.core_message = sanitize_visible_text(&slide.core_message);
+        slide.content_scope = sanitize_visible_text(&slide.content_scope);
+        slide.bullets = sanitize_visible_list(&slide.bullets, 6);
+        slide.evidence = sanitize_visible_list(&slide.evidence, 6);
+        slide.content_blocks = slide
+            .content_blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(block_index, block)| sanitize_visible_block(block, block_index))
+            .collect();
+        if index > 0 {
+            let local_blocks = content_blocks_from_slide(slide);
+            if !local_blocks.is_empty() {
+                let mut merged = std::mem::take(&mut slide.content_blocks);
+                merged.extend(local_blocks);
+                slide.content_blocks = merged;
+            }
+        }
+        dedup_content_blocks(&mut slide.content_blocks);
+        if index == 0 && !slide.core_message.trim().is_empty() {
+            if let Some(primary) = slide.content_blocks.first_mut() {
+                primary.text = slide.core_message.clone();
+                primary.detail.clear();
+            }
+        }
+        if !slide.core_message.trim().is_empty() {
+            let title_key = normalize_topic_key(&slide.title);
+            for block in &mut slide.content_blocks {
+                if !title_key.is_empty() && normalize_topic_key(&block.label) == title_key {
+                    block.text = slide.core_message.clone();
+                    block.detail.clear();
+                }
+            }
+        }
+
+        let selected = select_units_for_slide(&pool, index, total);
+        if slide.title.is_empty() {
+            slide.title = if index == 0 {
+                plan.title.clone()
+            } else {
+                selected
+                    .first()
+                    .map(|unit| title_from_material_unit(unit, index))
+                    .unwrap_or_else(|| plan.title.clone())
+            };
+        }
+        if slide.page_theme.is_empty() {
+            slide.page_theme = slide.title.clone();
+        }
+        if slide.content_blocks.len() < if index == 0 { 1 } else { 2 } {
+            slide
+                .content_blocks
+                .extend(content_blocks_from_units(&selected, &slide.title));
+            dedup_content_blocks(&mut slide.content_blocks);
+        }
+        if slide.content_blocks.is_empty() {
+            slide.content_blocks.push(ContentBlock {
+                label: slide.title.clone(),
+                text: selected
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| plan.title.clone()),
+                detail: String::new(),
+            });
+        }
+        let fallback_core = slide
+            .content_blocks
+            .first()
+            .map(|block| {
+                if block.text.trim().is_empty() {
+                    content_block_display(block)
+                } else {
+                    block.text.clone()
+                }
+            })
+            .unwrap_or_else(|| slide.title.clone());
+        if slide.core_message.is_empty() {
+            slide.core_message = fallback_core.clone();
+        }
+        if slide.main_claim.is_empty() {
+            slide.main_claim = slide.core_message.clone();
+        }
+        if slide.subtitle.is_empty() {
+            slide.subtitle = slide.core_message.clone();
+        }
+        if slide.content_scope.is_empty() {
+            slide.content_scope = slide.core_message.clone();
+        }
+        if slide.bullets.len() < 2 {
+            slide.bullets = slide
+                .content_blocks
+                .iter()
+                .map(content_block_display)
+                .filter(|value| !value.trim().is_empty())
+                .take(5)
+                .collect();
+        }
+        if slide.evidence.is_empty() {
+            slide.evidence = slide.bullets.clone();
+        }
+        slide.speaker_note = sanitize_visible_text(&slide.speaker_note);
+        if slide.speaker_note.is_empty() {
+            slide.speaker_note = slide.core_message.clone();
+        }
+    }
+    repair_stable_semantic_consistency(plan);
+    repair_stable_summary_page(plan);
+    assign_stable_page_rhythm(plan);
+    refresh_theme_allocation_and_must_avoid(plan);
+}
+
 fn contains_placeholder_phrase(text: &str) -> bool {
     [
         "提炼用户材料中的关键信息",
@@ -3587,11 +10337,14 @@ fn build_ppt_master_design_spec(
     plan: &SlidePlan,
     prompt: &str,
     mapping: &PptMasterStyleMapping,
+    theme_spec: &NativeThemeSpec,
 ) -> String {
     let mut out = String::new();
-    let palette = palette_for_style(&mapping.user_style);
     out.push_str(&format!("# {} - Design Spec\n\n", plan.title));
     out.push_str("> Generated by Pomegranate as a ppt-master-compatible planning artifact. Pomegranate owns user interaction and slide_plan; ppt-master owns design resources, SVG constraints, and PPTX export.\n\n");
+    out.push_str("## Deck-wide NativeThemeSpec\n\n```json\n");
+    out.push_str(&theme_spec.prompt_contract());
+    out.push_str("\n```\n\nThis contract is visual guidance only. Never render its field names or rule text as visible slide content.\n\n");
     out.push_str("## I. Project Information\n\n");
     out.push_str("| Item | Value |\n| ---- | ----- |\n");
     out.push_str(&format!("| **Project Name** | {} |\n", plan.title));
@@ -3630,35 +10383,35 @@ fn build_ppt_master_design_spec(
     out.push_str("| Role | HEX | Purpose |\n| ---- | --- | ------- |\n");
     out.push_str(&format!(
         "| **Background** | `{}` | Page background |\n",
-        palette.bg1
+        theme_spec.background_color
     ));
     out.push_str(&format!(
         "| **Secondary bg** | `{}` | Secondary page background |\n",
-        palette.bg2
+        theme_spec.secondary_background_color
     ));
     out.push_str(&format!(
         "| **Primary** | `{}` | Primary emphasis |\n",
-        palette.accent
+        theme_spec.primary_color
     ));
     out.push_str(&format!(
         "| **Accent** | `{}` | Data highlights and key information |\n",
-        palette.highlight
+        theme_spec.accent_color
     ));
     out.push_str(&format!(
         "| **Secondary accent** | `{}` | Secondary emphasis |\n",
-        palette.accent2
+        theme_spec.secondary_color
     ));
     out.push_str(&format!(
         "| **Body text** | `{}` | Main text |\n",
-        palette.text
+        theme_spec.text_primary
     ));
     out.push_str(&format!(
         "| **Secondary text** | `{}` | Captions and notes |\n",
-        palette.muted
+        theme_spec.text_secondary
     ));
     out.push_str(&format!(
         "| **Border/divider** | `{}` | Lines and separators |\n\n",
-        palette.line
+        theme_spec.border_color
     ));
     out.push_str("### Image Strategy\n\n");
     out.push_str("- **Image Usage**: none in P0 unless the user-provided prompt explicitly names image assets.\n");
@@ -3760,8 +10513,11 @@ fn build_ppt_master_design_spec(
     out
 }
 
-fn build_ppt_master_spec_lock(plan: &SlidePlan, mapping: &PptMasterStyleMapping) -> String {
-    let palette = palette_for_style(&mapping.user_style);
+fn build_ppt_master_spec_lock(
+    plan: &SlidePlan,
+    mapping: &PptMasterStyleMapping,
+    theme_spec: &NativeThemeSpec,
+) -> String {
     let mut out = String::new();
     out.push_str("# Execution Lock\n\n");
     out.push_str("## canvas\n- viewBox: 0 0 1280 720\n- format: PPT 16:9\n\n");
@@ -3779,19 +10535,31 @@ fn build_ppt_master_spec_lock(plan: &SlidePlan, mapping: &PptMasterStyleMapping)
         }
         out.push('\n');
     }
+    out.push_str("## native_theme_spec\n```json\n");
+    out.push_str(&theme_spec.prompt_contract());
+    out.push_str("\n```\n\n");
     out.push_str("## colors\n");
-    out.push_str(&format!("- bg: {}\n", palette.bg1));
-    out.push_str(&format!("- secondary_bg: {}\n", palette.bg2));
-    out.push_str(&format!("- surface: {}\n", palette.surface));
-    out.push_str(&format!("- panel: {}\n", palette.bg2));
-    out.push_str(&format!("- primary: {}\n", palette.accent));
-    out.push_str(&format!("- accent: {}\n", palette.highlight));
-    out.push_str(&format!("- secondary_accent: {}\n", palette.accent2));
-    out.push_str(&format!("- text: {}\n", palette.text));
-    out.push_str(&format!("- text_secondary: {}\n", palette.muted));
-    out.push_str(&format!("- muted: {}\n", palette.muted));
-    out.push_str(&format!("- border: {}\n", palette.line));
-    out.push_str(&format!("- grid: {}\n\n", palette.line));
+    out.push_str(&format!("- bg: {}\n", theme_spec.background_color));
+    out.push_str(&format!(
+        "- secondary_bg: {}\n",
+        theme_spec.secondary_background_color
+    ));
+    out.push_str(&format!("- surface: {}\n", theme_spec.surface_color));
+    out.push_str(&format!("- panel: {}\n", theme_spec.panel_color));
+    out.push_str(&format!("- primary: {}\n", theme_spec.primary_color));
+    out.push_str(&format!("- accent: {}\n", theme_spec.accent_color));
+    out.push_str(&format!(
+        "- secondary_accent: {}\n",
+        theme_spec.secondary_color
+    ));
+    out.push_str(&format!("- text: {}\n", theme_spec.text_primary));
+    out.push_str(&format!(
+        "- text_secondary: {}\n",
+        theme_spec.text_secondary
+    ));
+    out.push_str(&format!("- muted: {}\n", theme_spec.text_secondary));
+    out.push_str(&format!("- border: {}\n", theme_spec.border_color));
+    out.push_str(&format!("- grid: {}\n\n", theme_spec.border_color));
     out.push_str("## typography\n");
     out.push_str("- font_family: Microsoft YaHei, Arial, sans-serif\n");
     out.push_str("- title_family: Microsoft YaHei, Arial, sans-serif\n");
@@ -3881,11 +10649,12 @@ fn build_ppt_master_spec_lock(plan: &SlidePlan, mapping: &PptMasterStyleMapping)
 
 fn page_rhythm_for_slide(slide: &Slide) -> String {
     let explicit = slide.page_rhythm.trim();
-    if matches!(explicit, "anchor" | "dense" | "breathing") {
+    if matches!(explicit, "anchor" | "dense" | "breathing" | "balanced") {
         return explicit.to_string();
     }
     match slide.layout.as_str() {
-        "cover" | "section" | "summary" => "anchor",
+        "cover" | "section" => "anchor",
+        "summary" => "balanced",
         "highlight" => "breathing",
         "matrix" | "cards" | "compare" | "timeline" | "process" => "dense",
         _ => "dense",
@@ -3958,6 +10727,7 @@ fn build_stable_design_spec(plan: &SlidePlan) -> String {
         out.push_str(&format!("- Relation: {}\n", slide.relation));
         out.push_str(&format!("- Chart type: {}\n", slide.chart_type));
         out.push_str(&format!("- Density: {}\n", slide.density));
+        out.push_str(&format!("- Page rhythm: {}\n", slide.page_rhythm));
         out.push_str("- Content blocks:\n");
         for block in &slide.content_blocks {
             out.push_str(&format!(
@@ -4470,6 +11240,66 @@ enum StableElementKind {
     Footer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StableTextEmphasis {
+    Normal,
+    Strong,
+    Heading1,
+    Heading2,
+    Heading3,
+}
+
+impl StableTextEmphasis {
+    fn heading_level(self) -> Option<usize> {
+        match self {
+            Self::Heading1 => Some(1),
+            Self::Heading2 => Some(2),
+            Self::Heading3 => Some(3),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct StableTextRun {
+    text: String,
+    bold: bool,
+    font_scale: f32,
+    emphasis: StableTextEmphasis,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct StableTextParagraph {
+    runs: Vec<StableTextRun>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct StableTextLine {
+    runs: Vec<StableTextRun>,
+}
+
+impl StableTextLine {
+    fn plain_text(&self) -> String {
+        self.runs.iter().map(|run| run.text.as_str()).collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StableTextRenderPolicy {
+    allow_strong: bool,
+    allow_heading_scale: bool,
+}
+
+impl StableTextRenderPolicy {
+    fn for_element(id: &str, kind: StableElementKind) -> Self {
+        let source_like = id.contains("footer") || id.contains("evidence") || id.contains("source");
+        Self {
+            allow_strong: kind != StableElementKind::Footer && !source_like,
+            allow_heading_scale: kind == StableElementKind::Text && !source_like,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct StableLayoutElement {
     id: String,
@@ -4481,6 +11311,7 @@ struct StableLayoutElement {
 #[derive(Debug, Clone)]
 struct StableTextFit {
     lines: Vec<String>,
+    rich_lines: Vec<StableTextLine>,
     font_size: f32,
     line_height: f32,
     used_height: f32,
@@ -4523,6 +11354,44 @@ struct StableRenderProfile {
     local_repair: Option<StableLocalRepairPlan>,
 }
 
+fn normalize_stable_chart_pattern(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if matches!(ch, '-' | ' ') { '_' } else { ch })
+        .collect()
+}
+
+fn parse_stable_chart_patterns(text: &str) -> std::collections::HashSet<String> {
+    let Ok(serde_json::Value::Object(root)) = serde_json::from_str::<serde_json::Value>(text)
+    else {
+        return std::collections::HashSet::new();
+    };
+    let mut patterns = std::collections::HashSet::new();
+
+    // 新版目录把图表定义放在 charts 子对象；同时保留根级 key 兼容旧目录。
+    if let Some(charts) = root.get("charts").and_then(serde_json::Value::as_object) {
+        patterns.extend(charts.keys().map(|key| normalize_stable_chart_pattern(key)));
+    }
+    patterns.extend(
+        root.iter()
+            .filter(|(key, value)| {
+                !matches!(key.as_str(), "meta" | "_meta" | "charts") && value.is_object()
+            })
+            .map(|(key, _)| normalize_stable_chart_pattern(key)),
+    );
+    patterns.retain(|key| !key.is_empty());
+    patterns
+}
+
+fn load_stable_chart_patterns(path: &Path) -> std::collections::HashSet<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|text| parse_stable_chart_patterns(&text))
+        .unwrap_or_default()
+}
+
 impl StableRenderProfile {
     fn load(root: &Path, plan: &SlidePlan) -> Self {
         let visual_style_id = stable_visual_style_id(&plan.style).to_string();
@@ -4535,18 +11404,7 @@ impl StableRenderProfile {
             "Pomegranate stable fallback tokens".to_string()
         };
         let chart_index_path = root.join(PPT_MASTER_CHARTS_DIR).join("charts_index.json");
-        let chart_patterns = fs::read_to_string(&chart_index_path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-            .and_then(|value| value.as_object().cloned())
-            .map(|object| {
-                object
-                    .keys()
-                    .filter(|key| key.as_str() != "_meta")
-                    .cloned()
-                    .collect::<std::collections::HashSet<_>>()
-            })
-            .unwrap_or_default();
+        let chart_patterns = load_stable_chart_patterns(&chart_index_path);
         let chart_catalog_loaded = !chart_patterns.is_empty();
         Self {
             tokens: stable_visual_tokens(plan, &visual_style_id),
@@ -4609,7 +11467,6 @@ enum StableMotif {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StableMotifStatus {
     ProductionReady,
-    Experimental,
     Disabled,
 }
 
@@ -4821,6 +11678,59 @@ struct StableVisualSignature {
     number_style: StableNumberStyle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum StableFocalRegion {
+    Left,
+    Center,
+    Split,
+    Grid,
+    Axis,
+    Radial,
+    Vertical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct StableStructureFingerprint {
+    layout_family: StableLayoutKind,
+    focal_region: StableFocalRegion,
+    rows: u8,
+    columns: u8,
+    card_count: u8,
+    has_axis: bool,
+    has_connectors: bool,
+    has_center_node: bool,
+    has_radial_structure: bool,
+    has_big_number: bool,
+    has_quote: bool,
+    has_chart_structure: bool,
+    asymmetric: bool,
+    element_count_band: u8,
+    occupancy_band: u8,
+}
+
+impl StableStructureFingerprint {
+    fn describe(self) -> String {
+        format!(
+            "{}:{:?}:{}x{}:cards={}:axis={}:links={}:center={}:radial={}:number={}:quote={}:chart={}:asym={}:elements={}:occupancy={}",
+            self.layout_family.as_str(),
+            self.focal_region,
+            self.rows,
+            self.columns,
+            self.card_count,
+            self.has_axis,
+            self.has_connectors,
+            self.has_center_node,
+            self.has_radial_structure,
+            self.has_big_number,
+            self.has_quote,
+            self.has_chart_structure,
+            self.asymmetric,
+            self.element_count_band,
+            self.occupancy_band,
+        )
+    }
+}
+
 impl StableVisualSignature {
     fn describe(self) -> String {
         format!(
@@ -4837,6 +11747,7 @@ impl StableVisualSignature {
 #[derive(Debug, Clone)]
 struct StableVisualSelection {
     signature: StableVisualSignature,
+    structure_fingerprint: StableStructureFingerprint,
     motif_reuse_count: usize,
     duplicate_signature: bool,
     rejected: Vec<String>,
@@ -4860,6 +11771,98 @@ impl StableLayoutKind {
             Self::Summary => "summary",
         }
     }
+}
+
+fn stable_layout_aliases(layout: StableLayoutKind) -> &'static [&'static str] {
+    match layout {
+        StableLayoutKind::Anchor => &["anchor", "cover"],
+        StableLayoutKind::EditorialSplit => &["editorial_split", "image_text"],
+        StableLayoutKind::Timeline => &["timeline", "roadmap_vertical", "gantt_chart"],
+        StableLayoutKind::CategoryGrid => &[
+            "category",
+            "cards",
+            "category_grid",
+            "labeled_card",
+            "icon_grid",
+        ],
+        StableLayoutKind::Comparison => &[
+            "compare",
+            "comparison",
+            "comparison_columns",
+            "comparison_table",
+            "pros_cons_chart",
+        ],
+        StableLayoutKind::CauseEffect => &[
+            "cause",
+            "cause_effect",
+            "cause_analysis",
+            "fishbone",
+            "fishbone_diagram",
+        ],
+        StableLayoutKind::Process => &[
+            "process",
+            "process_flow",
+            "pipeline_with_stages",
+            "chevron_process",
+            "chevron_chain_with_tail",
+            "numbered_steps",
+            "circular_stages",
+        ],
+        StableLayoutKind::Hierarchy => &[
+            "hierarchy",
+            "pyramid",
+            "pyramid_chart",
+            "pyramid_isometric",
+            "layered_architecture",
+            "top_down_tree",
+        ],
+        StableLayoutKind::Matrix => &[
+            "matrix",
+            "matrix_2x2",
+            "feature_matrix_table",
+            "quadrant_text_bullets",
+        ],
+        StableLayoutKind::Quote => &["quote"],
+        StableLayoutKind::EvidenceLed => &["highlight", "evidence_led", "kpi_cards"],
+        StableLayoutKind::Summary => &["summary"],
+    }
+}
+
+fn stable_layout_has_internal_renderer(layout: StableLayoutKind) -> bool {
+    // Every StableLayoutKind is backed by a Rust SVG renderer. The external catalog is semantic
+    // enrichment only and must never disable an internal production capability.
+    matches!(
+        layout,
+        StableLayoutKind::Anchor
+            | StableLayoutKind::EditorialSplit
+            | StableLayoutKind::Timeline
+            | StableLayoutKind::CategoryGrid
+            | StableLayoutKind::Comparison
+            | StableLayoutKind::CauseEffect
+            | StableLayoutKind::Process
+            | StableLayoutKind::Hierarchy
+            | StableLayoutKind::Matrix
+            | StableLayoutKind::Quote
+            | StableLayoutKind::EvidenceLed
+            | StableLayoutKind::Summary
+    )
+}
+
+fn stable_layout_is_available(
+    layout: StableLayoutKind,
+    chart_patterns: &std::collections::HashSet<String>,
+) -> bool {
+    stable_layout_has_internal_renderer(layout)
+        || stable_layout_aliases(layout)
+            .iter()
+            .any(|alias| chart_patterns.contains(*alias))
+}
+
+fn stable_layout_matches_signal(layout: StableLayoutKind, signals: &[&str]) -> bool {
+    signals.iter().any(|signal| {
+        let normalized = normalize_stable_chart_pattern(signal);
+        stable_layout_aliases(layout).contains(&normalized.as_str())
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4915,7 +11918,10 @@ impl StablePageDraft {
             id: id.to_string(),
             purpose,
             rect,
-            associated_ids: associated_ids.iter().map(|value| value.to_string()).collect(),
+            associated_ids: associated_ids
+                .iter()
+                .map(|value| value.to_string())
+                .collect(),
         });
     }
 
@@ -4951,6 +11957,7 @@ struct StableRenderedSlide {
     layout: String,
     motif: String,
     visual_signature: String,
+    structure_fingerprint: String,
     motif_reuse_count: usize,
     duplicate_signature: bool,
     motif_gate_rejections: Vec<String>,
@@ -5113,9 +12120,7 @@ fn reflow_motif_locally(failure: &StableLayoutFailure) -> StableLocalRepairPlan 
     }
 }
 
-fn rerender_page_with_fallback_motif(
-    failure: &StableLayoutFailure,
-) -> StableLocalRepairPlan {
+fn rerender_page_with_fallback_motif(failure: &StableLayoutFailure) -> StableLocalRepairPlan {
     StableLocalRepairPlan {
         block_id: failure.block_id.clone(),
         text_role: failure.text_role.clone(),
@@ -5132,29 +12137,6 @@ fn stable_page_fallback_repair(failure: &StableLayoutFailure) -> StableLocalRepa
         failure_type: failure.failure_type,
         level: StableRepairLevel::Page,
         strategy: "rerender_current_page_with_safe_layout",
-    }
-}
-
-fn stable_local_reflow_layout(slide: &Slide, layout: StableLayoutKind) -> StableLayoutKind {
-    match layout {
-        StableLayoutKind::EditorialSplit if slide_blocks(slide).len() >= 3 => {
-            StableLayoutKind::CategoryGrid
-        }
-        StableLayoutKind::EditorialSplit => StableLayoutKind::EvidenceLed,
-        StableLayoutKind::CategoryGrid if slide_blocks(slide).len() <= 3 => {
-            StableLayoutKind::EditorialSplit
-        }
-        StableLayoutKind::Timeline => StableLayoutKind::Process,
-        StableLayoutKind::Process => StableLayoutKind::Timeline,
-        StableLayoutKind::Comparison => StableLayoutKind::EvidenceLed,
-        StableLayoutKind::CauseEffect => StableLayoutKind::EvidenceLed,
-        StableLayoutKind::Hierarchy => StableLayoutKind::CategoryGrid,
-        StableLayoutKind::Matrix => StableLayoutKind::CategoryGrid,
-        StableLayoutKind::EvidenceLed => StableLayoutKind::EditorialSplit,
-        StableLayoutKind::Quote => StableLayoutKind::EditorialSplit,
-        StableLayoutKind::Summary => StableLayoutKind::EvidenceLed,
-        StableLayoutKind::Anchor => StableLayoutKind::Anchor,
-        _ => stable_alternate_layout(slide, layout),
     }
 }
 
@@ -5219,7 +12201,7 @@ fn repair_failed_page(
             repair: Some(repair_content_block_locally(failure)),
         },
         StableRepairLevel::Motif => StableRenderAttempt {
-            layout: stable_local_reflow_layout(slide, primary_layout),
+            layout: primary_layout,
             motif: primary_motif,
             detail_level: StableDetailLevel::Reduced,
             repair: Some(reflow_motif_locally(failure)),
@@ -5231,7 +12213,7 @@ fn repair_failed_page(
             repair: Some(rerender_page_with_fallback_motif(failure)),
         },
         StableRepairLevel::Page => {
-            let layout = stable_fallback_layout(slide, primary_layout);
+            let layout = stable_fallback_layout(plan, page_index, slide, primary_layout);
             StableRenderAttempt {
                 layout,
                 motif: stable_safe_fallback_motif(plan, page_index, layout).0,
@@ -5448,6 +12430,12 @@ fn render_slide_svg_with_profile(
             layout: used_attempt.layout.as_str().to_string(),
             motif: used_attempt.motif.as_str().to_string(),
             visual_signature: used_signature.describe(),
+            structure_fingerprint: stable_structure_fingerprint(
+                slide,
+                used_attempt.layout,
+                used_attempt.motif,
+            )
+            .describe(),
             motif_reuse_count,
             duplicate_signature: if used_signature == primary_selection.signature {
                 primary_selection.duplicate_signature
@@ -5522,11 +12510,17 @@ fn stable_visual_selections(
 ) -> Vec<StableVisualSelection> {
     let mut selections = Vec::with_capacity(plan.slides.len());
     let mut motif_counts = std::collections::HashMap::<StableMotif, usize>::new();
+    let mut structure_counts =
+        std::collections::HashMap::<StableStructureFingerprint, usize>::new();
+    let layouts = stable_layout_sequence(plan, chart_patterns);
     let body_pages = plan.slides.len().saturating_sub(2).max(1);
     let soft_motif_limit = body_pages.div_ceil(2).max(1);
 
     for (index, slide) in plan.slides.iter().enumerate() {
-        let layout = stable_layout_for_index(plan, index, chart_patterns);
+        let layout = layouts
+            .get(index)
+            .copied()
+            .unwrap_or(StableLayoutKind::EvidenceLed);
         let candidates = stable_motif_candidates(slide, layout);
         let mut rejected = Vec::new();
         let mut eligible = Vec::new();
@@ -5534,7 +12528,10 @@ fn stable_visual_selections(
             if let Some(reason) = stable_motif_gate_reason(plan, index, layout, motif) {
                 rejected.push(format!("rejected={} reason={}", motif.as_str(), reason));
             } else {
-                eligible.push((motif, rank + stable_motif_content_score(slide, layout, motif)));
+                eligible.push((
+                    motif,
+                    rank + stable_motif_content_score(slide, layout, motif),
+                ));
             }
         }
         let mut fallback_reason = None;
@@ -5551,33 +12548,48 @@ fn stable_visual_selections(
             ));
             eligible.push((fallback, 0));
         }
-        let previous = selections
-            .last()
-            .map(|selection: &StableVisualSelection| selection.signature);
+        let previous = selections.last().map(|selection: &StableVisualSelection| {
+            (selection.signature, selection.structure_fingerprint)
+        });
         let mut best = None;
         let mut best_score = usize::MAX;
         for (motif, content_score) in eligible {
             let signature = visual_signature(layout, motif);
+            let structure = stable_structure_fingerprint(slide, layout, motif);
             let reuse = *motif_counts.get(&motif).unwrap_or(&0);
-            let repeated_motif = previous.is_some_and(|value| value.motif_family == motif);
-            let repeated_signature = previous == Some(signature);
-            let over_soft_limit = index > 0 && index + 1 < plan.slides.len() && reuse >= soft_motif_limit;
+            let structure_reuse = *structure_counts.get(&structure).unwrap_or(&0);
+            let repeated_motif = previous.is_some_and(|value| value.0.motif_family == motif);
+            let repeated_signature = previous.is_some_and(|value| value.0 == signature);
+            let repeated_structure = previous.is_some_and(|value| value.1 == structure);
+            let over_soft_limit =
+                index > 0 && index + 1 < plan.slides.len() && reuse >= soft_motif_limit;
             let score = content_score
                 + reuse * 12
+                + structure_reuse * 36
                 + usize::from(repeated_motif) * 120
                 + usize::from(repeated_signature) * 240
+                + usize::from(repeated_structure) * 360
                 + usize::from(over_soft_limit) * 60;
             if score < best_score {
-                best = Some(signature);
+                best = Some((signature, structure));
                 best_score = score;
             }
         }
-        let signature = best.unwrap_or_else(|| visual_signature(layout, StableMotif::PlainEditorial));
-        let duplicate_signature = previous == Some(signature);
+        let (signature, structure_fingerprint) = best.unwrap_or_else(|| {
+            let motif = StableMotif::PlainEditorial;
+            (
+                visual_signature(layout, motif),
+                stable_structure_fingerprint(slide, layout, motif),
+            )
+        });
+        let duplicate_signature =
+            previous.is_some_and(|value| value.0 == signature || value.1 == structure_fingerprint);
         let count = motif_counts.entry(signature.motif_family).or_insert(0);
         *count += 1;
+        *structure_counts.entry(structure_fingerprint).or_insert(0) += 1;
         selections.push(StableVisualSelection {
             signature,
+            structure_fingerprint,
             motif_reuse_count: *count,
             duplicate_signature,
             rejected,
@@ -5603,9 +12615,6 @@ const STABLE_DENSITY_STRUCTURED: &[StableDensity] =
 
 fn stable_motif_status(motif: StableMotif) -> StableMotifStatus {
     match motif {
-        StableMotif::HubSpoke | StableMotif::BracketGroup | StableMotif::MatrixCell => {
-            StableMotifStatus::Experimental
-        }
         StableMotif::ImagePlaceholderEditorial => StableMotifStatus::Disabled,
         _ => StableMotifStatus::ProductionReady,
     }
@@ -5771,7 +12780,7 @@ fn stable_motif_requirements(motif: StableMotif) -> StableMotifRequirements {
         },
         StableMotif::MatrixCell => StableMotifRequirements {
             min_blocks: 4,
-            max_blocks: 6,
+            max_blocks: 4,
             requires_number: false,
             requires_year_or_metric: false,
             requires_quote: false,
@@ -5812,12 +12821,16 @@ fn stable_motif_requirements(motif: StableMotif) -> StableMotifRequirements {
 }
 
 fn stable_density(slide: &Slide) -> StableDensity {
-    match slide.density.trim().to_ascii_lowercase().as_str() {
-        "anchor" => StableDensity::Anchor,
-        "breathing" => StableDensity::Breathing,
-        "dense" => StableDensity::Dense,
-        _ => StableDensity::Balanced,
+    for value in [&slide.page_rhythm, &slide.density] {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "anchor" => return StableDensity::Anchor,
+            "breathing" => return StableDensity::Breathing,
+            "balanced" => return StableDensity::Balanced,
+            "dense" => return StableDensity::Dense,
+            _ => {}
+        }
     }
+    StableDensity::Balanced
 }
 
 fn stable_motif_gate_reason(
@@ -5830,12 +12843,21 @@ fn stable_motif_gate_reason(
     let blocks = slide_blocks(slide);
     let requirements = stable_motif_requirements(motif);
     if blocks.len() < requirements.min_blocks {
-        return Some(format!("requires at least {} blocks", requirements.min_blocks));
+        return Some(format!(
+            "requires at least {} blocks",
+            requirements.min_blocks
+        ));
     }
     if blocks.len() > requirements.max_blocks {
-        return Some(format!("supports at most {} blocks", requirements.max_blocks));
+        return Some(format!(
+            "supports at most {} blocks",
+            requirements.max_blocks
+        ));
     }
-    if !requirements.allowed_density.contains(&stable_density(slide)) {
+    if !requirements
+        .allowed_density
+        .contains(&stable_density(slide))
+    {
         return Some(format!("density {} is not supported", slide.density));
     }
     if blocks
@@ -5860,7 +12882,9 @@ fn stable_motif_gate_reason(
         return Some("requires timeline, stage, process, or sequence semantics".to_string());
     }
     if requirements.requires_comparison && !stable_has_dual_relationship(slide) {
-        return Some("requires comparison, dual-side, cause-effect, or matrix semantics".to_string());
+        return Some(
+            "requires comparison, dual-side, cause-effect, or matrix semantics".to_string(),
+        );
     }
     if requirements.requires_quote && !stable_has_quote_semantics(slide) {
         return Some("requires a short quote, definition, or strong statement".to_string());
@@ -5871,18 +12895,25 @@ fn stable_motif_gate_reason(
         return Some("quote layout cannot preserve the available supporting detail".to_string());
     }
     if requirements.requires_year_or_metric
-        && !blocks.iter().all(|block| stable_numeric_anchor(block).is_some())
+        && !blocks
+            .iter()
+            .all(|block| stable_numeric_anchor(block).is_some())
     {
         return Some("no meaningful numeric anchor for every displayed block".to_string());
     }
     if requirements.requires_number
         && !requirements.requires_sequence
-        && !blocks.iter().any(|block| stable_numeric_anchor(block).is_some())
+        && !blocks
+            .iter()
+            .any(|block| stable_numeric_anchor(block).is_some())
     {
         return Some("requires meaningful numbers".to_string());
     }
     if slide.evidence.len() < requirements.min_evidence {
-        return Some(format!("requires at least {} evidence items", requirements.min_evidence));
+        return Some(format!(
+            "requires at least {} evidence items",
+            requirements.min_evidence
+        ));
     }
     if requirements.requires_image {
         return Some("stable mode has no resolved image resource".to_string());
@@ -5892,7 +12923,9 @@ fn stable_motif_gate_reason(
         && index + 1 != plan.slides.len()
         && !matches!(layout, StableLayoutKind::Anchor | StableLayoutKind::Summary)
     {
-        return Some("section banner is limited to anchor, transition, or summary pages".to_string());
+        return Some(
+            "section banner is limited to anchor, transition, or summary pages".to_string(),
+        );
     }
     if motif == StableMotif::EvidenceStrip
         && estimated_motif_block_height(layout, blocks.len()) < 166.0
@@ -5901,7 +12934,6 @@ fn stable_motif_gate_reason(
     }
     match stable_motif_status(motif) {
         StableMotifStatus::ProductionReady => None,
-        StableMotifStatus::Experimental => Some("status=experimental".to_string()),
         StableMotifStatus::Disabled => Some("status=disabled".to_string()),
     }
 }
@@ -5927,9 +12959,20 @@ fn stable_has_dual_relationship(slide: &Slide) -> bool {
         slide.relation, slide.chart_type, slide.layout, slide.core_message
     )
     .to_ascii_lowercase();
-    ["compare", "comparison", "cause", "matrix", "对比", "比较", "原因", "结果", "两类", "双方"]
-        .iter()
-        .any(|token| semantics.contains(token))
+    [
+        "compare",
+        "comparison",
+        "cause",
+        "matrix",
+        "对比",
+        "比较",
+        "原因",
+        "结果",
+        "两类",
+        "双方",
+    ]
+    .iter()
+    .any(|token| semantics.contains(token))
 }
 
 fn stable_has_quote_semantics(slide: &Slide) -> bool {
@@ -5937,10 +12980,12 @@ fn stable_has_quote_semantics(slide: &Slide) -> bool {
     if core.trim().is_empty() || core.chars().count() > 72 {
         return false;
     }
-    matches!(stable_density(slide), StableDensity::Anchor | StableDensity::Breathing)
-        || ["“", "”", "定义", "核心论断", "结论", "意味着"]
-            .iter()
-            .any(|token| core.contains(token) || slide.title.contains(token))
+    matches!(
+        stable_density(slide),
+        StableDensity::Anchor | StableDensity::Breathing
+    ) || ["“", "”", "定义", "核心论断", "结论", "意味着"]
+        .iter()
+        .any(|token| core.contains(token) || slide.title.contains(token))
 }
 
 fn stable_numeric_anchor(block: &ContentBlock) -> Option<String> {
@@ -5974,11 +13019,21 @@ fn stable_numeric_anchor(block: &ContentBlock) -> Option<String> {
 fn estimated_motif_block_height(layout: StableLayoutKind, block_count: usize) -> f32 {
     let count = block_count.max(1);
     match layout {
-        StableLayoutKind::EditorialSplit => (430.0 - 14.0 * count.saturating_sub(1) as f32) / count as f32,
-        StableLayoutKind::Comparison => (344.0 - 14.0 * ((count.div_ceil(2)).saturating_sub(1)) as f32)
-            / count.div_ceil(2) as f32,
+        StableLayoutKind::EditorialSplit => {
+            (430.0 - 14.0 * count.saturating_sub(1) as f32) / count as f32
+        }
+        StableLayoutKind::Comparison => {
+            (344.0 - 14.0 * ((count.div_ceil(2)).saturating_sub(1)) as f32)
+                / count.div_ceil(2) as f32
+        }
         StableLayoutKind::CategoryGrid | StableLayoutKind::Matrix => {
-            let columns = if count <= 2 { count } else if count == 4 { 2 } else { 3 };
+            let columns = if count <= 2 {
+                count
+            } else if count == 4 {
+                2
+            } else {
+                3
+            };
             let rows = count.div_ceil(columns.max(1));
             (470.0 - 20.0 * rows.saturating_sub(1) as f32) / rows as f32
         }
@@ -5997,8 +13052,16 @@ fn stable_motif_content_score(
         StableMotif::TopBandCard if blocks.len() >= 3 => 0,
         StableMotif::QuoteStatement if stable_density(slide) == StableDensity::Anchor => 0,
         StableMotif::EvidenceStrip if slide.evidence.len() >= blocks.len().max(2) => 0,
-        StableMotif::TimelineNode | StableMotif::StepBlock if stable_has_sequence_semantics(slide) => 0,
-        StableMotif::ComparisonColumn | StableMotif::SplitPanel if stable_has_dual_relationship(slide) => 0,
+        StableMotif::TimelineNode | StableMotif::StepBlock
+            if stable_has_sequence_semantics(slide) =>
+        {
+            0
+        }
+        StableMotif::ComparisonColumn | StableMotif::SplitPanel
+            if stable_has_dual_relationship(slide) =>
+        {
+            0
+        }
         _ => 4,
     }
 }
@@ -6011,7 +13074,11 @@ fn stable_safe_fallback_motif(
     let slide = &plan.slides[index];
     let blocks = slide_blocks(slide);
     let ordered = if stable_has_sequence_semantics(slide) {
-        vec![StableMotif::NumberedBadge, StableMotif::TopBandCard, StableMotif::PlainEditorial]
+        vec![
+            StableMotif::NumberedBadge,
+            StableMotif::TopBandCard,
+            StableMotif::PlainEditorial,
+        ]
     } else if blocks.len() <= 3 {
         vec![StableMotif::PlainEditorial, StableMotif::TopBandCard]
     } else {
@@ -6019,7 +13086,10 @@ fn stable_safe_fallback_motif(
     };
     for motif in ordered {
         if stable_motif_gate_reason(plan, index, layout, motif).is_none() {
-            return (motif, "no requested motif satisfied production requirements".to_string());
+            return (
+                motif,
+                "no requested motif satisfied production requirements".to_string(),
+            );
         }
     }
     (
@@ -6030,7 +13100,9 @@ fn stable_safe_fallback_motif(
 
 fn stable_motif_candidates(slide: &Slide, layout: StableLayoutKind) -> Vec<StableMotif> {
     let blocks = slide_blocks(slide);
-    let has_year = blocks.iter().any(|block| extract_year_token(block).is_some());
+    let has_year = blocks
+        .iter()
+        .any(|block| extract_year_token(block).is_some());
     let has_visual_request = slide.visual_intent.contains("图片")
         || slide.visual_intent.to_ascii_lowercase().contains("image")
         || slide.visual_hint.contains("图片");
@@ -6117,9 +13189,9 @@ fn stable_motif_candidates(slide: &Slide, layout: StableLayoutKind) -> Vec<Stabl
             StableMotif::PlainEditorial,
         ],
         StableLayoutKind::Summary => vec![
-            StableMotif::EvidenceStrip,
             StableMotif::HubSpoke,
             StableMotif::SectionBanner,
+            StableMotif::EvidenceStrip,
         ],
     }
 }
@@ -6211,6 +13283,94 @@ fn visual_signature(layout: StableLayoutKind, motif: StableMotif) -> StableVisua
     }
 }
 
+fn stable_structure_fingerprint(
+    slide: &Slide,
+    layout: StableLayoutKind,
+    motif: StableMotif,
+) -> StableStructureFingerprint {
+    let block_count = slide_blocks(slide).len().clamp(1, 6) as u8;
+    let (focal_region, rows, columns, card_count) = match layout {
+        StableLayoutKind::Anchor => (StableFocalRegion::Left, 1, 2, 0),
+        StableLayoutKind::EditorialSplit => (StableFocalRegion::Left, block_count, 2, 0),
+        StableLayoutKind::Timeline => (StableFocalRegion::Axis, 1, block_count, 0),
+        StableLayoutKind::CategoryGrid => {
+            let columns = if block_count <= 2 {
+                2
+            } else if block_count == 4 {
+                2
+            } else {
+                3
+            };
+            let rows = block_count.div_ceil(columns);
+            (StableFocalRegion::Grid, rows, columns, block_count)
+        }
+        StableLayoutKind::Comparison => (StableFocalRegion::Split, 1, 2, 0),
+        StableLayoutKind::CauseEffect => (StableFocalRegion::Radial, 1, 3, 0),
+        StableLayoutKind::Process => (StableFocalRegion::Axis, 1, block_count, 0),
+        StableLayoutKind::Hierarchy => (StableFocalRegion::Vertical, block_count, 1, 0),
+        StableLayoutKind::Matrix => (StableFocalRegion::Grid, 2, 2, 0),
+        StableLayoutKind::Quote => (StableFocalRegion::Center, 1, 1, 0),
+        StableLayoutKind::EvidenceLed => (StableFocalRegion::Left, block_count, 2, 0),
+        StableLayoutKind::Summary => (StableFocalRegion::Radial, 2, 3, 0),
+    };
+    let density = stable_density(slide);
+    StableStructureFingerprint {
+        layout_family: layout,
+        focal_region,
+        rows,
+        columns,
+        card_count,
+        has_axis: matches!(
+            layout,
+            StableLayoutKind::Timeline | StableLayoutKind::Process | StableLayoutKind::Matrix
+        ),
+        has_connectors: matches!(
+            layout,
+            StableLayoutKind::Timeline
+                | StableLayoutKind::Process
+                | StableLayoutKind::CauseEffect
+                | StableLayoutKind::Hierarchy
+                | StableLayoutKind::Summary
+        ),
+        has_center_node: matches!(
+            layout,
+            StableLayoutKind::CauseEffect | StableLayoutKind::Summary
+        ),
+        has_radial_structure: matches!(
+            layout,
+            StableLayoutKind::CauseEffect | StableLayoutKind::Summary
+        ),
+        has_big_number: motif == StableMotif::BigNumber || motif == StableMotif::SectionBanner,
+        has_quote: motif == StableMotif::QuoteStatement || layout == StableLayoutKind::Quote,
+        has_chart_structure: matches!(
+            layout,
+            StableLayoutKind::Timeline
+                | StableLayoutKind::Comparison
+                | StableLayoutKind::CauseEffect
+                | StableLayoutKind::Process
+                | StableLayoutKind::Hierarchy
+                | StableLayoutKind::Matrix
+        ),
+        asymmetric: matches!(
+            layout,
+            StableLayoutKind::Anchor
+                | StableLayoutKind::EditorialSplit
+                | StableLayoutKind::EvidenceLed
+                | StableLayoutKind::Hierarchy
+        ),
+        element_count_band: match block_count {
+            0..=2 => 1,
+            3..=4 => 2,
+            _ => 3,
+        },
+        occupancy_band: match density {
+            StableDensity::Anchor | StableDensity::Breathing => 1,
+            StableDensity::Balanced => 2,
+            StableDensity::Dense => 3,
+        },
+    }
+}
+
 fn extract_year_token(block: &ContentBlock) -> Option<String> {
     let text = format!("{} {} {}", block.label, block.text, block.detail);
     let mut digits = String::new();
@@ -6244,29 +13404,131 @@ fn roman_numeral(index: usize) -> String {
     .to_string()
 }
 
-fn stable_layout_for_index(
-    plan: &SlidePlan,
-    index: usize,
-    chart_patterns: &std::collections::HashSet<String>,
-) -> StableLayoutKind {
-    let mut previous = None;
-    let mut selected = StableLayoutKind::CategoryGrid;
-    for idx in 0..=index {
-        let slide = &plan.slides[idx];
-        let mut current =
-            stable_semantic_layout(slide, idx, plan.slides.len(), &plan.title, chart_patterns);
-        if previous == Some(current)
-            && !matches!(
-                current,
-                StableLayoutKind::Anchor | StableLayoutKind::Summary
-            )
-        {
-            current = stable_alternate_layout(slide, current);
-        }
-        selected = current;
-        previous = Some(current);
+fn stable_compatible_layouts(primary: StableLayoutKind, slide: &Slide) -> Vec<StableLayoutKind> {
+    let mut layouts = match primary {
+        StableLayoutKind::Anchor => vec![StableLayoutKind::Anchor],
+        StableLayoutKind::EditorialSplit => vec![
+            StableLayoutKind::EditorialSplit,
+            StableLayoutKind::EvidenceLed,
+            StableLayoutKind::Quote,
+        ],
+        StableLayoutKind::Timeline => vec![StableLayoutKind::Timeline, StableLayoutKind::Process],
+        StableLayoutKind::CategoryGrid => vec![
+            StableLayoutKind::CategoryGrid,
+            StableLayoutKind::EvidenceLed,
+            StableLayoutKind::EditorialSplit,
+            StableLayoutKind::Matrix,
+        ],
+        StableLayoutKind::Comparison => vec![
+            StableLayoutKind::Comparison,
+            StableLayoutKind::Matrix,
+            StableLayoutKind::EvidenceLed,
+        ],
+        StableLayoutKind::CauseEffect => vec![
+            StableLayoutKind::CauseEffect,
+            StableLayoutKind::Process,
+            StableLayoutKind::Hierarchy,
+        ],
+        StableLayoutKind::Process => vec![
+            StableLayoutKind::Process,
+            StableLayoutKind::Timeline,
+            StableLayoutKind::CauseEffect,
+        ],
+        StableLayoutKind::Hierarchy => vec![
+            StableLayoutKind::Hierarchy,
+            StableLayoutKind::CauseEffect,
+            StableLayoutKind::Process,
+        ],
+        StableLayoutKind::Matrix => vec![
+            StableLayoutKind::Matrix,
+            StableLayoutKind::Comparison,
+            StableLayoutKind::CategoryGrid,
+        ],
+        StableLayoutKind::Quote => vec![
+            StableLayoutKind::Quote,
+            StableLayoutKind::EditorialSplit,
+            StableLayoutKind::EvidenceLed,
+        ],
+        StableLayoutKind::EvidenceLed => vec![
+            StableLayoutKind::EvidenceLed,
+            StableLayoutKind::EditorialSplit,
+            StableLayoutKind::CategoryGrid,
+        ],
+        StableLayoutKind::Summary => vec![StableLayoutKind::Summary],
+    };
+    if slide_blocks(slide).len() <= 2 && !layouts.contains(&StableLayoutKind::Quote) {
+        layouts.push(StableLayoutKind::Quote);
     }
-    selected
+    layouts
+}
+
+fn stable_layout_limit(layout: StableLayoutKind, total: usize) -> usize {
+    let short_deck = (6..=8).contains(&total);
+    match layout {
+        StableLayoutKind::CategoryGrid | StableLayoutKind::EditorialSplit if short_deck => 1,
+        StableLayoutKind::CategoryGrid | StableLayoutKind::EditorialSplit => {
+            total.saturating_sub(2).div_ceil(4).max(1)
+        }
+        _ => usize::MAX,
+    }
+}
+
+fn stable_layout_sequence(
+    plan: &SlidePlan,
+    chart_patterns: &std::collections::HashSet<String>,
+) -> Vec<StableLayoutKind> {
+    let mut sequence = Vec::with_capacity(plan.slides.len());
+    let mut counts = std::collections::HashMap::<StableLayoutKind, usize>::new();
+    let mut used_body = std::collections::HashSet::<StableLayoutKind>::new();
+
+    for (index, slide) in plan.slides.iter().enumerate() {
+        let primary =
+            stable_semantic_layout(slide, index, plan.slides.len(), &plan.title, chart_patterns);
+        let candidates = stable_compatible_layouts(primary, slide);
+        let previous = sequence.last().copied();
+        let body_page = index > 0 && index + 1 < plan.slides.len();
+        let within_limit =
+            |layout: StableLayoutKind,
+             counts: &std::collections::HashMap<StableLayoutKind, usize>| {
+                counts.get(&layout).copied().unwrap_or(0)
+                    < stable_layout_limit(layout, plan.slides.len())
+            };
+
+        let selected = if !body_page {
+            primary
+        } else {
+            candidates
+                .iter()
+                .copied()
+                .find(|layout| {
+                    previous != Some(*layout)
+                        && !used_body.contains(layout)
+                        && within_limit(*layout, &counts)
+                        && stable_layout_is_available(*layout, chart_patterns)
+                })
+                .or_else(|| {
+                    candidates.iter().copied().find(|layout| {
+                        previous != Some(*layout)
+                            && within_limit(*layout, &counts)
+                            && stable_layout_is_available(*layout, chart_patterns)
+                    })
+                })
+                .or_else(|| {
+                    candidates.iter().copied().find(|layout| {
+                        previous != Some(*layout)
+                            && stable_layout_is_available(*layout, chart_patterns)
+                    })
+                })
+                .unwrap_or(primary)
+        };
+
+        if body_page {
+            *counts.entry(selected).or_insert(0) += 1;
+            used_body.insert(selected);
+        }
+        sequence.push(selected);
+    }
+    sequence
 }
 
 fn stable_semantic_layout(
@@ -6291,27 +13553,33 @@ fn stable_semantic_layout(
     let relation = slide.relation.trim().to_ascii_lowercase();
     let chart = slide.chart_type.trim().to_ascii_lowercase();
     let layout = slide.layout.trim().to_ascii_lowercase();
-    let available = |pattern: &str| chart_patterns.is_empty() || chart_patterns.contains(pattern);
-    if (relation == "timeline" || chart == "timeline") && available("timeline") {
+    let signals = [relation.as_str(), chart.as_str(), layout.as_str()];
+    if stable_layout_matches_signal(StableLayoutKind::Timeline, &signals)
+        && stable_layout_is_available(StableLayoutKind::Timeline, chart_patterns)
+    {
         StableLayoutKind::Timeline
-    } else if relation == "compare" || chart == "compare" || layout == "compare" {
+    } else if stable_layout_matches_signal(StableLayoutKind::Comparison, &signals) {
         StableLayoutKind::Comparison
-    } else if (relation == "cause" || chart.contains("cause")) && available("fishbone_diagram") {
+    } else if stable_layout_matches_signal(StableLayoutKind::CauseEffect, &signals)
+        && stable_layout_is_available(StableLayoutKind::CauseEffect, chart_patterns)
+    {
         StableLayoutKind::CauseEffect
-    } else if (relation == "process" || chart.contains("process") || layout == "process")
-        && available("process_flow")
+    } else if stable_layout_matches_signal(StableLayoutKind::Process, &signals)
+        && stable_layout_is_available(StableLayoutKind::Process, chart_patterns)
     {
         StableLayoutKind::Process
-    } else if (chart.contains("matrix") || layout == "matrix") && available("matrix_2x2") {
+    } else if stable_layout_matches_signal(StableLayoutKind::Matrix, &signals)
+        && stable_layout_is_available(StableLayoutKind::Matrix, chart_patterns)
+    {
         StableLayoutKind::Matrix
-    } else if (chart.contains("hierarchy") || chart.contains("pyramid"))
-        && available("pyramid_chart")
+    } else if stable_layout_matches_signal(StableLayoutKind::Hierarchy, &signals)
+        && stable_layout_is_available(StableLayoutKind::Hierarchy, chart_patterns)
     {
         StableLayoutKind::Hierarchy
-    } else if chart == "highlight" || layout == "highlight" {
+    } else if stable_layout_matches_signal(StableLayoutKind::EvidenceLed, &signals) {
         StableLayoutKind::EvidenceLed
-    } else if (relation == "category" || chart == "cards" || layout == "cards")
-        && available("labeled_card")
+    } else if stable_layout_matches_signal(StableLayoutKind::CategoryGrid, &signals)
+        && stable_layout_is_available(StableLayoutKind::CategoryGrid, chart_patterns)
     {
         StableLayoutKind::CategoryGrid
     } else if slide.density == "breathing" && slide_blocks(slide).len() <= 2 {
@@ -6323,28 +13591,41 @@ fn stable_semantic_layout(
     }
 }
 
-fn stable_alternate_layout(slide: &Slide, current: StableLayoutKind) -> StableLayoutKind {
-    match current {
-        StableLayoutKind::CategoryGrid => StableLayoutKind::EditorialSplit,
-        StableLayoutKind::Timeline => StableLayoutKind::Process,
-        StableLayoutKind::Process => StableLayoutKind::CauseEffect,
-        StableLayoutKind::Comparison => StableLayoutKind::EvidenceLed,
-        StableLayoutKind::EvidenceLed => StableLayoutKind::EditorialSplit,
-        _ if slide_blocks(slide).len() <= 3 => StableLayoutKind::EditorialSplit,
-        _ => StableLayoutKind::EvidenceLed,
+fn stable_fallback_layout(
+    plan: &SlidePlan,
+    page_index: usize,
+    slide: &Slide,
+    current: StableLayoutKind,
+) -> StableLayoutKind {
+    if matches!(
+        current,
+        StableLayoutKind::Anchor | StableLayoutKind::Summary
+    ) {
+        return current;
     }
-}
-
-fn stable_fallback_layout(slide: &Slide, current: StableLayoutKind) -> StableLayoutKind {
-    if slide_blocks(slide).len() >= 4 && current != StableLayoutKind::CategoryGrid {
-        StableLayoutKind::CategoryGrid
-    } else if slide_blocks(slide).len() <= 3 && current != StableLayoutKind::EditorialSplit {
-        StableLayoutKind::EditorialSplit
-    } else if current != StableLayoutKind::EvidenceLed {
-        StableLayoutKind::EvidenceLed
-    } else {
-        StableLayoutKind::CategoryGrid
+    let chart_patterns = std::collections::HashSet::new();
+    let planned = stable_layout_sequence(plan, &chart_patterns);
+    let previous = page_index
+        .checked_sub(1)
+        .and_then(|index| planned.get(index))
+        .copied();
+    let next = planned.get(page_index + 1).copied();
+    let mut counts = std::collections::HashMap::<StableLayoutKind, usize>::new();
+    for (index, layout) in planned.iter().copied().enumerate() {
+        if index != page_index && index > 0 && index + 1 < plan.slides.len() {
+            *counts.entry(layout).or_insert(0) += 1;
+        }
     }
+    stable_compatible_layouts(current, slide)
+        .into_iter()
+        .filter(|layout| *layout != current)
+        .find(|layout| {
+            previous != Some(*layout)
+                && next != Some(*layout)
+                && counts.get(layout).copied().unwrap_or(0)
+                    < stable_layout_limit(*layout, plan.slides.len())
+        })
+        .unwrap_or(current)
 }
 
 fn render_stable_layout(
@@ -6371,9 +13652,7 @@ fn render_stable_layout(
             render_stable_cause_effect(slide, profile, motif, detail_level)
         }
         StableLayoutKind::Process => render_stable_process(slide, profile, motif, detail_level),
-        StableLayoutKind::Hierarchy => {
-            render_stable_hierarchy(slide, profile, motif, detail_level)
-        }
+        StableLayoutKind::Hierarchy => render_stable_hierarchy(slide, profile, motif, detail_level),
         StableLayoutKind::Matrix => render_stable_matrix(slide, profile, motif, detail_level),
         StableLayoutKind::Quote => render_stable_quote(slide, profile, motif, detail_level),
         StableLayoutKind::EvidenceLed => {
@@ -6479,7 +13758,371 @@ fn wrap_text_to_width(text: &str, font_size: f32, max_width: f32, weight: &str) 
     }
 }
 
-fn fit_text_box(
+fn stable_heading_emphasis(level: usize) -> StableTextEmphasis {
+    match level {
+        1 => StableTextEmphasis::Heading1,
+        2 => StableTextEmphasis::Heading2,
+        _ => StableTextEmphasis::Heading3,
+    }
+}
+
+fn stable_heading_font_scale(level: usize) -> f32 {
+    match level {
+        1 => 1.18,
+        2 => 1.14,
+        _ => 1.10,
+    }
+}
+
+fn push_stable_text_run(runs: &mut Vec<StableTextRun>, run: StableTextRun) {
+    if run.text.is_empty() {
+        return;
+    }
+    if let Some(previous) = runs.last_mut() {
+        if previous.bold == run.bold
+            && (previous.font_scale - run.font_scale).abs() < f32::EPSILON
+            && previous.emphasis == run.emphasis
+        {
+            previous.text.push_str(&run.text);
+            return;
+        }
+    }
+    runs.push(run);
+}
+
+fn parse_stable_text_paragraph(value: &str, policy: StableTextRenderPolicy) -> StableTextParagraph {
+    let (heading_level, body) = stable_markdown_heading_prefix(value)
+        .map_or((None, value.trim()), |(level, body)| (Some(level), body));
+    let heading_style = heading_level
+        .filter(|_| policy.allow_heading_scale)
+        .map(stable_heading_emphasis)
+        .unwrap_or(StableTextEmphasis::Normal);
+    let heading_scale = heading_level
+        .filter(|_| policy.allow_heading_scale)
+        .map(stable_heading_font_scale)
+        .unwrap_or(1.0);
+    let heading_bold = heading_level.is_some() && policy.allow_heading_scale;
+    let marker_count = body.match_indices("**").count();
+    if marker_count == 0 || marker_count == 1 || !policy.allow_strong {
+        return StableTextParagraph {
+            runs: vec![StableTextRun {
+                text: body.replace("**", ""),
+                bold: heading_bold,
+                font_scale: heading_scale,
+                emphasis: heading_style,
+            }],
+        };
+    }
+
+    let parsed_body = if marker_count % 2 != 0 {
+        let markers = body
+            .match_indices("**")
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let unmatched = (0..markers.len())
+            .min_by_key(|skipped| {
+                let retained = markers
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, marker)| (index != *skipped).then_some(*marker))
+                    .collect::<Vec<_>>();
+                retained
+                    .chunks_exact(2)
+                    .map(|pair| {
+                        let length = body[pair[0] + 2..pair[1]].chars().count();
+                        if length == 0 {
+                            usize::MAX / 8
+                        } else {
+                            length
+                        }
+                    })
+                    .sum::<usize>()
+            })
+            .unwrap_or(0);
+        let mut repaired = body.to_string();
+        repaired.replace_range(markers[unmatched]..markers[unmatched] + 2, "");
+        repaired
+    } else {
+        body.to_string()
+    };
+
+    let mut runs = Vec::new();
+    let mut remainder = parsed_body.as_str();
+    let mut strong = false;
+    while let Some(index) = remainder.find("**") {
+        let text = &remainder[..index];
+        push_stable_text_run(
+            &mut runs,
+            StableTextRun {
+                text: text.to_string(),
+                bold: heading_bold || strong,
+                font_scale: heading_scale,
+                emphasis: if heading_bold {
+                    heading_style
+                } else if strong {
+                    StableTextEmphasis::Strong
+                } else {
+                    StableTextEmphasis::Normal
+                },
+            },
+        );
+        strong = !strong;
+        remainder = &remainder[index + 2..];
+    }
+    push_stable_text_run(
+        &mut runs,
+        StableTextRun {
+            text: remainder.to_string(),
+            bold: heading_bold || strong,
+            font_scale: heading_scale,
+            emphasis: if heading_bold {
+                heading_style
+            } else if strong {
+                StableTextEmphasis::Strong
+            } else {
+                StableTextEmphasis::Normal
+            },
+        },
+    );
+    StableTextParagraph { runs }
+}
+
+fn parse_stable_rich_text(value: &str, policy: StableTextRenderPolicy) -> Vec<StableTextParagraph> {
+    let mut paragraphs = value
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| parse_stable_text_paragraph(line, policy))
+        .collect::<Vec<_>>();
+    if paragraphs.is_empty() {
+        paragraphs.push(StableTextParagraph {
+            runs: vec![StableTextRun {
+                text: String::new(),
+                bold: false,
+                font_scale: 1.0,
+                emphasis: StableTextEmphasis::Normal,
+            }],
+        });
+    }
+    paragraphs
+}
+
+fn stable_plain_text(value: &str) -> String {
+    parse_stable_rich_text(
+        value,
+        StableTextRenderPolicy {
+            allow_strong: false,
+            allow_heading_scale: false,
+        },
+    )
+    .iter()
+    .map(|paragraph| {
+        paragraph
+            .runs
+            .iter()
+            .map(|run| run.text.as_str())
+            .collect::<String>()
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StableStyledChar {
+    ch: char,
+    bold: bool,
+    font_scale: f32,
+    emphasis: StableTextEmphasis,
+}
+
+fn stable_paragraph_chars(paragraph: &StableTextParagraph) -> Vec<StableStyledChar> {
+    let mut chars = Vec::new();
+    let mut previous_was_space = true;
+    for run in &paragraph.runs {
+        for ch in run.text.chars() {
+            if ch.is_whitespace() {
+                if previous_was_space {
+                    continue;
+                }
+                chars.push(StableStyledChar {
+                    ch: ' ',
+                    bold: run.bold,
+                    font_scale: run.font_scale,
+                    emphasis: run.emphasis,
+                });
+                previous_was_space = true;
+            } else {
+                chars.push(StableStyledChar {
+                    ch,
+                    bold: run.bold,
+                    font_scale: run.font_scale,
+                    emphasis: run.emphasis,
+                });
+                previous_was_space = false;
+            }
+        }
+    }
+    while chars.last().is_some_and(|value| value.ch == ' ') {
+        chars.pop();
+    }
+    chars
+}
+
+fn stable_styled_char_width(value: StableStyledChar, font_size: f32, weight: &str) -> f32 {
+    stable_char_width(
+        value.ch,
+        font_size * value.font_scale,
+        if value.bold { "700" } else { weight },
+    )
+}
+
+fn stable_chars_to_text_line(chars: &[StableStyledChar]) -> StableTextLine {
+    let mut runs = Vec::new();
+    for value in chars {
+        push_stable_text_run(
+            &mut runs,
+            StableTextRun {
+                text: value.ch.to_string(),
+                bold: value.bold,
+                font_scale: value.font_scale,
+                emphasis: value.emphasis,
+            },
+        );
+    }
+    StableTextLine { runs }
+}
+
+fn wrap_stable_rich_text(
+    paragraphs: &[StableTextParagraph],
+    font_size: f32,
+    max_width: f32,
+    weight: &str,
+) -> Vec<StableTextLine> {
+    let mut output = Vec::new();
+    for paragraph in paragraphs {
+        let chars = stable_paragraph_chars(paragraph);
+        if chars.is_empty() {
+            output.push(StableTextLine { runs: Vec::new() });
+            continue;
+        }
+        let mut current = Vec::new();
+        let mut current_width = 0.0;
+        let mut index = 0;
+        while index < chars.len() {
+            let value = chars[index];
+            let width = stable_styled_char_width(value, font_size, weight);
+            if current_width + width <= max_width || current.is_empty() {
+                current.push(value);
+                current_width += width;
+                index += 1;
+                continue;
+            }
+            if is_line_start_forbidden(value.ch) && current_width + width <= max_width * 1.08 {
+                current.push(value);
+                index += 1;
+            }
+            while current.last().is_some_and(|value| value.ch == ' ') {
+                current.pop();
+            }
+            let mut moved_prefix = Vec::new();
+            if value.ch.is_ascii_digit()
+                && current
+                    .last()
+                    .is_some_and(|value| value.ch.is_ascii_digit())
+            {
+                while current
+                    .last()
+                    .is_some_and(|value| value.ch.is_ascii_digit())
+                {
+                    if let Some(moved) = current.pop() {
+                        moved_prefix.insert(0, moved);
+                    }
+                }
+                if current.is_empty() {
+                    current.append(&mut moved_prefix);
+                }
+            } else if current.len() > 1
+                && current
+                    .last()
+                    .is_some_and(|value| is_line_end_forbidden(value.ch))
+            {
+                if let Some(moved) = current.pop() {
+                    moved_prefix.push(moved);
+                }
+            }
+            if !current.is_empty() {
+                output.push(stable_chars_to_text_line(&current));
+            }
+            current = moved_prefix;
+            current_width = current
+                .iter()
+                .map(|value| stable_styled_char_width(*value, font_size, weight))
+                .sum();
+        }
+        while current.last().is_some_and(|value| value.ch == ' ') {
+            current.pop();
+        }
+        if !current.is_empty() {
+            output.push(stable_chars_to_text_line(&current));
+        }
+    }
+    if output.is_empty() {
+        vec![StableTextLine { runs: Vec::new() }]
+    } else {
+        output
+    }
+}
+
+fn stable_rich_line_width(line: &StableTextLine, font_size: f32, weight: &str) -> f32 {
+    line.runs
+        .iter()
+        .map(|run| {
+            estimate_stable_text_width(
+                &run.text,
+                font_size * run.font_scale,
+                if run.bold { "700" } else { weight },
+            )
+        })
+        .sum()
+}
+
+fn truncate_stable_rich_line(
+    line: &mut StableTextLine,
+    font_size: f32,
+    box_width: f32,
+    weight: &str,
+) {
+    let fallback = StableTextRun {
+        text: String::new(),
+        bold: false,
+        font_scale: 1.0,
+        emphasis: StableTextEmphasis::Normal,
+    };
+    let ellipsis_style = line.runs.last().cloned().unwrap_or(fallback);
+    loop {
+        let mut candidate = line.clone();
+        push_stable_text_run(
+            &mut candidate.runs,
+            StableTextRun {
+                text: "…".to_string(),
+                ..ellipsis_style.clone()
+            },
+        );
+        if stable_rich_line_width(&candidate, font_size, weight) <= box_width
+            || line.runs.is_empty()
+        {
+            *line = candidate;
+            break;
+        }
+        if let Some(last) = line.runs.last_mut() {
+            last.text.pop();
+            if last.text.is_empty() {
+                line.runs.pop();
+            }
+        }
+    }
+}
+
+fn fit_stable_rich_text_box(
     text: &str,
     box_width: f32,
     box_height: f32,
@@ -6487,19 +14130,28 @@ fn fit_text_box(
     min_font_size: f32,
     line_height_ratio: f32,
     weight: &str,
+    policy: StableTextRenderPolicy,
 ) -> StableTextFit {
+    let paragraphs = parse_stable_rich_text(text, policy);
+    let max_font_scale = paragraphs
+        .iter()
+        .flat_map(|paragraph| paragraph.runs.iter())
+        .map(|run| run.font_scale)
+        .fold(1.0, f32::max);
     let mut size = preferred_font_size;
     while size >= min_font_size {
-        let lines = wrap_text_to_width(text, size, box_width, weight);
-        let line_height = (size * line_height_ratio).ceil();
-        let used_height = lines.len() as f32 * line_height;
+        let rich_lines = wrap_stable_rich_text(&paragraphs, size, box_width, weight);
+        let line_height = (size * max_font_scale * line_height_ratio).ceil();
+        let used_height = rich_lines.len() as f32 * line_height;
         if used_height <= box_height + 0.5 {
-            let max_line_width = lines
+            let max_line_width = rich_lines
                 .iter()
-                .map(|line| estimate_stable_text_width(line, size, weight))
+                .map(|line| stable_rich_line_width(line, size, weight))
                 .fold(0.0, f32::max);
+            let lines = rich_lines.iter().map(StableTextLine::plain_text).collect();
             return StableTextFit {
                 lines,
+                rich_lines,
                 font_size: size,
                 line_height,
                 used_height,
@@ -6513,35 +14165,30 @@ fn fit_text_box(
     }
 
     let size = min_font_size;
-    let line_height = (size * line_height_ratio).ceil();
-    let mut lines = wrap_text_to_width(text, size, box_width, weight);
-    let required_height = lines.len() as f32 * line_height;
-    let required_width = lines
+    let line_height = (size * max_font_scale * line_height_ratio).ceil();
+    let mut rich_lines = wrap_stable_rich_text(&paragraphs, size, box_width, weight);
+    let required_height = rich_lines.len() as f32 * line_height;
+    let required_width = rich_lines
         .iter()
-        .map(|line| estimate_stable_text_width(line, size, weight))
+        .map(|line| stable_rich_line_width(line, size, weight))
         .fold(0.0, f32::max);
     let max_lines = ((box_height / line_height).floor() as usize).max(1);
-    let overflowed = lines.len() > max_lines;
-    lines.truncate(max_lines);
+    let overflowed = rich_lines.len() > max_lines;
+    rich_lines.truncate(max_lines);
     if overflowed {
-        if let Some(last) = lines.last_mut() {
-            while !last.is_empty()
-                && estimate_stable_text_width(&format!("{}…", last), size, weight) > box_width
-            {
-                last.pop();
-            }
-            if !last.ends_with('…') {
-                last.push('…');
-            }
+        if let Some(last) = rich_lines.last_mut() {
+            truncate_stable_rich_line(last, size, box_width, weight);
         }
     }
-    let max_line_width = lines
+    let max_line_width = rich_lines
         .iter()
-        .map(|line| estimate_stable_text_width(line, size, weight))
+        .map(|line| stable_rich_line_width(line, size, weight))
         .fold(0.0, f32::max);
+    let lines = rich_lines.iter().map(StableTextLine::plain_text).collect();
     StableTextFit {
-        used_height: lines.len() as f32 * line_height,
+        used_height: rich_lines.len() as f32 * line_height,
         lines,
+        rich_lines,
         font_size: size,
         line_height,
         max_line_width,
@@ -6549,6 +14196,31 @@ fn fit_text_box(
         required_height,
         overflowed,
     }
+}
+
+#[cfg(test)]
+fn fit_text_box(
+    text: &str,
+    box_width: f32,
+    box_height: f32,
+    preferred_font_size: f32,
+    min_font_size: f32,
+    line_height_ratio: f32,
+    weight: &str,
+) -> StableTextFit {
+    fit_stable_rich_text_box(
+        text,
+        box_width,
+        box_height,
+        preferred_font_size,
+        min_font_size,
+        line_height_ratio,
+        weight,
+        StableTextRenderPolicy {
+            allow_strong: true,
+            allow_heading_scale: true,
+        },
+    )
 }
 
 fn append_fitted_text(
@@ -6566,7 +14238,7 @@ fn append_fitted_text(
     kind: StableElementKind,
     container: Option<StableRect>,
 ) -> StableTextFit {
-    let fit = fit_text_box(
+    let fit = fit_stable_rich_text_box(
         text,
         rect.width,
         rect.height,
@@ -6574,7 +14246,9 @@ fn append_fitted_text(
         min_font_size,
         line_height_ratio,
         weight,
+        StableTextRenderPolicy::for_element(id, kind),
     );
+    debug_assert_eq!(fit.lines.len(), fit.rich_lines.len());
     let top = if vertical_center {
         rect.y + ((rect.height - fit.used_height) / 2.0).max(0.0)
     } else {
@@ -6596,12 +14270,33 @@ fn append_fitted_text(
         ""
     };
     let mut tspans = String::new();
-    for (idx, line) in fit.lines.iter().enumerate() {
+    for (idx, line) in fit.rich_lines.iter().enumerate() {
+        let mut inline_runs = String::new();
+        for run in &line.runs {
+            let mut attributes = String::new();
+            if run.bold {
+                attributes.push_str(" font-weight=\"700\"");
+            }
+            if (run.font_scale - 1.0).abs() > f32::EPSILON {
+                attributes.push_str(&format!(
+                    " font-size=\"{:.1}\"",
+                    fit.font_size * run.font_scale
+                ));
+            }
+            if let Some(level) = run.emphasis.heading_level() {
+                attributes.push_str(&format!(" data-stable-heading-level=\"{}\"", level));
+            }
+            inline_runs.push_str(&format!(
+                "<tspan{}>{}</tspan>",
+                attributes,
+                xml_escape(&run.text)
+            ));
+        }
         tspans.push_str(&format!(
             "<tspan x=\"{:.1}\" dy=\"{}\">{}</tspan>",
             x,
             if idx == 0 { 0.0 } else { fit.line_height },
-            xml_escape(line)
+            inline_runs
         ));
     }
     draft.body.push_str(&format!(
@@ -6686,12 +14381,13 @@ fn append_standard_header(
     repair: Option<&StableLocalRepairPlan>,
 ) {
     let repair_title = repair.is_some_and(|plan| {
-        plan.level == StableRepairLevel::TextBox
-            && plan.text_role.as_deref() == Some("title")
+        plan.level == StableRepairLevel::TextBox && plan.text_role.as_deref() == Some("title")
     });
     let repair_core = repair.is_some_and(|plan| {
-        matches!(plan.level, StableRepairLevel::TextBox | StableRepairLevel::ContentBlock)
-            && plan.text_role.as_deref() == Some("coreMessage")
+        matches!(
+            plan.level,
+            StableRepairLevel::TextBox | StableRepairLevel::ContentBlock
+        ) && plan.text_role.as_deref() == Some("coreMessage")
     });
     let title_fit = append_fitted_text(
         draft,
@@ -6804,7 +14500,7 @@ fn render_stable_footer(
         StableElementKind::Footer,
         None,
     );
-    let title = shorten_to_width(&plan.title, 12.0, 264.0, "400");
+    let title = shorten_to_width(&stable_plain_text(&plan.title), 12.0, 264.0, "400");
     append_fitted_text(
         draft,
         "footer-title",
@@ -6828,28 +14524,35 @@ fn render_stable_footer(
     let mut footer_ids = vec!["footer-page", "footer-title"];
     let suppress_evidence = repair.is_some_and(|plan| {
         plan.failure_type == StableFailureType::FooterCollision
-            && matches!(plan.level, StableRepairLevel::TextBox | StableRepairLevel::ContentBlock)
+            && matches!(
+                plan.level,
+                StableRepairLevel::TextBox | StableRepairLevel::ContentBlock
+            )
     });
     if suppress_evidence {
-        if let Some(evidence) = slide.evidence.first() {
+        if let Some(evidence) = slide
+            .evidence
+            .iter()
+            .find_map(|value| stable_footer_source_label(value))
+        {
             draft.push_degradation(
                 "footer",
                 "footer annotation",
                 "annotation",
                 "omitted_to_speaker_notes",
-                evidence,
+                &evidence,
             );
         }
-    } else if let Some(evidence) = slide.evidence.first() {
-        let cleaned = evidence
-            .trim()
-            .trim_start_matches("材料依据")
-            .trim_start_matches(['：', ':', '·', ' ']);
-        let note = shorten_to_width(cleaned, 11.0, 590.0, "400");
+    } else if let Some(source) = slide
+        .evidence
+        .iter()
+        .find_map(|value| stable_footer_source_label(value))
+    {
+        let note = shorten_to_width(&source, 11.0, 590.0, "400");
         append_fitted_text(
             draft,
             "footer-evidence",
-            &format!("依据 · {}", note),
+            &format!("Source · {}", note),
             StableRect {
                 x: 210.0,
                 y: 679.0,
@@ -6876,6 +14579,30 @@ fn render_stable_footer(
         &footer_ids,
     );
     Ok(String::new())
+}
+
+fn stable_footer_source_label(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let source = if lower.starts_with("source:") {
+        trimmed.get(7..).unwrap_or_default()
+    } else if trimmed.starts_with("来源：") {
+        trimmed.get("来源：".len()..).unwrap_or_default()
+    } else if trimmed.starts_with("来源:") {
+        trimmed.get("来源:".len()..).unwrap_or_default()
+    } else if trimmed.starts_with("资料来源：") {
+        trimmed.get("资料来源：".len()..).unwrap_or_default()
+    } else if trimmed.starts_with("资料来源:") {
+        trimmed.get("资料来源:".len()..).unwrap_or_default()
+    } else {
+        return None;
+    };
+    let source = stable_plain_text(&sanitize_visible_text(source));
+    if source.trim().is_empty() || source.chars().count() > 72 {
+        None
+    } else {
+        Some(source)
+    }
 }
 
 fn shorten_to_width(text: &str, font_size: f32, max_width: f32, weight: &str) -> String {
@@ -6968,10 +14695,7 @@ fn validate_slide_layout(elements: &[StableLayoutElement]) -> Vec<String> {
 fn stable_text_role_from_id(id: &str) -> Option<String> {
     if matches!(id, "header-title" | "anchor-title") || id.ends_with("-title") {
         Some("title".to_string())
-    } else if id == "header-support"
-        || id.contains("core")
-        || id.contains("message")
-    {
+    } else if id == "header-support" || id.contains("core") || id.contains("message") {
         Some("coreMessage".to_string())
     } else if id.ends_with("-label") || id.contains("kicker") {
         Some("label".to_string())
@@ -7045,8 +14769,7 @@ fn stable_failure_from_problem(
         .iter()
         .find(|block| {
             message.contains(&block.id)
-                || direct_text_box
-                    .is_some_and(|record| record.id.starts_with(&block.id))
+                || direct_text_box.is_some_and(|record| record.id.starts_with(&block.id))
         })
         .map(|block| block.id.clone());
     let text_role = direct_text_box
@@ -7091,15 +14814,13 @@ fn stable_failure_from_problem(
         block_id,
         text_role,
         failure_type,
-        bounds: text_box
-            .map(|record| record.requested_rect)
-            .or_else(|| {
-                draft
-                    .rendered_blocks
-                    .iter()
-                    .find(|block| message.contains(&block.id))
-                    .map(|block| block.rect)
-            }),
+        bounds: text_box.map(|record| record.requested_rect).or_else(|| {
+            draft
+                .rendered_blocks
+                .iter()
+                .find(|block| message.contains(&block.id))
+                .map(|block| block.rect)
+        }),
         required_width: text_box.map(|record| record.fit.required_width),
         required_height: text_box.map(|record| record.fit.required_height),
         attempted_strategy: Vec::new(),
@@ -7128,9 +14849,7 @@ fn collect_stable_layout_failures(
     failures
 }
 
-fn primary_stable_layout_failure(
-    failures: &[StableLayoutFailure],
-) -> Option<StableLayoutFailure> {
+fn primary_stable_layout_failure(failures: &[StableLayoutFailure]) -> Option<StableLayoutFailure> {
     failures
         .iter()
         .min_by_key(|failure| match failure.failure_type {
@@ -7226,8 +14945,8 @@ fn container_content_ratio(draft: &StablePageDraft, block: &StableRenderedBlock)
 }
 
 fn validate_visual_fullness(slide: &Slide, draft: &StablePageDraft) -> Vec<String> {
-    let safe_area = (STABLE_SAFE_RIGHT - STABLE_SAFE_LEFT)
-        * (STABLE_CONTENT_BOTTOM - STABLE_CONTENT_TOP);
+    let safe_area =
+        (STABLE_SAFE_RIGHT - STABLE_SAFE_LEFT) * (STABLE_CONTENT_BOTTOM - STABLE_CONTENT_TOP);
     let mut semantic_area = 0.0;
     for block in &draft.rendered_blocks {
         let utilization = container_content_ratio(draft, block);
@@ -7273,7 +14992,10 @@ fn validate_semantic_decorations(draft: &StablePageDraft) -> Vec<String> {
             _ => 1,
         };
         if decoration.associated_ids.len() < minimum_links {
-            problems.push(format!("decoration {} has no semantic attachment", decoration.id));
+            problems.push(format!(
+                "decoration {} has no semantic attachment",
+                decoration.id
+            ));
         }
         for associated in &decoration.associated_ids {
             let exists = draft.elements.iter().any(|element| {
@@ -7288,11 +15010,12 @@ fn validate_semantic_decorations(draft: &StablePageDraft) -> Vec<String> {
                 ));
             }
         }
-        for text in draft
-            .elements
-            .iter()
-            .filter(|element| matches!(element.kind, StableElementKind::Text | StableElementKind::Header))
-        {
+        for text in draft.elements.iter().filter(|element| {
+            matches!(
+                element.kind,
+                StableElementKind::Text | StableElementKind::Header
+            )
+        }) {
             if decoration.associated_ids.iter().any(|associated| {
                 text.id == *associated
                     || text.id.starts_with(associated)
@@ -7367,8 +15090,8 @@ fn render_stable_motif_block(
     let targets_block = repair
         .and_then(|plan| plan.block_id.as_deref())
         .is_some_and(|target| target == block_id);
-    let block_reflow = targets_block
-        && repair.is_some_and(|plan| plan.level == StableRepairLevel::ContentBlock);
+    let block_reflow =
+        targets_block && repair.is_some_and(|plan| plan.level == StableRepairLevel::ContentBlock);
     let mut rect = rect;
     if block_reflow {
         let expansion = 30.0;
@@ -7381,9 +15104,11 @@ fn render_stable_motif_block(
     }
     let evidence_visible = !block_reflow
         && (detail_level == StableDetailLevel::Full
-        || (detail_level == StableDetailLevel::Reduced && index == 1))
+            || (detail_level == StableDetailLevel::Reduced && index == 1))
         && rect.height >= 150.0
-        && evidence.map(str::trim).is_some_and(|value| !value.is_empty());
+        && evidence
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty());
     let detail_visible = !block_reflow
         && detail_level != StableDetailLevel::Essential
         && rect.height >= 168.0
@@ -7410,15 +15135,19 @@ fn render_stable_motif_block(
 
     let repair_label = targets_block
         && repair.is_some_and(|plan| {
-            matches!(plan.level, StableRepairLevel::TextBox | StableRepairLevel::ContentBlock)
-                && (plan.text_role.as_deref() == Some("label")
-                    || plan.level == StableRepairLevel::ContentBlock)
+            matches!(
+                plan.level,
+                StableRepairLevel::TextBox | StableRepairLevel::ContentBlock
+            ) && (plan.text_role.as_deref() == Some("label")
+                || plan.level == StableRepairLevel::ContentBlock)
         });
     let repair_text = targets_block
         && repair.is_some_and(|plan| {
-            matches!(plan.level, StableRepairLevel::TextBox | StableRepairLevel::ContentBlock)
-                && (plan.text_role.as_deref() == Some("text")
-                    || plan.level == StableRepairLevel::ContentBlock)
+            matches!(
+                plan.level,
+                StableRepairLevel::TextBox | StableRepairLevel::ContentBlock
+            ) && (plan.text_role.as_deref() == Some("text")
+                || plan.level == StableRepairLevel::ContentBlock)
         });
 
     let label_missing = block.label.trim().is_empty();
@@ -7508,10 +15237,17 @@ fn render_stable_motif_block(
             &block.detail,
         );
     }
-    let evidence_expected = evidence.map(str::trim).is_some_and(|value| !value.is_empty());
+    let evidence_expected = evidence
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
     if evidence_visible {
         let evidence = evidence.unwrap_or_default();
-        let tag_text = shorten_to_width(evidence, 11.0, layout.evidence.width, "400");
+        let tag_text = shorten_to_width(
+            &stable_plain_text(evidence),
+            11.0,
+            layout.evidence.width,
+            "400",
+        );
         let evidence_fit = append_fitted_text(
             draft,
             &format!("{}-evidence", block_id),
@@ -7547,7 +15283,9 @@ fn render_stable_motif_block(
         );
     }
     if label_fit.overflowed {
-        draft.hard_failures.push(format!("{} label overflow", block_id));
+        draft
+            .hard_failures
+            .push(format!("{} label overflow", block_id));
     }
     draft.rendered_blocks.push(StableRenderedBlock {
         id: block_id,
@@ -7598,7 +15336,13 @@ fn append_motif_chrome(
             draft.push_decoration(
                 &format!("{}-bottom-divider", id),
                 StableDecorationPurpose::Divider,
-                stable_line_rect(rect.x, rect.bottom() - 1.0, rect.right(), rect.bottom() - 1.0, 1.0),
+                stable_line_rect(
+                    rect.x,
+                    rect.bottom() - 1.0,
+                    rect.right(),
+                    rect.bottom() - 1.0,
+                    1.0,
+                ),
                 &[id],
             );
         }
@@ -7611,7 +15355,12 @@ fn append_motif_chrome(
             draft.push_decoration(
                 &format!("{}-top-band", id),
                 StableDecorationPurpose::Emphasis,
-                StableRect { x: rect.x, y: rect.y, width: rect.width, height: 8.0 },
+                StableRect {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: 8.0,
+                },
                 &[&format!("{}-label", id)],
             );
             label_y += 10.0;
@@ -7625,9 +15374,14 @@ fn append_motif_chrome(
                 rect.x + 36.0, rect.y + 34.0, accent
             ));
             append_single_line_centered(
-                draft, &format!("{}-badge-index", id), &index.to_string(),
-                rect.x + 36.0, rect.y + 34.0, 14.0,
-                if tokens.dark { &tokens.text } else { "#FFFFFF" }, "700",
+                draft,
+                &format!("{}-badge-index", id),
+                &index.to_string(),
+                rect.x + 36.0,
+                rect.y + 34.0,
+                14.0,
+                if tokens.dark { &tokens.text } else { "#FFFFFF" },
+                "700",
             );
             draft.push_decoration(
                 &format!("{}-badge", id),
@@ -7638,10 +15392,7 @@ fn append_motif_chrome(
                     width: 36.0,
                     height: 36.0,
                 },
-                &[
-                    &format!("{}-badge-index", id),
-                    &format!("{}-label", id),
-                ],
+                &[&format!("{}-badge-index", id), &format!("{}-label", id)],
             );
             draft.push_decoration(
                 &format!("{}-bottom-divider", id),
@@ -7669,7 +15420,12 @@ fn append_motif_chrome(
                 draft,
                 &format!("{}-hero-number", id),
                 &number,
-                StableRect { x: rect.x + 10.0, y: rect.y + 8.0, width: 106.0, height: rect.height - 16.0 },
+                StableRect {
+                    x: rect.x + 10.0,
+                    y: rect.y + 8.0,
+                    width: 106.0,
+                    height: rect.height - 16.0,
+                },
                 if number.len() >= 4 { 40.0 } else { 64.0 },
                 28.0,
                 1.0,
@@ -7733,13 +15489,7 @@ fn append_motif_chrome(
             draft.push_decoration(
                 &format!("{}-split-divider", id),
                 StableDecorationPurpose::Grouping,
-                stable_line_rect(
-                    split_x,
-                    rect.y + 14.0,
-                    split_x,
-                    rect.bottom() - 14.0,
-                    2.0,
-                ),
+                stable_line_rect(split_x, rect.y + 14.0, split_x, rect.bottom() - 14.0, 2.0),
                 &[&format!("{}-label", id), &format!("{}-text", id)],
             );
             return split_panel_text_layout(rect, evidence_visible, detail_visible);
@@ -7775,9 +15525,14 @@ fn append_motif_chrome(
                 rect.x + 18.0, rect.y + 16.0, accent
             ));
             append_single_line_centered(
-                draft, &format!("{}-step-index", id), &format!("{:02}", index),
-                rect.x + 41.0, rect.y + 31.0, 12.0,
-                if tokens.dark { &tokens.text } else { "#FFFFFF" }, "700",
+                draft,
+                &format!("{}-step-index", id),
+                &format!("{:02}", index),
+                rect.x + 41.0,
+                rect.y + 31.0,
+                12.0,
+                if tokens.dark { &tokens.text } else { "#FFFFFF" },
+                "700",
             );
             content_x += 56.0;
             content_width -= 70.0;
@@ -7811,7 +15566,10 @@ fn append_motif_chrome(
             if evidence_visible {
                 draft.body.push_str(&format!(
                     "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"34\" fill=\"{}\"/>\n",
-                    rect.x, rect.bottom() - 34.0, rect.width, tokens.panel
+                    rect.x,
+                    rect.bottom() - 34.0,
+                    rect.width,
+                    tokens.panel
                 ));
                 body_bottom -= 30.0;
             } else {
@@ -7854,10 +15612,24 @@ fn append_motif_chrome(
                 rect.x, rect.bottom(), rect.right(), rect.bottom(), tokens.border
             ));
             append_fitted_text(
-                draft, &format!("{}-matrix-index", id), &format!("{:02}", index),
-                StableRect { x: rect.right() - 40.0, y: rect.y + 12.0, width: 28.0, height: 24.0 },
-                11.0, 10.0, 1.1, &tokens.muted, "600", "end", true,
-                StableElementKind::Text, Some(rect),
+                draft,
+                &format!("{}-matrix-index", id),
+                &format!("{:02}", index),
+                StableRect {
+                    x: rect.right() - 40.0,
+                    y: rect.y + 12.0,
+                    width: 28.0,
+                    height: 24.0,
+                },
+                11.0,
+                10.0,
+                1.1,
+                &tokens.muted,
+                "600",
+                "end",
+                true,
+                StableElementKind::Text,
+                Some(rect),
             );
             content_width -= 42.0;
         }
@@ -7982,12 +15754,13 @@ fn render_stable_anchor(
     let tokens = &profile.tokens;
     let mut draft = StablePageDraft::new();
     let repair_title = profile.local_repair.as_ref().is_some_and(|repair| {
-        repair.level == StableRepairLevel::TextBox
-            && repair.text_role.as_deref() == Some("title")
+        repair.level == StableRepairLevel::TextBox && repair.text_role.as_deref() == Some("title")
     });
     let repair_core = profile.local_repair.as_ref().is_some_and(|repair| {
-        matches!(repair.level, StableRepairLevel::TextBox | StableRepairLevel::ContentBlock)
-            && repair.text_role.as_deref() == Some("coreMessage")
+        matches!(
+            repair.level,
+            StableRepairLevel::TextBox | StableRepairLevel::ContentBlock
+        ) && repair.text_role.as_deref() == Some("coreMessage")
     });
     match motif {
         StableMotif::SectionBanner => draft.body.push_str(&format!(
@@ -8206,7 +15979,7 @@ fn render_stable_timeline(
         profile.local_repair.as_ref(),
     );
     let blocks = slide_blocks(slide);
-    let count = blocks.len().clamp(2, 5);
+    let count = blocks.len().clamp(1, 5);
     let gap = if count >= 5 { 14.0 } else { 20.0 };
     let card_width = (1168.0 - gap * (count.saturating_sub(1) as f32)) / count as f32;
     let line_y = 226.0;
@@ -8281,7 +16054,7 @@ fn render_stable_process(
         profile.local_repair.as_ref(),
     );
     let blocks = slide_blocks(slide);
-    let count = blocks.len().clamp(2, 5);
+    let count = blocks.len().clamp(1, 5);
     let gap = 34.0;
     let width = (1168.0 - gap * (count.saturating_sub(1) as f32)) / count as f32;
     for (idx, block) in blocks.iter().take(count).enumerate() {
@@ -8438,6 +16211,12 @@ fn render_stable_editorial_split(
         false,
         profile.local_repair.as_ref(),
     );
+    let blocks = slide_blocks(slide);
+    let hero_number = blocks
+        .iter()
+        .find_map(stable_numeric_anchor)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("{:02}", slide.page));
     let left = StableRect {
         x: 56.0,
         y: 194.0,
@@ -8449,6 +16228,13 @@ fn render_stable_editorial_split(
         left.x, left.y, left.width, left.height, tokens.corner_radius, tokens.panel, left.x + 34.0, left.y + 34.0, tokens.primary
     ));
     draft.push_rect("editorial-core", left, StableElementKind::Card);
+    draft.body.push_str(&format!(
+        "<text x=\"90\" y=\"354\" font-family=\"{}\" font-size=\"88\" font-weight=\"800\" fill=\"{}\">{}</text><circle cx=\"438\" cy=\"564\" r=\"74\" fill=\"{}\"/>\n",
+        tokens.font_family,
+        tokens.subtle,
+        xml_escape(&hero_number),
+        tokens.background
+    ));
     append_fitted_text(
         &mut draft,
         "editorial-kicker",
@@ -8479,12 +16265,12 @@ fn render_stable_editorial_split(
         &stable_core_message(slide),
         StableRect {
             x: left.x + 34.0,
-            y: left.y + 112.0,
+            y: left.y + 190.0,
             width: left.width - 68.0,
-            height: 250.0,
+            height: 180.0,
         },
-        30.0,
-        22.0,
+        28.0,
+        20.0,
         1.35,
         &tokens.text,
         "700",
@@ -8498,7 +16284,6 @@ fn render_stable_editorial_split(
             .hard_failures
             .push("editorial core overflow".to_string());
     }
-    let blocks = slide_blocks(slide);
     let right_x = 542.0;
     let gap = 14.0;
     let count = blocks.len().clamp(2, 4);
@@ -8547,6 +16332,30 @@ fn render_stable_comparison(
     let blocks = slide_blocks(slide);
     let split = (blocks.len() + 1) / 2;
     let groups = [&blocks[..split], &blocks[split..]];
+    draft.body.push_str(&format!(
+        "<line x1=\"640\" y1=\"202\" x2=\"640\" y2=\"612\" stroke=\"{}\" stroke-width=\"2\"/><circle cx=\"640\" cy=\"407\" r=\"24\" fill=\"{}\" stroke=\"{}\" stroke-width=\"2\"/>\n",
+        tokens.border, tokens.background, tokens.primary
+    ));
+    append_single_line_centered(
+        &mut draft,
+        "compare-axis-label",
+        "VS",
+        640.0,
+        407.0,
+        13.0,
+        &tokens.primary,
+        "800",
+    );
+    draft.push_decoration(
+        "comparison-axis",
+        StableDecorationPurpose::Grouping,
+        stable_line_rect(640.0, 202.0, 640.0, 612.0, 2.0),
+        &[
+            "compare-heading-1",
+            "compare-heading-2",
+            "compare-axis-label",
+        ],
+    );
     for (side, group) in groups.iter().enumerate() {
         let x = if side == 0 { 56.0 } else { 652.0 };
         let accent = if side == 0 {
@@ -8762,7 +16571,85 @@ fn render_stable_matrix(
     motif: StableMotif,
     detail_level: StableDetailLevel,
 ) -> Result<StablePageDraft, AppError> {
-    render_stable_category_grid(slide, profile, motif, detail_level)
+    let tokens = &profile.tokens;
+    let mut draft = StablePageDraft::new();
+    append_standard_header(
+        &mut draft,
+        slide,
+        tokens,
+        true,
+        profile.local_repair.as_ref(),
+    );
+    let blocks = slide_blocks(slide);
+    let rects = [
+        StableRect {
+            x: 56.0,
+            y: 188.0,
+            width: 548.0,
+            height: 202.0,
+        },
+        StableRect {
+            x: 676.0,
+            y: 188.0,
+            width: 548.0,
+            height: 202.0,
+        },
+        StableRect {
+            x: 56.0,
+            y: 424.0,
+            width: 548.0,
+            height: 202.0,
+        },
+        StableRect {
+            x: 676.0,
+            y: 424.0,
+            width: 548.0,
+            height: 202.0,
+        },
+    ];
+    draft.body.push_str(&format!(
+        "<line x1=\"640\" y1=\"188\" x2=\"640\" y2=\"626\" stroke=\"{}\" stroke-width=\"3\"/><polygon points=\"633,198 640,188 647,198\" fill=\"{}\"/><line x1=\"56\" y1=\"407\" x2=\"1224\" y2=\"407\" stroke=\"{}\" stroke-width=\"3\"/><polygon points=\"1214,400 1224,407 1214,414\" fill=\"{}\"/><circle cx=\"640\" cy=\"407\" r=\"9\" fill=\"{}\"/>\n",
+        tokens.primary,
+        tokens.primary,
+        tokens.accent,
+        tokens.accent,
+        tokens.text
+    ));
+    draft.push_decoration(
+        "matrix-y-axis",
+        StableDecorationPurpose::Grouping,
+        stable_line_rect(640.0, 188.0, 640.0, 626.0, 3.0),
+        &["matrix-cell-1", "matrix-cell-3"],
+    );
+    draft.push_decoration(
+        "matrix-x-axis",
+        StableDecorationPurpose::Grouping,
+        stable_line_rect(56.0, 407.0, 1224.0, 407.0, 3.0),
+        &["matrix-cell-1", "matrix-cell-2"],
+    );
+    for (index, (block, rect)) in blocks.iter().take(4).zip(rects).enumerate() {
+        render_stable_motif_block(
+            &mut draft,
+            block,
+            slide.evidence.get(index).map(String::as_str),
+            rect,
+            index + 1,
+            tokens,
+            if motif == StableMotif::TopBandCard {
+                StableMotif::MatrixCell
+            } else {
+                motif
+            },
+            if detail_level == StableDetailLevel::Full {
+                StableDetailLevel::Reduced
+            } else {
+                detail_level
+            },
+            profile.local_repair.as_ref(),
+            "matrix-cell",
+        );
+    }
+    Ok(draft)
 }
 
 fn render_stable_hierarchy(
@@ -8784,6 +16671,10 @@ fn render_stable_hierarchy(
     let count = blocks.len().clamp(2, 5);
     let gap = 14.0;
     let height = (438.0 - gap * (count.saturating_sub(1) as f32)) / count as f32;
+    draft.body.push_str(&format!(
+        "<line x1=\"84\" y1=\"202\" x2=\"84\" y2=\"612\" stroke=\"{}\" stroke-width=\"4\"/>\n",
+        tokens.border
+    ));
     for (idx, block) in blocks.iter().take(count).enumerate() {
         let inset = idx as f32 * 42.0;
         let rect = StableRect {
@@ -8792,6 +16683,22 @@ fn render_stable_hierarchy(
             width: 1040.0 - inset * 2.0,
             height,
         };
+        let center_y = rect.y + rect.height / 2.0;
+        draft.body.push_str(&format!(
+            "<line x1=\"84\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" stroke=\"{}\" stroke-width=\"2\"/><circle cx=\"84\" cy=\"{:.1}\" r=\"7\" fill=\"{}\"/>\n",
+            center_y,
+            rect.x,
+            center_y,
+            tokens.primary,
+            center_y,
+            if idx % 2 == 0 { &tokens.primary } else { &tokens.accent }
+        ));
+        draft.push_decoration(
+            &format!("hierarchy-connector-{}", idx + 1),
+            StableDecorationPurpose::Grouping,
+            stable_line_rect(84.0, center_y, rect.x, center_y, 2.0),
+            &[&format!("hierarchy-level-{}", idx + 1)],
+        );
         render_stable_motif_block(
             &mut draft,
             block,
@@ -9029,7 +16936,7 @@ fn render_stable_evidence_led(
 fn render_stable_summary(
     slide: &Slide,
     profile: &StableRenderProfile,
-    motif: StableMotif,
+    _motif: StableMotif,
     detail_level: StableDetailLevel,
 ) -> Result<StablePageDraft, AppError> {
     let tokens = &profile.tokens;
@@ -9042,42 +16949,60 @@ fn render_stable_summary(
         profile.local_repair.as_ref(),
     );
     let core_rect = StableRect {
-        x: 56.0,
-        y: 188.0,
-        width: 1168.0,
-        height: 122.0,
+        x: 448.0,
+        y: 286.0,
+        width: 384.0,
+        height: 238.0,
     };
-    match motif {
-        StableMotif::SectionBanner => draft.body.push_str(&format!(
-            "<rect x=\"56\" y=\"188\" width=\"1168\" height=\"122\" fill=\"{}\"/><rect x=\"56\" y=\"298\" width=\"1168\" height=\"12\" fill=\"{}\"/>\n",
-            tokens.panel, tokens.primary
-        )),
-        StableMotif::HubSpoke => draft.body.push_str(&format!(
-            "<rect x=\"292\" y=\"188\" width=\"696\" height=\"122\" rx=\"61\" fill=\"{}\"/>\n",
-            tokens.panel
-        )),
-        _ => draft.body.push_str(&format!(
-            "<rect x=\"56\" y=\"188\" width=\"1168\" height=\"122\" rx=\"{:.1}\" fill=\"{}\"/><rect x=\"56\" y=\"290\" width=\"1168\" height=\"20\" fill=\"{}\"/>\n",
-            tokens.corner_radius, tokens.surface, tokens.panel
-        )),
-    }
+    draft.body.push_str(&format!(
+        "<circle cx=\"640\" cy=\"405\" r=\"158\" fill=\"{}\"/><circle cx=\"640\" cy=\"405\" r=\"118\" fill=\"{}\"/><text x=\"640\" y=\"374\" text-anchor=\"middle\" font-family=\"{}\" font-size=\"76\" font-weight=\"800\" fill=\"{}\">{:02}</text>\n",
+        tokens.panel,
+        tokens.background,
+        tokens.font_family,
+        tokens.subtle,
+        slide.page
+    ));
     draft.push_rect("summary-core", core_rect, StableElementKind::Card);
+    append_fitted_text(
+        &mut draft,
+        "summary-core-label",
+        if slide.page_theme.trim().is_empty() {
+            "TAKEAWAY"
+        } else {
+            &slide.page_theme
+        },
+        StableRect {
+            x: 496.0,
+            y: 310.0,
+            width: 288.0,
+            height: 28.0,
+        },
+        15.0,
+        13.0,
+        1.1,
+        &tokens.primary,
+        "700",
+        "middle",
+        true,
+        StableElementKind::Text,
+        Some(core_rect),
+    );
     let core_fit = append_fitted_text(
         &mut draft,
         "summary-message",
         &stable_core_message(slide),
         StableRect {
-            x: 90.0,
-            y: 204.0,
-            width: 1090.0,
-            height: 76.0,
+            x: 492.0,
+            y: 382.0,
+            width: 296.0,
+            height: 116.0,
         },
-        27.0,
-        21.0,
-        1.34,
+        26.0,
+        19.0,
+        1.26,
         &tokens.text,
         "700",
-        "start",
+        "middle",
         true,
         StableElementKind::Text,
         Some(core_rect),
@@ -9088,36 +17013,125 @@ fn render_stable_summary(
             .push("summary core overflow".to_string());
     }
     let blocks = slide_blocks(slide);
-    let count = blocks.len().clamp(2, 4);
-    let columns = if count <= 2 { count } else { 2 };
-    let rows = (count + columns - 1) / columns;
-    let gap_x = 22.0;
-    let gap_y = 18.0;
-    let width = (1168.0 - gap_x * (columns.saturating_sub(1) as f32)) / columns as f32;
-    let height = (318.0 - gap_y * (rows.saturating_sub(1) as f32)) / rows as f32;
-    for (idx, block) in blocks.iter().take(count).enumerate() {
-        let row = idx / columns;
-        let col = idx % columns;
-        render_stable_motif_block(
+    let node_rects = [
+        StableRect {
+            x: 56.0,
+            y: 196.0,
+            width: 330.0,
+            height: 154.0,
+        },
+        StableRect {
+            x: 894.0,
+            y: 196.0,
+            width: 330.0,
+            height: 154.0,
+        },
+        StableRect {
+            x: 56.0,
+            y: 472.0,
+            width: 330.0,
+            height: 154.0,
+        },
+        StableRect {
+            x: 894.0,
+            y: 472.0,
+            width: 330.0,
+            height: 154.0,
+        },
+    ];
+    let connector_points = [
+        (386.0, 273.0, 448.0, 334.0),
+        (894.0, 273.0, 832.0, 334.0),
+        (386.0, 549.0, 448.0, 476.0),
+        (894.0, 549.0, 832.0, 476.0),
+    ];
+    let count = blocks.len().min(4);
+    for (index, block) in blocks.iter().take(count).enumerate() {
+        let rect = node_rects[index];
+        let (x1, y1, x2, y2) = connector_points[index];
+        let accent = if index % 2 == 0 {
+            &tokens.primary
+        } else {
+            &tokens.accent
+        };
+        draft.body.push_str(&format!(
+            "<line x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" stroke=\"{}\" stroke-width=\"2\"/><circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"7\" fill=\"{}\"/><line x1=\"{:.1}\" y1=\"{:.1}\" x2=\"{:.1}\" y2=\"{:.1}\" stroke=\"{}\" stroke-width=\"5\"/>\n",
+            x1,
+            y1,
+            x2,
+            y2,
+            tokens.border,
+            x1,
+            y1,
+            accent,
+            rect.x,
+            rect.y + 4.0,
+            rect.x + 78.0,
+            rect.y + 4.0,
+            accent
+        ));
+        let id = format!("summary-node-{}", index + 1);
+        draft.push_rect(&id, rect, StableElementKind::Card);
+        let label_fit = append_fitted_text(
             &mut draft,
-            block,
-            slide.evidence.get(idx).map(String::as_str),
+            &format!("{}-label", id),
+            &block.label,
             StableRect {
-                x: 56.0 + col as f32 * (width + gap_x),
-                y: 328.0 + row as f32 * (height + gap_y),
-                width,
-                height,
+                x: rect.x + 12.0,
+                y: rect.y + 18.0,
+                width: rect.width - 24.0,
+                height: 42.0,
             },
-            idx + 1,
-            tokens,
-            motif,
-            if rows > 1 {
-                StableDetailLevel::Reduced
+            20.0,
+            16.0,
+            1.16,
+            accent,
+            "700",
+            "start",
+            true,
+            StableElementKind::Text,
+            Some(rect),
+        );
+        let text_fit = append_fitted_text(
+            &mut draft,
+            &format!("{}-text", id),
+            &block.text,
+            StableRect {
+                x: rect.x + 12.0,
+                y: rect.y + 70.0,
+                width: rect.width - 24.0,
+                height: 72.0,
+            },
+            if detail_level == StableDetailLevel::Essential {
+                15.0
             } else {
-                detail_level
+                17.0
             },
-            profile.local_repair.as_ref(),
-            "summary-point",
+            13.0,
+            1.24,
+            &tokens.text,
+            "500",
+            "start",
+            false,
+            StableElementKind::Text,
+            Some(rect),
+        );
+        if label_fit.overflowed || text_fit.overflowed {
+            draft
+                .hard_failures
+                .push(format!("{} required text overflow", id));
+        }
+        draft.rendered_blocks.push(StableRenderedBlock {
+            id: id.clone(),
+            rect,
+            label_complete: !block.label.trim().is_empty() && !label_fit.overflowed,
+            text_complete: !block.text.trim().is_empty() && !text_fit.overflowed,
+        });
+        draft.push_decoration(
+            &format!("{}-connector", id),
+            StableDecorationPurpose::Connector,
+            stable_line_rect(x1, y1, x2, y2, 2.0),
+            &[&id, "summary-core"],
         );
     }
     Ok(draft)
@@ -10544,6 +18558,105 @@ fn run_quality_check(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeQualityFailure {
+    page_number: Option<usize>,
+    file_name: String,
+    violated_rule: String,
+    checker_summary: String,
+}
+
+fn should_continue_after_quality_failure(
+    block_on_quality_failure: bool,
+    last_svg_path: &Path,
+) -> bool {
+    !block_on_quality_failure && last_svg_path.is_file()
+}
+
+fn parse_native_quality_failures(stdout: &str, stderr: &str) -> Vec<NativeQualityFailure> {
+    let combined = if stderr.trim().is_empty() {
+        stdout.to_string()
+    } else {
+        format!("{stdout}\n{stderr}")
+    };
+    let mut failures: Vec<NativeQualityFailure> = Vec::new();
+    let mut current: Option<usize> = None;
+    for line in combined.lines() {
+        let trimmed = line.trim();
+        if let Some(file_name) = quality_failure_file_name(trimmed) {
+            let page_number = file_name
+                .split_once('_')
+                .and_then(|(prefix, _)| prefix.parse::<usize>().ok());
+            failures.push(NativeQualityFailure {
+                page_number,
+                file_name: file_name.to_string(),
+                violated_rule: "SVG Quality Checker hard error".to_string(),
+                checker_summary: trimmed.to_string(),
+            });
+            current = Some(failures.len() - 1);
+            continue;
+        }
+        if trimmed.starts_with("[WARN]") || trimmed.starts_with("[OK]") {
+            current = None;
+            continue;
+        }
+        if let Some(index) = current {
+            if trimmed.starts_with("[ERROR]") {
+                let detail = trimmed.trim_start_matches("[ERROR]").trim().to_string();
+                if !detail.is_empty() {
+                    failures[index].violated_rule = quality_rule_from_detail(&detail);
+                    failures[index].checker_summary.push_str(" | ");
+                    failures[index].checker_summary.push_str(&detail);
+                }
+            } else if trimmed.starts_with("===") || trimmed.starts_with("[SUMMARY]") {
+                current = None;
+            }
+        }
+    }
+    failures
+}
+
+fn quality_failure_file_name(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("[ERROR] ")?;
+    let marker = ".svg - Failed";
+    let end = rest.find(marker)? + ".svg".len();
+    let file_name = &rest[..end];
+    if file_name
+        .split_once('_')
+        .is_some_and(|(prefix, _)| prefix.chars().all(|character| character.is_ascii_digit()))
+    {
+        Some(file_name)
+    } else {
+        None
+    }
+}
+
+fn quality_rule_from_detail(detail: &str) -> String {
+    let lower = detail.to_ascii_lowercase();
+    if lower.starts_with("invalid xml") {
+        "XML well-formedness".to_string()
+    } else if lower.contains("viewbox") || lower.contains("canvas") {
+        "native canvas/viewBox 1280x720".to_string()
+    } else if lower.contains("clip-path") || lower.contains("clippath") {
+        "unsupported clipPath on non-image shape".to_string()
+    } else if lower.contains("foreignobject") {
+        "unsupported foreignObject".to_string()
+    } else if lower.contains("unsupported") {
+        "unsupported SVG element or attribute".to_string()
+    } else if lower.contains("font") {
+        "PowerPoint-safe font".to_string()
+    } else if lower.contains("image") || lower.contains("href") {
+        "embedded image compatibility".to_string()
+    } else {
+        detail
+            .split([':', '—'])
+            .next()
+            .unwrap_or("SVG Quality Checker hard error")
+            .trim()
+            .to_string()
+    }
+}
+
 fn join_outputs(log_lines: &[String], outputs: &[String]) -> String {
     let mut parts = Vec::new();
     if !log_lines.is_empty() {
@@ -10616,6 +18729,38 @@ fn export_project(
             error: Some(e.to_string()),
         }),
     }
+}
+
+fn validate_native_export_result(result: &PptMasterExportResult) -> Result<PathBuf, AppError> {
+    if !result.success {
+        return Err(AppError::Custom(
+            result
+                .error
+                .clone()
+                .unwrap_or_else(|| "svg_to_pptx.py 原生导出失败".to_string()),
+        ));
+    }
+    let output_path = result.output_path.as_deref().ok_or_else(|| {
+        AppError::Custom("svg_to_pptx.py 返回成功但未返回 output_path".to_string())
+    })?;
+    let path = PathBuf::from(output_path);
+    if !path.is_file() {
+        return Err(AppError::NotFound(format!(
+            "svg_to_pptx.py 返回的 PPTX 不存在: {}",
+            path.display()
+        )));
+    }
+    let is_pptx = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pptx"));
+    if !is_pptx {
+        return Err(AppError::Custom(format!(
+            "svg_to_pptx.py 返回的文件不是 PPTX: {}",
+            path.display()
+        )));
+    }
+    Ok(path)
 }
 
 fn parse_dir(label: &str, value: &str) -> Result<PathBuf, AppError> {
@@ -10788,6 +18933,221 @@ fn add_no_window(cmd: &mut Command) {
 fn add_no_window(_cmd: &mut Command) {}
 
 #[cfg(test)]
+mod ppt_generation_failure_tests {
+    use super::*;
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("build test runtime")
+            .block_on(future)
+    }
+
+    #[test]
+    fn native_svg_repair_timeout_keeps_engine_and_page_metadata() {
+        let result = PptMasterGenerateResult::failure(
+            "AI 修复 native 兼容 SVG：01_cover.svg 超时：超过 120 秒，已停止生成。".to_string(),
+            "agent".to_string(),
+            "ppt_master_native".to_string(),
+            120_000,
+        );
+
+        assert_eq!(result.generation_mode, "agent");
+        assert_eq!(result.generation_engine, "ppt_master_native");
+        assert_eq!(
+            result.failure_stage.as_deref(),
+            Some("native_svg_compat_repair")
+        );
+        assert_eq!(
+            result.failure_type.as_deref(),
+            Some("native_svg_repair_timeout")
+        );
+        assert_eq!(result.failed_page, Some(1));
+        assert_eq!(result.timed_out_after_seconds, Some(120));
+        assert_eq!(result.failed_svg_file.as_deref(), Some("01_cover.svg"));
+    }
+
+    #[test]
+    fn quality_repair_timeout_is_classified_as_native_svg_repair() {
+        let result = PptMasterGenerateResult::failure(
+            "native_svg_repair_timeout: AI 修复 SVG：02_timeline.svg 超时：超过 300 秒，stage=read_response，已停止生成。"
+                .to_string(),
+            "agent".to_string(),
+            "ppt_master_native".to_string(),
+            300_000,
+        );
+
+        assert_eq!(result.failure_stage.as_deref(), Some("native_svg_repair"));
+        assert_eq!(
+            result.failure_type.as_deref(),
+            Some("native_svg_repair_timeout")
+        );
+        assert_eq!(result.failed_page, Some(2));
+        assert_eq!(result.timed_out_after_seconds, Some(300));
+        assert_eq!(result.failed_svg_file.as_deref(), Some("02_timeline.svg"));
+    }
+
+    #[test]
+    fn path_failure_is_classified_separately_from_native_timeout() {
+        let result = PptMasterGenerateResult::failure(
+            "ppt-master 根目录不存在".to_string(),
+            "template".to_string(),
+            "legacy_fallback".to_string(),
+            1,
+        );
+
+        assert_eq!(result.failure_stage.as_deref(), Some("configuration"));
+        assert_eq!(
+            result.failure_type.as_deref(),
+            Some("ppt_master_root_invalid")
+        );
+        assert_eq!(result.failed_page, None);
+    }
+
+    #[test]
+    fn mocked_ppt_ai_request_returns_normal_response() {
+        let progress = AiRequestProgress::default();
+        let result = block_on(await_ppt_ai_network(
+            async { Ok("<svg />".to_string()) },
+            1,
+            "mock native repair",
+            Some("native_svg_repair_timeout"),
+            &progress,
+        ))
+        .expect("mock response should succeed");
+        assert_eq!(result, "<svg />");
+    }
+
+    #[test]
+    fn mocked_ppt_ai_timeout_returns_native_failure_type() {
+        let progress = AiRequestProgress::default();
+        let error = block_on(await_ppt_ai_network(
+            std::future::pending::<Result<String, AppError>>(),
+            0,
+            "AI 修复 native 兼容 SVG：01_cover.svg",
+            Some("native_svg_repair_timeout"),
+            &progress,
+        ))
+        .expect_err("pending mock request should time out")
+        .to_string();
+        assert!(error.contains("native_svg_repair_timeout"));
+        assert!(error.contains("stage=connect_or_wait_response_headers"));
+    }
+
+    #[test]
+    fn local_svg_parse_is_outside_network_timeout() {
+        let progress = AiRequestProgress::default();
+        let raw = block_on(await_ppt_ai_network(
+            async { Ok("<svg><rect /></svg>".to_string()) },
+            1,
+            "mock native repair",
+            Some("native_svg_repair_timeout"),
+            &progress,
+        ))
+        .expect("network mock should complete");
+        std::thread::sleep(std::time::Duration::from_millis(1_050));
+        assert_eq!(extract_svg(&raw).as_deref(), Some("<svg><rect /></svg>"));
+    }
+
+    #[test]
+    fn native_repair_attempts_are_bounded_per_file() {
+        let mut attempts = HashMap::new();
+        assert!(reserve_native_svg_repair_attempt(
+            &mut attempts,
+            "01_cover.svg"
+        ));
+        assert!(reserve_native_svg_repair_attempt(
+            &mut attempts,
+            "01_cover.svg"
+        ));
+        assert!(!reserve_native_svg_repair_attempt(
+            &mut attempts,
+            "01_cover.svg"
+        ));
+        assert_eq!(attempts.get("01_cover.svg"), Some(&2));
+    }
+
+    #[test]
+    fn repair_limit_does_not_block_another_page() {
+        let mut attempts = HashMap::new();
+        for _ in 0..NATIVE_SVG_REPAIR_MAX_ATTEMPTS_PER_PAGE {
+            assert!(reserve_native_svg_repair_attempt(
+                &mut attempts,
+                "01_cover.svg"
+            ));
+        }
+        assert!(reserve_native_svg_repair_attempt(
+            &mut attempts,
+            "02_agenda.svg"
+        ));
+    }
+
+    #[test]
+    fn native_repair_prompt_only_contains_issue_and_svg() {
+        let issue = NativeSvgIssue {
+            file_name: "01_cover.svg".to_string(),
+            issue_type: "unsupported_pattern".to_string(),
+            unsupported_elements: vec!["pattern".to_string()],
+            detail: "pattern is not supported".to_string(),
+        };
+        let svg = "<svg><pattern id=\"p\" /></svg>";
+        let prompt = build_native_svg_repair_prompt(&issue, svg);
+        assert!(prompt.contains(svg));
+        assert!(prompt.contains("unsupported_pattern"));
+        assert!(!prompt.contains("design_spec.md"));
+        assert!(!prompt.contains("spec_lock.md"));
+        assert!(prompt.chars().count() < svg.chars().count() + 1_000);
+    }
+
+    #[test]
+    fn native_timeout_is_configurable_and_bounded() {
+        assert_eq!(
+            resolve_native_svg_repair_timeout(None),
+            ResolvedNativeSvgRepairTimeout {
+                seconds: 300,
+                source: "default",
+            }
+        );
+        assert_eq!(resolve_native_svg_repair_timeout(Some("30")).seconds, 60);
+        assert_eq!(
+            resolve_native_svg_repair_timeout(Some("300")),
+            ResolvedNativeSvgRepairTimeout {
+                seconds: 300,
+                source: "config",
+            }
+        );
+        assert_eq!(resolve_native_svg_repair_timeout(Some("450")).seconds, 450);
+        assert_eq!(
+            resolve_native_svg_repair_timeout(Some("1500")).seconds,
+            1_200
+        );
+    }
+
+    #[test]
+    fn every_native_svg_repair_request_uses_the_unified_timeout_path() {
+        for request_id in [
+            "ppt_master_agent_svg_repair_02",
+            "ppt_master_native_svg_compat_repair_02_timeline.svg",
+            "ppt_master_final_text_guard_repair_02_timeline.svg",
+        ] {
+            assert!(
+                is_native_svg_repair_request_id(request_id),
+                "request unexpectedly fell back to the legacy 120-second path: {}",
+                request_id
+            );
+        }
+        assert!(!is_native_svg_repair_request_id("ppt_master_agent_svg_02"));
+    }
+
+    #[test]
+    fn native_output_limit_is_proportional_and_capped() {
+        assert_eq!(native_svg_repair_output_tokens(2_730), 2_048);
+        assert_eq!(native_svg_repair_output_tokens(100_000), 8_192);
+    }
+}
+
+#[cfg(test)]
 mod ppt_understanding_input_tests {
     use super::*;
 
@@ -10840,6 +19200,95 @@ mod ppt_understanding_input_tests {
         ));
         let context = build_generation_planning_context(&input, input.prompt.trim());
         assert!(context.contains("[Legacy AI Understanding Result]\nlegacy AI result"));
+    }
+
+    #[test]
+    fn custom_style_is_preserved_separately_from_effective_style() {
+        let input: PptMasterGenerateInput = serde_json::from_value(serde_json::json!({
+            "pptMasterRoot": "D:/ppt-master",
+            "pythonPath": "python",
+            "prompt": "主题",
+            "style": "红色情怀",
+            "customStyle": "红色情怀",
+            "extraRequirements": "界面要红色情怀拉满"
+        }))
+        .expect("deserialize custom style");
+        assert_eq!(input.style.as_deref(), Some("红色情怀"));
+        assert_eq!(input.custom_style.as_deref(), Some("红色情怀"));
+        assert_eq!(
+            input.extra_requirements.as_deref(),
+            Some("界面要红色情怀拉满")
+        );
+    }
+}
+
+#[cfg(test)]
+mod native_theme_contract_tests {
+    use super::*;
+
+    fn minimal_plan(style: &str) -> SlidePlan {
+        SlidePlan {
+            title: "主题测试".to_string(),
+            subtitle: String::new(),
+            audience: "测试受众".to_string(),
+            style: style.to_string(),
+            theme: default_theme(),
+            theme_allocation: Vec::new(),
+            slides: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn red_custom_style_does_not_fall_back_to_swiss_blue_orange_lock() {
+        let root =
+            std::env::temp_dir().join(format!("pome-native-theme-mapping-{}", std::process::id()));
+        let input: PptMasterGenerateInput = serde_json::from_value(serde_json::json!({
+            "pptMasterRoot": root,
+            "pythonPath": "python",
+            "prompt": "主题",
+            "style": "红色情怀",
+            "customStyle": "红色情怀",
+            "extraRequirements": "界面要红色情怀拉满"
+        }))
+        .expect("deserialize custom style input");
+        let theme = NativeThemeSpec::from_inputs(
+            "红色情怀",
+            input.custom_style.as_deref(),
+            input.extra_requirements.as_deref(),
+            input.visual_expression_advice.as_deref(),
+        );
+        let mapping = resolve_style_mapping(&root, "红色情怀", &input, &theme);
+        assert_eq!(mapping.mode, "narrative");
+        assert_eq!(mapping.visual_style, "vintage-poster");
+
+        let plan = minimal_plan("红色情怀");
+        let lock = build_ppt_master_spec_lock(&plan, &mapping, &theme);
+        assert!(lock.contains("#B91C1C"));
+        assert!(lock.contains("#D4A017"));
+        assert!(lock.contains("vintage-poster"));
+        assert!(!lock.contains("- primary: #1f2937"));
+        assert!(!lock.contains("- secondary_accent: #2563eb"));
+    }
+
+    #[test]
+    fn tech_blue_mapping_and_lock_remain_dark_tech() {
+        let root =
+            std::env::temp_dir().join(format!("pome-native-theme-tech-{}", std::process::id()));
+        let input: PptMasterGenerateInput = serde_json::from_value(serde_json::json!({
+            "pptMasterRoot": root,
+            "pythonPath": "python",
+            "prompt": "主题",
+            "style": "科技蓝"
+        }))
+        .expect("deserialize tech input");
+        let theme = NativeThemeSpec::from_inputs("科技蓝", None, None, None);
+        let mapping = resolve_style_mapping(&root, "科技蓝", &input, &theme);
+        assert_eq!(mapping.mode, "showcase");
+        assert_eq!(mapping.visual_style, "dark-tech");
+        let lock = build_ppt_master_spec_lock(&minimal_plan("科技蓝"), &mapping, &theme);
+        assert!(lock.contains("#081426"));
+        assert!(lock.contains("#2563EB"));
+        assert!(lock.contains("#38BDF8"));
     }
 }
 
@@ -10900,12 +19349,647 @@ mod stable_render_tests {
         }
     }
 
+    fn realistic_chart_index() -> &'static str {
+        r#"{
+            "meta": { "total": 6 },
+            "charts": {
+                "timeline": {},
+                "process_flow": {},
+                "fishbone_diagram": {},
+                "pyramid_chart": {},
+                "matrix_2x2": {},
+                "labeled_card": {}
+            }
+        }"#
+    }
+
+    fn temporary_ppt_master_root(chart_index: Option<&str>) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "pomegranate-stable-chart-index-{}-{}",
+            std::process::id(),
+            nonce
+        ));
+        if let Some(contents) = chart_index {
+            let charts_dir = root.join(PPT_MASTER_CHARTS_DIR);
+            fs::create_dir_all(&charts_dir).expect("create temporary charts directory");
+            fs::write(charts_dir.join("charts_index.json"), contents)
+                .expect("write temporary charts index");
+        }
+        root
+    }
+
+    #[test]
+    fn visible_text_boundary_removes_internal_advice_urls_and_citations() {
+        let raw = "[User-Edited Structured AI Understanding]\n毛泽东生于1893年。第3页可用半透明图表和卡片布局。本材料源自维基百科条目。参见[人物条目](https://zh.wikipedia.org/wiki/%E6%AF%9B%E6%B3%BD%E4%B8%9C#cite_note-16)[16]。16\\]](https://zh。封面·总览：标题居中。";
+        let cleaned = sanitize_visible_text(raw);
+
+        assert!(cleaned.contains("毛泽东生于1893年"));
+        assert!(cleaned.contains("人物条目"));
+        for forbidden in [
+            "User-Edited",
+            "半透明图表",
+            "https://",
+            "wikipedia",
+            "org/wiki",
+            "cite_note",
+            "%E6",
+            "[16]",
+            "本材料源自",
+            "16\\]](",
+            "封面·总览",
+        ] {
+            assert!(
+                !cleaned.contains(forbidden),
+                "leaked {forbidden}: {cleaned}"
+            );
+        }
+    }
+
+    #[test]
+    fn stable_visible_material_excludes_design_and_open_question_fields() {
+        let input: PptMasterGenerateInput = serde_json::from_value(serde_json::json!({
+            "pptMasterRoot": "D:/ppt-master",
+            "pythonPath": "python",
+            "prompt": "legacy",
+            "aiUnderstandingResult": {
+                "understandingSummary": "人物生平与政治历程",
+                "keyPriorities": "1893年至1976年的关键节点",
+                "narrativeMainline": "从早年经历到晚年政治活动",
+                "suggestedPageStructure": "第3页使用时间轴",
+                "visualExpressionAdvice": "第4页可用半透明卡片",
+                "openQuestions": "是否在PPT中展示争议数据？"
+            }
+        }))
+        .unwrap();
+
+        let material = build_stable_visible_material(&input, input.prompt.trim());
+        assert!(material.contains("人物生平与政治历程"));
+        assert!(material.contains("1893年至1976年的关键节点"));
+        assert!(!material.contains("时间轴"));
+        assert!(!material.contains("半透明卡片"));
+        assert!(!material.contains("是否"));
+    }
+
+    #[test]
+    fn prepare_stable_plan_blocks_metadata_from_rendered_svg() {
+        let mut slides = vec![
+            test_slide(1, "none", "highlight", "anchor"),
+            test_slide(2, "category", "cards", "dense"),
+            test_slide(3, "none", "summary", "anchor"),
+        ];
+        slides[1].title = "User-Edited Struct".to_string();
+        slides[1].subtitle = "第2页建议使用半透明卡片".to_string();
+        slides[1].core_message = "https://zh.wikipedia.org/wiki/%E6%AF%9B#cite_note-2".to_string();
+        slides[1].content_blocks = vec![ContentBlock {
+            label: "wikipedia".to_string(),
+            text: "org/wiki/%E6%AF%9B".to_string(),
+            detail: "[16]".to_string(),
+        }];
+        slides[1].visual_intent = "INTERNAL_VISUAL_INTENT_DO_NOT_RENDER".to_string();
+        let mut plan = test_plan(slides);
+        prepare_stable_plan_for_render(
+            &mut plan,
+            "毛泽东生于1893年；1919年参与五四运动；1949年中华人民共和国成立；1972年尼克松访华",
+        );
+
+        let profile = StableRenderProfile::from_plan(&plan);
+        let rendered = render_slide_svg_with_profile(&plan, &plan.slides[1], &profile)
+            .expect("sanitized stable page should render");
+        let visible = format!(
+            "{} {} {}",
+            plan.slides[1].title,
+            stable_core_message(&plan.slides[1]),
+            rendered.svg
+        );
+        for forbidden in [
+            "User-Edited",
+            "半透明卡片",
+            "https://zh",
+            "wikipedia",
+            "org/wiki",
+            "cite_note",
+            "%E6",
+            "INTERNAL_VISUAL_INTENT_DO_NOT_RENDER",
+        ] {
+            assert!(!visible.contains(forbidden), "leaked {forbidden}");
+        }
+    }
+
+    #[test]
+    fn semantic_consistency_replaces_unrelated_family_block_on_diplomacy_page() {
+        let mut slides = vec![
+            test_slide(1, "none", "highlight", "anchor"),
+            test_slide(2, "category", "cards", "dense"),
+            test_slide(3, "timeline", "timeline", "dense"),
+            test_slide(4, "none", "summary", "anchor"),
+        ];
+        slides[1].title = "尼克松访华与外交破冰".to_string();
+        slides[1].page_theme = slides[1].title.clone();
+        slides[1].subtitle = "家庭婚姻与子女情况".to_string();
+        slides[1].core_message = slides[1].subtitle.clone();
+        slides[1].content_blocks = vec![
+            ContentBlock {
+                label: "家庭".to_string(),
+                text: "婚姻与子女构成".to_string(),
+                detail: String::new(),
+            },
+            ContentBlock {
+                label: "著作".to_string(),
+                text: "诗词与书法作品".to_string(),
+                detail: String::new(),
+            },
+        ];
+        slides[2].content_blocks = vec![
+            ContentBlock {
+                label: "1972".to_string(),
+                text: "尼克松访华推动中美关系破冰".to_string(),
+                detail: String::new(),
+            },
+            ContentBlock {
+                label: "外交".to_string(),
+                text: "中美发布上海公报".to_string(),
+                detail: String::new(),
+            },
+        ];
+        let mut plan = test_plan(slides);
+        prepare_stable_plan_for_render(&mut plan, "");
+
+        let diplomacy = &plan.slides[1];
+        assert!(stable_core_message(diplomacy).contains("尼克松"));
+        assert!(diplomacy
+            .content_blocks
+            .iter()
+            .any(|block| content_block_display(block).contains("尼克松")));
+        assert!(!diplomacy.subtitle.contains("家庭婚姻"));
+    }
+
+    #[test]
+    fn semantic_consistency_prefers_complete_visible_evidence_over_truncated_block() {
+        let mut slides = vec![
+            test_slide(1, "none", "highlight", "anchor"),
+            test_slide(2, "process", "process_flow", "dense"),
+            test_slide(3, "category", "cards", "balanced"),
+            test_slide(4, "none", "summary", "anchor"),
+        ];
+        slides[1].title = "执政探索与坎坷晚年".to_string();
+        slides[1].page_theme = slides[1].title.clone();
+        slides[1].content_blocks = vec![ContentBlock {
+            label: "执政探索与坎坷晚年（1949—197".to_string(),
+            text: "执政探索与坎坷晚年（1949—197".to_string(),
+            detail: String::new(),
+        }];
+        slides[2].bullets = vec![
+            "执政探索与坎坷晚年（1949—1976）：从社会主义改造到晚年外交破冰，呈现理想、现实与路线的复杂关系".to_string(),
+            "1972年尼克松访华，中美关系开始走向正常化".to_string(),
+        ];
+        let mut plan = test_plan(slides);
+        prepare_stable_plan_for_render(&mut plan, "");
+
+        let complete = plan.slides[1]
+            .content_blocks
+            .iter()
+            .map(stable_block_semantic_text)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            complete.contains("1976"),
+            "complete evidence was not restored: {complete}"
+        );
+        assert!(!plan.slides[1].title.ends_with("（19"));
+    }
+
+    #[test]
+    fn short_deck_layout_limits_are_hard_and_body_families_are_unique_first() {
+        let mut slides = Vec::new();
+        slides.push(test_slide(1, "none", "highlight", "anchor"));
+        for page in 2..=5 {
+            slides.push(test_slide(page, "category", "cards", "balanced"));
+        }
+        slides.push(test_slide(6, "none", "summary", "anchor"));
+        let plan = test_plan(slides);
+        let selections = stable_visual_selections(&plan, &std::collections::HashSet::new());
+        let body = &selections[1..5];
+        let layouts: Vec<_> = body
+            .iter()
+            .map(|selection| selection.signature.layout_family)
+            .collect();
+        let unique: std::collections::HashSet<_> = layouts.iter().copied().collect();
+
+        assert_eq!(
+            unique.len(),
+            body.len(),
+            "body layouts should exhaust unique compatible families first: {layouts:?}"
+        );
+        assert!(layouts.windows(2).all(|pair| pair[0] != pair[1]));
+        assert!(
+            layouts
+                .iter()
+                .filter(|layout| **layout == StableLayoutKind::CategoryGrid)
+                .count()
+                <= 1
+        );
+        assert!(
+            layouts
+                .iter()
+                .filter(|layout| **layout == StableLayoutKind::EditorialSplit)
+                .count()
+                <= 1
+        );
+        let fingerprints: std::collections::HashSet<_> = body
+            .iter()
+            .map(|selection| selection.structure_fingerprint)
+            .collect();
+        assert_eq!(fingerprints.len(), body.len());
+    }
+
+    fn selected_middle_layout(
+        relation: &str,
+        chart_type: &str,
+        layout: &str,
+        chart_patterns: &std::collections::HashSet<String>,
+    ) -> StableLayoutKind {
+        let mut middle = test_slide(2, relation, chart_type, "dense");
+        middle.layout = layout.to_string();
+        let plan = test_plan(vec![
+            test_slide(1, "none", "highlight", "anchor"),
+            middle,
+            test_slide(3, "none", "summary", "anchor"),
+        ]);
+        stable_visual_selections(&plan, chart_patterns)[1]
+            .signature
+            .layout_family
+    }
+
+    #[test]
+    fn stable_profile_reads_nested_charts_object() {
+        let root = temporary_ppt_master_root(Some(realistic_chart_index()));
+        let plan = test_plan(vec![test_slide(1, "none", "highlight", "anchor")]);
+        let profile = StableRenderProfile::load(&root, &plan);
+
+        assert!(profile.chart_catalog_loaded);
+        for expected in [
+            "timeline",
+            "process_flow",
+            "fishbone_diagram",
+            "pyramid_chart",
+            "matrix_2x2",
+            "labeled_card",
+        ] {
+            assert!(
+                profile.chart_patterns.contains(expected),
+                "missing {expected}"
+            );
+        }
+        assert!(!profile.chart_patterns.contains("meta"));
+        assert!(!profile.chart_patterns.contains("charts"));
+        fs::remove_dir_all(root).expect("remove temporary ppt-master root");
+    }
+
+    #[test]
+    fn stable_profile_accepts_legacy_root_level_chart_keys() {
+        let root = temporary_ppt_master_root(Some(
+            r#"{
+                "_meta": { "version": 1 },
+                "timeline": {},
+                "process": {},
+                "cause_effect": {},
+                "hierarchy": {},
+                "matrix": {},
+                "category_grid": {}
+            }"#,
+        ));
+        let plan = test_plan(vec![test_slide(1, "none", "highlight", "anchor")]);
+        let profile = StableRenderProfile::load(&root, &plan);
+
+        assert!(profile.chart_catalog_loaded);
+        for expected in [
+            "timeline",
+            "process",
+            "cause_effect",
+            "hierarchy",
+            "matrix",
+            "category_grid",
+        ] {
+            assert!(
+                profile.chart_patterns.contains(expected),
+                "missing {expected}"
+            );
+        }
+        assert!(!profile.chart_patterns.contains("_meta"));
+        fs::remove_dir_all(root).expect("remove temporary ppt-master root");
+    }
+
+    #[test]
+    fn missing_or_invalid_chart_index_degrades_to_empty_catalog() {
+        let plan = test_plan(vec![test_slide(1, "none", "highlight", "anchor")]);
+
+        let missing_root = temporary_ppt_master_root(None);
+        let missing_profile = StableRenderProfile::load(&missing_root, &plan);
+        assert!(!missing_profile.chart_catalog_loaded);
+        assert!(missing_profile.chart_patterns.is_empty());
+
+        let invalid_root = temporary_ppt_master_root(Some("{not valid json"));
+        let invalid_profile = StableRenderProfile::load(&invalid_root, &plan);
+        assert!(!invalid_profile.chart_catalog_loaded);
+        assert!(invalid_profile.chart_patterns.is_empty());
+        fs::remove_dir_all(invalid_root).expect("remove temporary ppt-master root");
+    }
+
+    #[test]
+    fn real_catalog_aliases_reach_existing_semantic_layouts() {
+        let patterns = parse_stable_chart_patterns(realistic_chart_index());
+        let cases = [
+            ("timeline", "timeline", "", StableLayoutKind::Timeline),
+            ("none", "process_flow", "", StableLayoutKind::Process),
+            ("process", "process", "", StableLayoutKind::Process),
+            ("cause", "cause_effect", "", StableLayoutKind::CauseEffect),
+            ("none", "hierarchy", "", StableLayoutKind::Hierarchy),
+            ("none", "matrix_2x2", "", StableLayoutKind::Matrix),
+            (
+                "category",
+                "category_grid",
+                "",
+                StableLayoutKind::CategoryGrid,
+            ),
+        ];
+
+        for (relation, chart_type, layout, expected) in cases {
+            let selected = selected_middle_layout(relation, chart_type, layout, &patterns);
+            assert_eq!(selected, expected, "relation={relation} chart={chart_type}");
+            if expected != StableLayoutKind::CategoryGrid {
+                assert_ne!(selected, StableLayoutKind::CategoryGrid);
+            }
+        }
+    }
+
+    #[test]
+    fn internal_semantic_renderers_do_not_depend_on_external_catalog() {
+        let no_external_patterns = std::collections::HashSet::new();
+        for (relation, chart_type, expected) in [
+            ("timeline", "timeline", StableLayoutKind::Timeline),
+            ("process", "process_flow", StableLayoutKind::Process),
+            ("cause", "cause_effect", StableLayoutKind::CauseEffect),
+            ("none", "hierarchy", StableLayoutKind::Hierarchy),
+        ] {
+            assert_eq!(
+                selected_middle_layout(relation, chart_type, "", &no_external_patterns),
+                expected
+            );
+        }
+    }
+
     #[test]
     fn text_width_distinguishes_cjk_and_latin() {
         let cjk = estimate_stable_text_width("中国历史", 20.0, "400");
         let latin = estimate_stable_text_width("History", 20.0, "400");
         assert!(cjk > latin);
         assert!(cjk >= 78.0);
+    }
+
+    #[test]
+    fn stable_strong_markup_is_parsed_into_real_runs() {
+        let paragraphs = parse_stable_rich_text(
+            "毛泽东**（1893年12月26日—1976年9月9日）**，字**润之**",
+            StableTextRenderPolicy {
+                allow_strong: true,
+                allow_heading_scale: true,
+            },
+        );
+        assert_eq!(paragraphs.len(), 1);
+        assert_eq!(paragraphs[0].runs.len(), 4);
+        assert_eq!(paragraphs[0].runs[0].text, "毛泽东");
+        assert!(!paragraphs[0].runs[0].bold);
+        assert_eq!(
+            paragraphs[0].runs[1].text,
+            "（1893年12月26日—1976年9月9日）"
+        );
+        assert!(paragraphs[0].runs[1].bold);
+        assert_eq!(paragraphs[0].runs[2].text, "，字");
+        assert!(!paragraphs[0].runs[2].bold);
+        assert_eq!(paragraphs[0].runs[3].text, "润之");
+        assert!(paragraphs[0].runs[3].bold);
+    }
+
+    #[test]
+    fn unclosed_strong_markup_safely_falls_back_to_plain_text() {
+        let paragraphs = parse_stable_rich_text(
+            "毛泽东**（1893年12月26日—1976年9月9日）",
+            StableTextRenderPolicy {
+                allow_strong: true,
+                allow_heading_scale: true,
+            },
+        );
+        assert_eq!(
+            paragraphs[0].runs[0].text,
+            "毛泽东（1893年12月26日—1976年9月9日）"
+        );
+        assert!(paragraphs[0].runs.iter().all(|run| !run.bold));
+        assert!(paragraphs[0]
+            .runs
+            .iter()
+            .all(|run| !run.text.contains("**")));
+    }
+
+    #[test]
+    fn odd_strong_markers_preserve_the_shortest_unambiguous_pair() {
+        let paragraphs = parse_stable_rich_text(
+            "毛泽东**（1893年12月26日—1976年9月9日），字**润之**",
+            StableTextRenderPolicy {
+                allow_strong: true,
+                allow_heading_scale: true,
+            },
+        );
+        assert_eq!(
+            paragraphs[0]
+                .runs
+                .iter()
+                .map(|run| run.text.as_str())
+                .collect::<String>(),
+            "毛泽东（1893年12月26日—1976年9月9日），字润之"
+        );
+        assert!(paragraphs[0]
+            .runs
+            .iter()
+            .any(|run| run.text == "润之" && run.bold));
+    }
+
+    #[test]
+    fn line_start_markdown_headings_map_to_body_hierarchy() {
+        let paragraphs = parse_stable_rich_text(
+            "# 一级\n## 二级\n### 三级\n#5 型号",
+            StableTextRenderPolicy {
+                allow_strong: true,
+                allow_heading_scale: true,
+            },
+        );
+        assert_eq!(paragraphs.len(), 4);
+        for (index, expected) in [
+            StableTextEmphasis::Heading1,
+            StableTextEmphasis::Heading2,
+            StableTextEmphasis::Heading3,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(paragraphs[index].runs[0].emphasis, expected);
+            assert!(paragraphs[index].runs[0].bold);
+            assert!(paragraphs[index].runs[0].font_scale >= 1.10);
+            assert!(!paragraphs[index].runs[0].text.contains('#'));
+        }
+        assert_eq!(paragraphs[3].runs[0].text, "#5 型号");
+        assert_eq!(paragraphs[3].runs[0].emphasis, StableTextEmphasis::Normal);
+    }
+
+    #[test]
+    fn stable_reference_cleanup_removes_wikipedia_and_escaped_citations() {
+        assert_eq!(
+            clean_stable_reference_artifacts(r"毛泽东，湖南湘潭人[\[1").trim(),
+            "毛泽东，湖南湘潭人"
+        );
+        assert_eq!(
+            clean_stable_reference_artifacts(r"1912年春，毛泽东退出军队，继续求学[\[36").trim(),
+            "1912年春，毛泽东退出军队，继续求学"
+        );
+        assert_eq!(
+            clean_stable_reference_artifacts("据多方估计达到4000万至8000万[注2][17]").trim(),
+            "据多方估计达到4000万至8000万"
+        );
+        assert_eq!(
+            clean_stable_reference_artifacts(r"35（[\[30（10—11 10月24日，毛泽东投入湖南新军")
+                .trim(),
+            "10—11 10月24日，毛泽东投入湖南新军"
+        );
+        assert_eq!(
+            clean_stable_reference_artifacts("注1（正文内容").trim(),
+            "正文内容"
+        );
+        assert_eq!(
+            clean_stable_reference_artifacts(r"湖南湘潭人[\[12（3813，中国近代史").trim(),
+            "湖南湘潭人，中国近代史"
+        );
+        assert_eq!(
+            clean_stable_reference_artifacts("13，中国近代史").trim(),
+            "中国近代史"
+        );
+        assert_eq!(
+            clean_stable_reference_artifacts(r"1943年成为最高领导人[\[注1（，是缔造者之一").trim(),
+            "1943年成为最高领导人，是缔造者之一"
+        );
+        assert_eq!(
+            clean_stable_reference_artifacts("，中国近代马列主义理论家").trim(),
+            "中国近代马列主义理论家"
+        );
+    }
+
+    #[test]
+    fn isolated_reference_numbers_are_removed_without_touching_normal_numbers() {
+        assert!(clean_stable_reference_artifacts("2\n13\n17\n31")
+            .trim()
+            .is_empty());
+        let normal = clean_stable_reference_artifacts(
+            "数学区间 [0, 1]，型号 #5，第 2 阶段，1912年，数量35，输入/输出",
+        );
+        for expected in ["[0, 1]", "#5", "第 2 阶段", "1912年", "数量35", "输入/输出"] {
+            assert!(normal.contains(expected), "missing {expected}: {normal}");
+        }
+    }
+
+    #[test]
+    fn split_numeric_content_block_boundary_is_repaired_without_inventing_emphasis() {
+        let block = sanitize_visible_block(
+            &ContentBlock {
+                label: "据多方估计".to_string(),
+                text: "非正常死亡人数达到4".to_string(),
+                detail: "000万至8000万".to_string(),
+            },
+            0,
+        )
+        .expect("visible block");
+        assert_eq!(block.text, "非正常死亡人数达到4000万至8000万");
+        assert!(block.detail.is_empty());
+        assert!(!block.text.contains("**"));
+        assert!(!block.detail.contains("**"));
+
+        let already_cleaned_boundary = sanitize_visible_block(
+            &ContentBlock {
+                label: "据多方估计".to_string(),
+                text: "非正常死亡人数达到".to_string(),
+                detail: "4000万至8000万".to_string(),
+            },
+            0,
+        )
+        .expect("visible block after repeated sanitization");
+        assert_eq!(
+            already_cleaned_boundary.text,
+            "非正常死亡人数达到4000万至8000万"
+        );
+        assert!(already_cleaned_boundary.detail.is_empty());
+    }
+
+    #[test]
+    fn mixed_cjk_and_english_rich_text_keeps_run_boundaries() {
+        let paragraphs = parse_stable_rich_text(
+            "中国 **Long March 长征** changed history",
+            StableTextRenderPolicy {
+                allow_strong: true,
+                allow_heading_scale: true,
+            },
+        );
+        let strong = paragraphs[0]
+            .runs
+            .iter()
+            .find(|run| run.bold)
+            .expect("strong run");
+        assert_eq!(strong.text, "Long March 长征");
+        assert_eq!(
+            paragraphs[0]
+                .runs
+                .iter()
+                .map(|run| run.text.as_str())
+                .collect::<String>(),
+            "中国 Long March 长征 changed history"
+        );
+    }
+
+    #[test]
+    fn stable_svg_uses_nested_tspans_without_raw_markdown_markers() {
+        let mut draft = StablePageDraft::new();
+        let fit = append_fitted_text(
+            &mut draft,
+            "rich-body-test",
+            "普通**重点内容**\n## 块内小标题",
+            StableRect {
+                x: 80.0,
+                y: 180.0,
+                width: 620.0,
+                height: 160.0,
+            },
+            18.0,
+            14.0,
+            1.25,
+            "#111827",
+            "400",
+            "start",
+            false,
+            StableElementKind::Text,
+            None,
+        );
+        assert!(!draft.body.contains("**"));
+        assert!(!draft.body.contains("## 块内小标题"));
+        assert!(draft
+            .body
+            .contains("<tspan font-weight=\"700\">重点内容</tspan>"));
+        assert!(draft.body.contains("data-stable-heading-level=\"2\""));
+        assert!(draft.body.contains("font-size=\""));
+        assert!(fit
+            .rich_lines
+            .iter()
+            .flat_map(|line| line.runs.iter())
+            .any(|run| run.text.contains("重点内容") && run.bold));
     }
 
     #[test]
@@ -10921,6 +20005,28 @@ mod stable_render_tests {
             .chars()
             .next()
             .is_none_or(|ch| !is_line_start_forbidden(ch))));
+    }
+
+    #[test]
+    fn rich_wrapping_does_not_split_a_number_between_lines() {
+        let paragraphs = parse_stable_rich_text(
+            "死亡人数达到4000万至8000万",
+            StableTextRenderPolicy {
+                allow_strong: true,
+                allow_heading_scale: true,
+            },
+        );
+        let lines = wrap_stable_rich_text(&paragraphs, 18.0, 150.0, "400")
+            .iter()
+            .map(StableTextLine::plain_text)
+            .collect::<Vec<_>>();
+        for pair in lines.windows(2) {
+            assert!(
+                !(pair[0].chars().last().is_some_and(|ch| ch.is_ascii_digit())
+                    && pair[1].chars().next().is_some_and(|ch| ch.is_ascii_digit()))
+            );
+        }
+        assert_eq!(lines.concat(), "死亡人数达到4000万至8000万");
     }
 
     #[test]
@@ -10999,7 +20105,9 @@ mod stable_render_tests {
                 );
             }
         }
-        assert!(selections.iter().all(|selection| !selection.duplicate_signature));
+        assert!(selections
+            .iter()
+            .all(|selection| !selection.duplicate_signature));
     }
 
     #[test]
@@ -11078,7 +20186,11 @@ mod stable_render_tests {
                 None,
                 "motif-test",
             );
-            assert!(draft.hard_failures.is_empty(), "{motif:?}: {:?}", draft.hard_failures);
+            assert!(
+                draft.hard_failures.is_empty(),
+                "{motif:?}: {:?}",
+                draft.hard_failures
+            );
             assert!(
                 validate_slide_layout(&draft.elements).is_empty(),
                 "{motif:?}: {:?}",
@@ -11214,11 +20326,10 @@ mod stable_render_tests {
             StableDetailLevel::Full,
             &draft,
         );
-        assert!(completeness
-            .iter()
-            .any(|issue| issue.contains("required page title was not rendered")
-                || issue.contains("label is incomplete")
-                || issue.contains("body is incomplete")));
+        assert!(completeness.iter().any(|issue| issue
+            .contains("required page title was not rendered")
+            || issue.contains("label is incomplete")
+            || issue.contains("body is incomplete")));
         assert!(validate_visual_fullness(&slide, &draft)
             .iter()
             .any(|issue| issue.contains("occupancy too low")));
@@ -11229,17 +20340,32 @@ mod stable_render_tests {
         let mut draft = StablePageDraft::new();
         draft.push_rect(
             "left-object",
-            StableRect { x: 80.0, y: 220.0, width: 120.0, height: 80.0 },
+            StableRect {
+                x: 80.0,
+                y: 220.0,
+                width: 120.0,
+                height: 80.0,
+            },
             StableElementKind::Card,
         );
         draft.push_rect(
             "right-object",
-            StableRect { x: 500.0, y: 220.0, width: 120.0, height: 80.0 },
+            StableRect {
+                x: 500.0,
+                y: 220.0,
+                width: 120.0,
+                height: 80.0,
+            },
             StableElementKind::Card,
         );
         draft.elements.push(StableLayoutElement {
             id: "crossed-text".to_string(),
-            rect: StableRect { x: 260.0, y: 244.0, width: 180.0, height: 28.0 },
+            rect: StableRect {
+                x: 260.0,
+                y: 244.0,
+                width: 180.0,
+                height: 28.0,
+            },
             kind: StableElementKind::Text,
             container: None,
         });
@@ -11269,7 +20395,7 @@ mod stable_render_tests {
         let slide = test_slide(1, "category", "cards", "dense");
         let mut plan = test_plan(vec![slide.clone()]);
         plan.title = "A very long presentation title that must remain inside the right footer column without colliding with the source note".repeat(3);
-        plan.slides[0].evidence = vec!["A very long source explanation that must be shortened independently and remain centered inside its own footer column".repeat(3)];
+        plan.slides[0].evidence = vec!["Source: National Archives".to_string()];
         let profile = StableRenderProfile::from_plan(&plan);
         let mut draft = StablePageDraft::new();
         render_stable_footer(&plan, &plan.slides[0], &profile.tokens, &mut draft, None).unwrap();
@@ -11277,7 +20403,11 @@ mod stable_render_tests {
         let decoration_issues = validate_semantic_decorations(&draft);
         assert!(layout_issues.is_empty(), "{layout_issues:?}");
         assert!(decoration_issues.is_empty(), "{decoration_issues:?}");
-        let title = draft.elements.iter().find(|item| item.id == "footer-title").unwrap();
+        let title = draft
+            .elements
+            .iter()
+            .find(|item| item.id == "footer-title")
+            .unwrap();
         let evidence = draft
             .elements
             .iter()
@@ -11285,6 +20415,19 @@ mod stable_render_tests {
             .unwrap();
         assert!(title.rect.right() <= STABLE_SAFE_RIGHT + 0.5);
         assert!(evidence.rect.right() < title.rect.x);
+    }
+
+    #[test]
+    fn ordinary_evidence_is_not_promoted_to_visible_footer_source() {
+        let slide = test_slide(1, "category", "cards", "dense");
+        let plan = test_plan(vec![slide]);
+        let profile = StableRenderProfile::from_plan(&plan);
+        let mut draft = StablePageDraft::new();
+        render_stable_footer(&plan, &plan.slides[0], &profile.tokens, &mut draft, None).unwrap();
+        assert!(draft
+            .elements
+            .iter()
+            .all(|item| item.id != "footer-evidence"));
     }
 
     #[test]
@@ -11347,12 +20490,14 @@ mod stable_render_tests {
         assert_eq!(visible_evidence, 1);
         assert!(draft.hard_failures.is_empty(), "{:?}", draft.hard_failures);
         assert!(validate_slide_layout(&draft.elements).is_empty());
-        assert!(draft
-            .degradations
-            .iter()
-            .filter(|item| item.field == "evidence")
-            .count()
-            >= 2);
+        assert!(
+            draft
+                .degradations
+                .iter()
+                .filter(|item| item.field == "evidence")
+                .count()
+                >= 2
+        );
     }
 
     #[test]
@@ -11369,7 +20514,12 @@ mod stable_render_tests {
             &mut draft,
             &missing_label,
             None,
-            StableRect { x: 80.0, y: 210.0, width: 360.0, height: 180.0 },
+            StableRect {
+                x: 80.0,
+                y: 210.0,
+                width: 360.0,
+                height: 180.0,
+            },
             1,
             &profile.tokens,
             StableMotif::TopBandCard,
@@ -11383,13 +20533,20 @@ mod stable_render_tests {
             .any(|issue| issue.contains("required label is empty")));
 
         missing_label.label = "Required label".to_string();
-        missing_label.text = "This required body is intentionally far too long to fit inside the tiny text region. ".repeat(20);
+        missing_label.text =
+            "This required body is intentionally far too long to fit inside the tiny text region. "
+                .repeat(20);
         let mut overflow = StablePageDraft::new();
         render_stable_motif_block(
             &mut overflow,
             &missing_label,
             None,
-            StableRect { x: 80.0, y: 210.0, width: 180.0, height: 110.0 },
+            StableRect {
+                x: 80.0,
+                y: 210.0,
+                width: 180.0,
+                height: 110.0,
+            },
             1,
             &profile.tokens,
             StableMotif::TopBandCard,
@@ -11409,8 +20566,7 @@ mod stable_render_tests {
         let profile = StableRenderProfile::from_plan(&plan);
         let target = ContentBlock {
             label: "Target".to_string(),
-            text: "中华文明多元起源制度演进思想文化社会结构历史影响长期发展"
-                .repeat(3),
+            text: "中华文明多元起源制度演进思想文化社会结构历史影响长期发展".repeat(3),
             detail: String::new(),
         };
         let untouched = ContentBlock {
@@ -11510,8 +20666,14 @@ mod stable_render_tests {
             .iter()
             .find(|record| record.id == "untouched-1-text")
             .unwrap();
-        assert_eq!(baseline_untouched.requested_rect, repaired_untouched.requested_rect);
-        assert_eq!(baseline_untouched.fit.font_size, repaired_untouched.fit.font_size);
+        assert_eq!(
+            baseline_untouched.requested_rect,
+            repaired_untouched.requested_rect
+        );
+        assert_eq!(
+            baseline_untouched.fit.font_size,
+            repaired_untouched.fit.font_size
+        );
         assert_eq!(baseline_untouched.fit.lines, repaired_untouched.fit.lines);
     }
 
@@ -11541,7 +20703,12 @@ mod stable_render_tests {
             &mut draft,
             &block,
             Some("Target evidence"),
-            StableRect { x: 80.0, y: 210.0, width: 360.0, height: 180.0 },
+            StableRect {
+                x: 80.0,
+                y: 210.0,
+                width: 360.0,
+                height: 180.0,
+            },
             1,
             &profile.tokens,
             StableMotif::TopBandCard,
@@ -11553,7 +20720,12 @@ mod stable_render_tests {
             &mut draft,
             &block,
             Some("Other evidence"),
-            StableRect { x: 80.0, y: 450.0, width: 360.0, height: 180.0 },
+            StableRect {
+                x: 80.0,
+                y: 450.0,
+                width: 360.0,
+                height: 180.0,
+            },
             1,
             &profile.tokens,
             StableMotif::TopBandCard,
@@ -11575,12 +20747,14 @@ mod stable_render_tests {
         assert_eq!(other.rect.height, 180.0);
         assert_eq!(other.rect.y, 450.0);
         assert!(!target.rect.overlaps(other.rect, 1.0));
-        assert!(draft.degradations.iter().any(|item| {
-            item.block_id == "target-1" && item.field == "detail"
-        }));
-        assert!(!draft.degradations.iter().any(|item| {
-            item.block_id == "other-1" && item.field == "detail"
-        }));
+        assert!(draft
+            .degradations
+            .iter()
+            .any(|item| { item.block_id == "target-1" && item.field == "detail" }));
+        assert!(!draft
+            .degradations
+            .iter()
+            .any(|item| { item.block_id == "other-1" && item.field == "detail" }));
     }
 
     #[test]
@@ -11591,8 +20765,7 @@ mod stable_render_tests {
             test_slide(3, "none", "summary", "anchor"),
         ];
         slides[1].title =
-            "中华文明多元起源制度演进思想文化社会结构历史影响长期发展脉络观察"
-                .to_string();
+            "中华文明多元起源制度演进思想文化社会结构历史影响长期发展脉络观察".to_string();
         let plan = test_plan(slides);
         let profile = StableRenderProfile::from_plan(&plan);
         let primary = stable_visual_selections(&plan, &profile.chart_patterns)[1]
@@ -11704,13 +20877,27 @@ mod stable_render_tests {
         let project = PathBuf::from(project_value);
         let plan_text = fs::read_to_string(project.join("slide_plan.json"))
             .expect("read stable slide_plan.json");
-        let plan: SlidePlan = serde_json::from_str(&plan_text).expect("parse stable slide plan");
+        let mut plan: SlidePlan =
+            serde_json::from_str(&plan_text).expect("parse stable slide plan");
+        let visible_material = std::env::var("POME_STABLE_RENDER_MATERIAL")
+            .ok()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .unwrap_or_default();
+        prepare_stable_plan_for_render(&mut plan, &visible_material);
         let profile = StableRenderProfile::from_plan(&plan);
         let svg_output = project.join("svg_output");
         fs::create_dir_all(&svg_output).expect("create svg_output");
+        let mut degradations = std::collections::HashMap::new();
         for slide in &plan.slides {
             let rendered =
                 render_slide_svg_with_profile(&plan, slide, &profile).expect("render stable slide");
+            println!(
+                "P{:02} layout={} motif={} fingerprint={}",
+                slide.page, rendered.layout, rendered.motif, rendered.structure_fingerprint
+            );
+            if !rendered.degradations.is_empty() {
+                degradations.insert(slide.page, rendered.degradations.clone());
+            }
             fs::write(
                 svg_output.join(svg_filename_for_slide(slide)),
                 rendered.svg.as_bytes(),
@@ -11718,9 +20905,1384 @@ mod stable_render_tests {
             .expect("write stable SVG");
         }
         fs::write(
+            project.join("slide_plan.json"),
+            serde_json::to_string_pretty(&plan).expect("serialize sanitized stable slide plan"),
+        )
+        .expect("write sanitized stable slide plan");
+        fs::write(
             project.join("design_spec.md"),
             build_stable_design_spec(&plan),
         )
         .expect("write stable design spec");
+        fs::create_dir_all(project.join("notes")).expect("create notes directory");
+        fs::write(
+            project.join("notes").join("total.md"),
+            build_notes_with_degradations(&plan, &degradations),
+        )
+        .expect("write stable notes");
+    }
+}
+
+#[cfg(test)]
+mod native_strict_pipeline_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "pomegranate_native_{label}_{}_{}",
+            std::process::id(),
+            nonce
+        ));
+        fs::create_dir_all(&path).expect("create test directory");
+        path
+    }
+
+    fn slide(page: usize, file_stem: &str) -> Slide {
+        Slide {
+            page,
+            page_index: page,
+            page_id: format!("P{page:02}"),
+            slide_type: if page == 1 { "cover" } else { "content" }.to_string(),
+            layout: "native".to_string(),
+            title: format!("第 {page} 页"),
+            subtitle: String::new(),
+            bullets: Vec::new(),
+            visual_hint: String::new(),
+            page_theme: format!("主题 {page}"),
+            main_claim: format!("结论 {page}"),
+            core_message: String::new(),
+            content_scope: String::new(),
+            content_blocks: Vec::new(),
+            evidence: Vec::new(),
+            relation: String::new(),
+            density: "breathing".to_string(),
+            visual_intent: String::new(),
+            must_include: Vec::new(),
+            must_avoid: Vec::new(),
+            page_rhythm: "breathing".to_string(),
+            chart_ref: "none".to_string(),
+            chart_type: "none".to_string(),
+            file_stem: file_stem.to_string(),
+            speaker_note: String::new(),
+        }
+    }
+
+    fn plan(slides: Vec<Slide>) -> SlidePlan {
+        SlidePlan {
+            title: "原生严格模式测试".to_string(),
+            subtitle: String::new(),
+            audience: String::new(),
+            style: "technical".to_string(),
+            theme: default_theme(),
+            theme_allocation: Vec::new(),
+            slides,
+        }
+    }
+
+    fn valid_native_svg(label: &str) -> String {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720"><text x="80" y="100">{label}</text></svg>"#
+        )
+    }
+
+    #[test]
+    fn powerpoint_repair_marker_is_consumed_exactly_once() {
+        let marked =
+            r#"<svg data-pome-powerpoint-repair-ready="true" viewBox="0 0 1280 720"></svg>"#;
+        let cleaned = consume_native_powerpoint_repair_marker(marked).unwrap();
+        assert!(!cleaned.contains("data-pome-powerpoint-repair-ready"));
+        assert!(consume_native_powerpoint_repair_marker(&cleaned).is_none());
+        assert!(consume_native_powerpoint_repair_marker(&valid_native_svg("unchanged")).is_none());
+    }
+
+    #[test]
+    fn route_resolver_selects_native_and_stable_without_ambiguous_defaults() {
+        assert_eq!(
+            resolve_generation_route(Some("ppt_master_native"), Some("agent")).unwrap(),
+            PptGenerationRoute::PptMasterNative
+        );
+        assert_eq!(
+            resolve_generation_route(Some("legacy_fallback"), Some("template")).unwrap(),
+            PptGenerationRoute::LegacyFallback
+        );
+        assert_eq!(
+            resolve_generation_route(None, Some("agent")).unwrap(),
+            PptGenerationRoute::PptMasterNative
+        );
+        assert!(resolve_generation_route(Some("ppt_master_native"), Some("template")).is_err());
+    }
+
+    #[test]
+    fn missing_block_on_quality_failure_keeps_old_requests_strict() {
+        let input: PptMasterGenerateInput = serde_json::from_value(serde_json::json!({
+            "pptMasterRoot": "D:/ppt-master",
+            "pythonPath": "python",
+            "generationMode": "agent",
+            "generationEngine": "ppt_master_native"
+        }))
+        .unwrap();
+        assert!(input.block_on_quality_failure());
+
+        let non_blocking: PptMasterGenerateInput = serde_json::from_value(serde_json::json!({
+            "pptMasterRoot": "D:/ppt-master",
+            "pythonPath": "python",
+            "generationMode": "agent",
+            "generationEngine": "ppt_master_native",
+            "blockOnQualityFailure": false
+        }))
+        .unwrap();
+        assert!(!non_blocking.block_on_quality_failure());
+    }
+
+    #[test]
+    fn native_plan_parser_normalizes_prose_theme_but_keeps_page_contract() {
+        let expected = plan(vec![slide(1, "cover"), slide(2, "architecture")]);
+        let mut value = serde_json::to_value(&expected).unwrap();
+        value["theme"] = serde_json::Value::String("深色工业科技主题".to_string());
+        value["slides"][0]["page"] = serde_json::Value::String("封面".to_string());
+        value["slides"][0]["pageIndex"] = serde_json::Value::String("第一页".to_string());
+        value["slides"][0]["subtitle"] = serde_json::Value::Null;
+        value["slides"][0]["chartRef"] = serde_json::Value::Null;
+        value["slides"][0]["contentBlocks"] = serde_json::Value::Null;
+        value["slides"][1]["mustAvoid"] =
+            serde_json::Value::String("具体技术指标、流程图、长篇文字".to_string());
+        let parsed = parse_native_slide_plan_json(&value.to_string()).unwrap();
+        assert_eq!(parsed.slides.len(), 2);
+        assert_eq!(parsed.slides[0].page, 1);
+        assert_eq!(parsed.slides[0].page_index, 1);
+        assert_eq!(parsed.slides[1].file_stem, "architecture");
+        assert_eq!(parsed.slides[1].must_avoid.len(), 1);
+        assert_eq!(parsed.theme.name, default_theme().name);
+    }
+
+    #[test]
+    fn malformed_native_plan_json_is_rejected_before_bounded_retry() {
+        let error =
+            parse_native_slide_plan_json(r#"{"title":"Mao Zedong" "slides":[],"theme":{}}"#)
+                .unwrap_err();
+
+        assert!(error.to_string().contains("line 1"));
+        assert_eq!(NATIVE_PLAN_JSON_MAX_ATTEMPTS, 2);
+    }
+
+    #[test]
+    fn native_plan_json_retry_reuses_original_request_with_json_only_correction() {
+        let original = "ORIGINAL STRICT PLAN REQUEST";
+        let retry = build_native_plan_json_retry_prompt(
+            original,
+            "expected ',' or ']' at line 219 column 68",
+        );
+
+        assert!(retry.starts_with(original));
+        assert!(retry.contains("one complete JSON object only"));
+        assert!(retry.contains("comma, quote, escape sequence, and closing bracket"));
+        assert!(retry.contains("line 219 column 68"));
+        assert!(!retry.contains("RAW_MODEL_RESPONSE_SENTINEL"));
+        assert!(retry.chars().count() < original.chars().count() + 1_000);
+    }
+
+    #[test]
+    fn native_plan_json_retry_request_ids_keep_json_response_policy() {
+        let first = native_plan_json_request_id("ppt_master_agent_design_plan", 1);
+        let retry = native_plan_json_request_id("ppt_master_agent_design_plan", 2);
+        let dedup_retry = native_plan_json_request_id("ppt_master_agent_design_plan_dedup", 2);
+
+        assert_eq!(first, "ppt_master_agent_design_plan");
+        assert_eq!(retry, "ppt_master_agent_design_plan_json_retry_2");
+        assert!(retry.starts_with("ppt_master_agent_design_plan"));
+        assert!(dedup_retry.starts_with("ppt_master_agent_design_plan"));
+    }
+
+    #[test]
+    fn structured_planning_retry_contains_only_the_schema_error_summary() {
+        let original = "CURRENT PAGE CONTRACT";
+        let retry = native_planning_attempt_prompt(
+            original,
+            Some("SlideSpec: unknown field `coordinates` at line 12 column 4"),
+        );
+
+        assert!(retry.starts_with(original));
+        assert!(retry.contains("unknown field `coordinates`"));
+        assert!(retry.contains("Do not include or reconstruct the previous response"));
+        assert!(!retry.contains("RAW_MODEL_RESPONSE_SENTINEL"));
+        assert!(retry.chars().count() < original.chars().count() + 700);
+    }
+
+    #[test]
+    fn strict_native_missing_page_fails_without_creating_fallback_svg() {
+        let root = temp_dir("中文 空格 missing");
+        let svg_output = root.join("svg_output");
+        fs::create_dir_all(&svg_output).unwrap();
+        let plan = plan(vec![slide(1, "cover"), slide(2, "architecture")]);
+        fs::write(
+            svg_output.join("01_cover.svg"),
+            valid_native_svg("原生封面"),
+        )
+        .unwrap();
+
+        let error = validate_native_svg_set(&plan, &svg_output).unwrap_err();
+        assert!(error.to_string().contains("02_architecture.svg"));
+        assert!(!svg_output.join("02_architecture.svg").exists());
+        assert_eq!(
+            fs::read_dir(&svg_output)
+                .unwrap()
+                .filter_map(Result::ok)
+                .count(),
+            1
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn strict_native_accepts_complete_svg_set_in_chinese_space_path() {
+        let root = temp_dir("中文 空格 complete");
+        let svg_output = root.join("项目 目录").join("svg_output");
+        fs::create_dir_all(&svg_output).unwrap();
+        let plan = plan(vec![slide(1, "cover"), slide(2, "process")]);
+        for slide in &plan.slides {
+            fs::write(
+                svg_output.join(svg_filename_for_slide(slide)),
+                valid_native_svg(&slide.title),
+            )
+            .unwrap();
+        }
+        validate_native_svg_set(&plan, &svg_output).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn strict_native_rejects_invalid_or_legacy_sized_svg() {
+        let error = validate_native_svg_text(
+            "02_process.svg",
+            r#"<svg viewBox="0 0 1600 900" width="1600" height="900"></svg>"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("1280 720"));
+        assert!(error.to_string().contains("02_process.svg"));
+
+        let error = validate_native_svg_text(
+            "03_algorithm.svg",
+            "```svg\n<svg viewBox=\"0 0 1280 720\" width=\"1280\" height=\"720\"></svg>\n```",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Markdown"));
+    }
+
+    #[test]
+    fn semantic_legacy_is_not_misclassified_as_internal_pipeline_leakage() {
+        let root = temp_dir("semantic legacy");
+        fs::write(
+            root.join("06_legacy.svg"),
+            valid_native_svg("GLOBAL INFLUENCE · LEGACY · REFLECTION"),
+        )
+        .unwrap();
+
+        let issues = scan_final_text_leaks(&root).unwrap();
+        assert!(issues.is_empty(), "semantic legacy must remain visible");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_legacy_mode_and_fallback_terms_remain_hard_leaks() {
+        let root = temp_dir("internal legacy mode");
+        fs::write(
+            root.join("02_internal.svg"),
+            valid_native_svg("legacy mode · fallback"),
+        )
+        .unwrap();
+
+        let issues = scan_final_text_leaks(&root).unwrap();
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0]
+            .leaked_terms
+            .iter()
+            .any(|term| term == "legacy mode"));
+        assert!(issues[0].leaked_terms.iter().any(|term| term == "fallback"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_compatibility_normalizes_group_opacity_without_fallback() {
+        let source = r##"<svg viewBox="0 0 1280 720" width="1280" height="720"><defs><filter id="shadow"><feGaussianBlur stdDeviation="2"/></filter></defs><g opacity="0.12"><rect width="10" height="10" fill="#fff" filter="url(#shadow)"/></g><g stroke="#fff" opacity='0.5'><line x2="5"/></g><text>修复闭合标签</texttext></svg>"##;
+        let (normalized, report) = normalize_native_svg_compatibility(source);
+        assert_eq!(report.group_opacity_normalized, 2);
+        assert_eq!(report.filters_removed, 2);
+        assert_eq!(report.malformed_closing_tags_repaired, 1);
+        assert!(!native_group_opacity_regex().is_match(&normalized));
+        assert!(!native_filter_definition_regex().is_match(&normalized));
+        assert!(!native_filter_reference_regex().is_match(&normalized));
+        assert!(!normalized.contains("</texttext>"));
+        assert!(normalized.contains("</text>"));
+        assert!(normalized.contains("fill-opacity=\"0.12\""));
+        assert!(normalized.contains("stroke-opacity=\"0.5\""));
+        validate_native_svg_text("01_native.svg", &normalized).unwrap();
+    }
+
+    #[test]
+    fn native_compatibility_normalizes_rgba_colors_and_combines_existing_opacity() {
+        let source = r##"<svg viewBox="0 0 1280 720" width="1280" height="720"><defs><linearGradient id="g"><stop offset="0%" stop-color="rgba(37,99,235,0.12)"/></linearGradient></defs><rect width="10" height="10" fill='rgba(10,20,30,0.5)' fill-opacity='0.4' stroke="rgba(1,2,3,1)"/></svg>"##;
+        let (normalized, report) = normalize_native_svg_compatibility(source);
+
+        assert_eq!(report.rgba_colors_normalized, 3);
+        assert!(!normalized.to_ascii_lowercase().contains("rgba("));
+        assert!(normalized.contains("stop-color=\"#2563EB\""));
+        assert!(normalized.contains("stop-opacity=\"0.12\""));
+        assert!(normalized.contains("fill='#0A141E'"));
+        assert!(normalized.contains("fill-opacity='0.2'"));
+        assert!(normalized.contains("stroke=\"#010203\""));
+        assert!(normalized.contains("stroke-opacity=\"1\""));
+        validate_native_svg_text("02_rgba.svg", &normalized).unwrap();
+    }
+
+    #[test]
+    fn native_compatibility_repairs_unambiguous_duplicate_line_coordinate() {
+        let source = r##"<svg viewBox="0 0 1280 720" width="1280" height="720"><line x1="480" y2="564" x2="800" y2="564" stroke="#2563eb"/></svg>"##;
+        let (normalized, report) = normalize_native_svg_compatibility(source);
+
+        assert_eq!(report.duplicate_line_coordinates_repaired, 1);
+        assert!(normalized.contains("x1=\"480\" y1=\"564\" x2=\"800\" y2=\"564\""));
+        assert_eq!(normalized.matches("y1=\"").count(), 1);
+        assert_eq!(normalized.matches("y2=\"").count(), 1);
+        validate_native_svg_text("01_duplicate_line.svg", &normalized).unwrap();
+    }
+
+    #[test]
+    fn native_compatibility_keeps_ambiguous_duplicate_line_coordinate_as_hard_error() {
+        let source = r##"<svg viewBox="0 0 1280 720" width="1280" height="720"><line x1="480" y2="560" x2="800" y2="564"/></svg>"##;
+        let (normalized, report) = normalize_native_svg_compatibility(source);
+
+        assert_eq!(report.duplicate_line_coordinates_repaired, 0);
+        assert_eq!(normalized, source);
+    }
+
+    #[test]
+    fn quality_parser_reports_hard_error_but_not_warnings() {
+        let output = r#"
+[ERROR] 01_slide01_origin.svg - Failed
+   [ERROR] Invalid XML: mismatched tag: line 59, column 133 — SVG must be well-formed XML.
+
+[WARN] 02_slide02_rise.svg - Passed (with warnings)
+   [WARN] Top-level visible <g> #3 has no id
+
+[SUMMARY] Check Summary
+"#;
+        let failures = parse_native_quality_failures(output, "");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].page_number, Some(1));
+        assert_eq!(failures[0].file_name, "01_slide01_origin.svg");
+        assert_eq!(failures[0].violated_rule, "XML well-formedness");
+        assert!(failures[0].checker_summary.contains("line 59"));
+    }
+
+    #[test]
+    fn clip_path_quality_error_is_classified_before_image_keyword() {
+        let output = r#"
+[ERROR] 01_mao_01_cover.svg - Failed
+   [ERROR] clip-path is only allowed on <image> elements or pptx_to_svg crop wrappers — for shapes, draw the target shape directly instead of clipping
+"#;
+        let failures = parse_native_quality_failures(output, "");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].page_number, Some(1));
+        assert_eq!(
+            failures[0].violated_rule,
+            "unsupported clipPath on non-image shape"
+        );
+    }
+
+    #[test]
+    fn strict_svg_validation_gets_one_bounded_page_only_retry() {
+        assert!(native_page_validation_may_retry("validate_svgs", 1));
+        assert!(!native_page_validation_may_retry("validate_svgs", 2));
+        assert!(native_page_validation_may_retry(
+            "validate_space_utilization",
+            1
+        ));
+        assert!(!native_page_validation_may_retry(
+            "validate_space_utilization",
+            2
+        ));
+        assert!(native_page_validation_may_retry(
+            "validate_text_geometry",
+            1
+        ));
+        assert!(!native_page_validation_may_retry(
+            "validate_text_geometry",
+            2
+        ));
+        assert!(!native_page_validation_may_retry("export_pptx", 1));
+    }
+
+    #[test]
+    fn density_relayout_must_preserve_all_visible_text_in_order() {
+        let before = vec![
+            "标题".to_string(),
+            "事实一".to_string(),
+            "事实二".to_string(),
+        ];
+        assert!(native_page_relayout_preserved_visible_text(
+            &before, &before
+        ));
+        assert!(!native_page_relayout_preserved_visible_text(
+            &before,
+            &["标题".to_string(), "事实一".to_string()]
+        ));
+        assert!(!native_page_relayout_preserved_visible_text(
+            &before,
+            &[
+                "标题".to_string(),
+                "事实二".to_string(),
+                "事实一".to_string(),
+            ]
+        ));
+    }
+
+    #[test]
+    fn executor_clip_path_rule_has_no_ambiguous_exception() {
+        let lower = NATIVE_EXECUTOR_CLIP_PATH_RULE.to_ascii_lowercase();
+        assert!(lower.contains("never generate <clippath>"));
+        assert!(lower.contains("no executor exceptions"));
+        assert!(!lower.contains("unless explicitly supported"));
+    }
+
+    #[test]
+    fn page_validation_does_not_assign_another_pages_hard_error_to_current_page() {
+        let output = r#"
+[WARN] 01_cover.svg - Passed (with warnings)
+   [WARN] Top-level visible <g> #3 has no id
+
+[ERROR] 02_process.svg - Failed
+   [ERROR] Invalid XML: mismatched tag: line 12, column 8 — SVG must be well-formed XML.
+"#;
+        assert!(native_page_quality_failure("01_cover.svg", false, output, "").is_none());
+        let failure = native_page_quality_failure("02_process.svg", false, output, "").unwrap();
+        assert_eq!(failure.violated_rule, "XML well-formedness");
+        assert!(failure.checker_summary.contains("02_process.svg"));
+    }
+
+    #[test]
+    fn text_geometry_report_preserves_measured_and_allowed_bounds() {
+        let report: NativeTextGeometryReport = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "svgPath": "svg_output/02_process.svg",
+            "passed": false,
+            "hardErrors": [{
+                "rule": "text_outside_declared_region",
+                "text": "跨越安全边界的流程说明",
+                "actualBounds": { "x": 210.0, "y": 340.0, "width": 420.0, "height": 52.0 },
+                "allowedBounds": { "x": 220.0, "y": 340.0, "width": 380.0, "height": 64.0 },
+                "collisionWith": null
+            }],
+            "warnings": [],
+            "autoFixApplied": []
+        }))
+        .expect("parse geometry report");
+
+        assert!(!report.passed);
+        assert_eq!(report.violated_rule(), "text_outside_declared_region");
+        assert_eq!(report.hard_errors[0]["actualBounds"]["width"], 420.0);
+        assert_eq!(report.hard_errors[0]["allowedBounds"]["width"], 380.0);
+        let state = report.state();
+        assert!(!state.passed);
+        assert_eq!(state.hard_errors[0]["text"], "跨越安全边界的流程说明");
+    }
+
+    #[test]
+    fn text_geometry_retry_summary_groups_targets_and_prioritizes_canvas_overflow() {
+        let report: NativeTextGeometryReport = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "svgPath": "svg_output/03_page.svg",
+            "passed": false,
+            "hardErrors": [
+                {
+                    "rule": "text_outside_declared_region",
+                    "domIndex": 3,
+                    "regionId": "label",
+                    "role": "label",
+                    "text": "label text",
+                    "overflow": { "top": 2.25 }
+                },
+                {
+                    "rule": "text_outside_canvas",
+                    "domIndex": 4,
+                    "regionId": "body",
+                    "role": "body",
+                    "text": "long body outside canvas",
+                    "overflow": { "right": 20.0 }
+                },
+                {
+                    "rule": "text_outside_declared_region",
+                    "domIndex": 4,
+                    "regionId": "body",
+                    "role": "body",
+                    "text": "long body outside canvas",
+                    "overflow": { "right": 96.0 }
+                }
+            ],
+            "warnings": [],
+            "autoFixApplied": []
+        }))
+        .expect("parse geometry report");
+
+        assert_eq!(report.violated_rule(), "text_outside_canvas");
+        let summary = report.summary();
+        assert!(summary.contains("actionableIssues="));
+        assert!(summary.contains("label"));
+        assert!(summary.contains("body"));
+        assert!(summary.contains("text_outside_canvas"));
+        assert!(summary.contains("text_outside_declared_region"));
+        assert!(!summary.contains("firstIssue="));
+        assert_eq!(
+            report.actionable_issues()["targets"]
+                .as_array()
+                .expect("target array")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn powerpoint_geometry_report_identifies_only_the_failed_page() {
+        let report: NativePowerPointGeometryReport = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "passed": false,
+            "pptxPath": "exports/native.pptx",
+            "renderDir": "analysis/powerpoint_text_geometry_render",
+            "hardErrors": [
+                {
+                    "pageNumber": 4,
+                    "rule": "powerpoint_text_outside_declared_region",
+                    "text": "50 亿册",
+                    "actualBounds": { "x": 710.0, "y": 160.0, "width": 180.0, "height": 42.0 },
+                    "allowedBounds": { "x": 720.0, "y": 160.0, "width": 160.0, "height": 48.0 }
+                },
+                {
+                    "pageNumber": 4,
+                    "rule": "powerpoint_text_collision",
+                    "text": "指标说明",
+                    "collisionWith": "metric-value"
+                }
+            ],
+            "warnings": [],
+            "pages": []
+        }))
+        .expect("parse PowerPoint geometry report");
+
+        assert_eq!(report.first_page(), Some(4));
+        assert_eq!(
+            report.first_rule(),
+            "powerpoint_text_outside_declared_region"
+        );
+        assert_eq!(report.issues_for_page(4).len(), 2);
+        assert!(report.issues_for_page(3).is_empty());
+        assert!(report.summary().contains("hardErrors=2"));
+    }
+
+    #[test]
+    fn powerpoint_geometry_checker_uses_bounded_relative_font_drift_repair() {
+        assert!(NATIVE_POWERPOINT_GEOMETRY_CHECKER_SOURCE
+            .contains("function Maximum-SafeRegionOverflow"));
+        assert!(
+            NATIVE_POWERPOINT_GEOMETRY_CHECKER_SOURCE.contains("[Math]::Min(12.0, $extent * 0.2)")
+        );
+        assert!(NATIVE_POWERPOINT_GEOMETRY_CHECKER_SOURCE
+            .contains("$maxOverflow -gt (Maximum-SafeRegionOverflow $issue)"));
+        assert!(!NATIVE_POWERPOINT_GEOMETRY_CHECKER_SOURCE.contains("$maxOverflow -gt 7.5"));
+    }
+
+    #[test]
+    fn stored_powerpoint_region_drift_can_resume_without_another_ai_page_call() {
+        let recoverable = format!(
+            "PowerPoint actual text bounds failed: {}",
+            serde_json::json!([
+                {
+                    "rule": "powerpoint_text_outside_declared_region",
+                    "allowedBounds": { "x": 450.0, "y": 22.5, "width": 450.0, "height": 42.0 },
+                    "overflow": { "left": 0.0, "top": 0.0, "right": 11.0, "bottom": 0.0 }
+                },
+                {
+                    "rule": "powerpoint_text_outside_declared_region",
+                    "allowedBounds": { "x": 292.5, "y": 150.0, "width": 375.0, "height": 97.5 },
+                    "overflow": { "left": 0.0, "top": 0.0, "right": 0.0, "bottom": 10.0 }
+                }
+            ])
+        );
+        assert!(stored_powerpoint_region_drift_is_safely_recheckable(Some(
+            &recoverable
+        )));
+
+        let too_large = recoverable.replace("\"right\":11.0", "\"right\":13.0");
+        assert!(!stored_powerpoint_region_drift_is_safely_recheckable(Some(
+            &too_large
+        )));
+
+        let collision = recoverable.replace(
+            "powerpoint_text_outside_declared_region",
+            "powerpoint_text_text_overlap",
+        );
+        assert!(!stored_powerpoint_region_drift_is_safely_recheckable(Some(
+            &collision
+        )));
+        assert!(!stored_powerpoint_region_drift_is_safely_recheckable(Some(
+            "invalid report"
+        )));
+    }
+
+    #[test]
+    fn retry_selection_reuses_validated_pages_and_only_schedules_failed_page() {
+        let plan = plan(vec![
+            slide(1, "cover"),
+            slide(2, "architecture"),
+            slide(3, "process"),
+            slide(4, "summary"),
+        ]);
+        let reusable = HashSet::from([1, 2, 4]);
+        assert_eq!(native_pages_requiring_generation(&plan, &reusable), vec![3]);
+        assert_eq!(sorted_page_list(&reusable), "P01,P02,P04");
+    }
+
+    #[test]
+    fn resume_preflight_rejects_incomplete_and_legacy_canvas_pages() {
+        let incomplete = valid_native_svg("正文").replace("</svg>", "");
+        assert!(validate_native_svg_text("04_incomplete.svg", &incomplete).is_err());
+        assert!(validate_native_svg_text(
+            "04_legacy.svg",
+            r#"<svg viewBox="0 0 1600 900" width="1600" height="900"></svg>"#,
+        )
+        .is_err());
+        validate_native_svg_text("04_native.svg", &valid_native_svg("正文")).unwrap();
+    }
+
+    #[test]
+    fn quality_failure_result_contains_actionable_backend_fields() {
+        let project = temp_dir("quality metadata");
+        fs::create_dir_all(project.join("svg_output")).unwrap();
+        fs::write(
+            project.join("svg_output").join("01_origin.svg"),
+            valid_native_svg("正文"),
+        )
+        .unwrap();
+        let result = PptMasterGenerateResult::failure(
+            "quality failed".to_string(),
+            "agent".to_string(),
+            "ppt_master_native".to_string(),
+            1,
+        );
+        let result = with_native_quality_failure(
+            result,
+            "validate_svgs",
+            &project,
+            Some(1),
+            "01_origin.svg",
+            "XML well-formedness",
+            "Invalid XML: mismatched tag",
+        );
+        assert_eq!(result.stage.as_deref(), Some("validate_svgs"));
+        assert_eq!(result.page_number, Some(1));
+        assert_eq!(result.failed_svg_file.as_deref(), Some("01_origin.svg"));
+        assert!(result
+            .svg_path
+            .as_deref()
+            .unwrap()
+            .ends_with("01_origin.svg"));
+        assert_eq!(result.violated_rule.as_deref(), Some("XML well-formedness"));
+        assert!(result
+            .checker_summary
+            .as_deref()
+            .unwrap()
+            .contains("mismatched tag"));
+        fs::remove_dir_all(project).unwrap();
+    }
+
+    #[test]
+    fn native_configuration_errors_cover_missing_root_python_and_resources() {
+        let root = temp_dir("configuration");
+        let missing_root = root.join("missing ppt-master");
+        assert!(parse_dir("ppt-master 根目录", missing_root.to_str().unwrap()).is_err());
+
+        let missing_python = root.join("missing python.exe");
+        assert!(python_version(&root, missing_python.to_str().unwrap()).is_err());
+
+        let error = read_ppt_master_resources(&root).unwrap_err();
+        assert!(error.to_string().contains("modes/_index.md"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn blocking_quality_failure_stops_after_attempts_are_exhausted() {
+        let root = temp_dir("blocking quality failure");
+        let svg = root.join("01.svg");
+        fs::write(&svg, valid_native_svg("last version")).unwrap();
+
+        assert!(!should_continue_after_quality_failure(true, &svg));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn non_blocking_quality_failure_keeps_last_svg_and_reaches_exporter() {
+        let root = temp_dir("non blocking quality failure");
+        let svg = root.join("01.svg");
+        let last_svg = valid_native_svg("last version");
+        fs::write(&svg, &last_svg).unwrap();
+        let pptx = root.join("exported.pptx");
+        fs::write(&pptx, b"test pptx fixture").unwrap();
+
+        assert!(should_continue_after_quality_failure(false, &svg));
+        assert_eq!(fs::read_to_string(&svg).unwrap(), last_svg);
+        let export = PptMasterExportResult {
+            success: true,
+            output_path: Some(pptx.to_string_lossy().to_string()),
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 10,
+            error: None,
+        };
+        assert_eq!(validate_native_export_result(&export).unwrap(), pptx);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn non_blocking_quality_failure_still_returns_exporter_failure() {
+        let root = temp_dir("non blocking export failure");
+        let svg = root.join("01.svg");
+        fs::write(&svg, valid_native_svg("last version")).unwrap();
+        assert!(should_continue_after_quality_failure(false, &svg));
+
+        let export = PptMasterExportResult {
+            success: false,
+            output_path: None,
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: "converter failed".to_string(),
+            duration_ms: 10,
+            error: Some("ppt-master 导出失败".to_string()),
+        };
+        let error = validate_native_export_result(&export).unwrap_err();
+        assert!(error.to_string().contains("导出失败"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_export_success_returns_existing_editable_pptx_path() {
+        let root = temp_dir("export success");
+        let pptx = root.join("工业机器人 技术方案.pptx");
+        fs::write(&pptx, b"test pptx fixture").unwrap();
+        let export = PptMasterExportResult {
+            success: true,
+            output_path: Some(pptx.to_string_lossy().to_string()),
+            exit_code: Some(0),
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 10,
+            error: None,
+        };
+        assert_eq!(validate_native_export_result(&export).unwrap(), pptx);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod native_real_entry_tests {
+    use super::*;
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct NativeDebugInputSnapshot {
+        schema_version: u32,
+        source_project_path: String,
+        source_input_fingerprint: String,
+        payload: PptMasterGenerateInput,
+    }
+
+    fn required_env(name: &str) -> String {
+        std::env::var(name)
+            .unwrap_or_else(|_| panic!("missing required environment variable: {name}"))
+    }
+
+    /// Replays the exact payload captured from the Pomegranate confirmation page.
+    /// The environment switch is deliberately debug-only and forces a fresh project,
+    /// while the request still enters through the same public service method as Tauri.
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "requires a local payload snapshot and configured AI model"]
+    async fn native_debug_loop_from_snapshot() {
+        let database_path = required_env("POME_NATIVE_REAL_DB");
+        let snapshot_path = PathBuf::from(required_env("POME_NATIVE_DEBUG_SNAPSHOT"));
+        let result_path = PathBuf::from(required_env("POME_NATIVE_DEBUG_RESULT"));
+        let snapshot_raw = fs::read_to_string(&snapshot_path).unwrap_or_else(|error| {
+            panic!(
+                "read native debug snapshot failed: {} ({error})",
+                snapshot_path.display()
+            )
+        });
+        let mut snapshot: NativeDebugInputSnapshot = serde_json::from_str(&snapshot_raw)
+            .unwrap_or_else(|error| panic!("parse native debug snapshot failed: {error}"));
+        if let Ok(value) = std::env::var("POME_NATIVE_DEBUG_BLOCK_ON_QUALITY_FAILURE") {
+            snapshot.payload.block_on_quality_failure = Some(match value.as_str() {
+                "true" => true,
+                "false" => false,
+                other => panic!("unsupported POME_NATIVE_DEBUG_BLOCK_ON_QUALITY_FAILURE: {other}"),
+            });
+        }
+        assert_eq!(snapshot.schema_version, 1);
+        assert_eq!(snapshot.payload.generation_mode.as_deref(), Some("agent"));
+        assert_eq!(
+            snapshot.payload.generation_engine.as_deref(),
+            Some("ppt_master_native")
+        );
+        assert_eq!(snapshot.payload.slide_count, Some(6));
+
+        let db = Database::init(&database_path).expect("open configured application database");
+        let prompt = snapshot.payload.prompt.trim();
+        let planning_context = build_generation_planning_context(&snapshot.payload, prompt);
+        let title = snapshot
+            .payload
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("AI PPT");
+        let style = snapshot
+            .payload
+            .style
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("科技蓝");
+        let root = PathBuf::from(&snapshot.payload.ppt_master_root);
+        let theme_spec = NativeThemeSpec::from_inputs(
+            style,
+            snapshot.payload.custom_style.as_deref(),
+            snapshot.payload.extra_requirements.as_deref(),
+            snapshot
+                .payload
+                .visual_suggestions
+                .as_deref()
+                .or(snapshot.payload.visual_expression_advice.as_deref()),
+        );
+        let style_mapping = resolve_style_mapping(&root, style, &snapshot.payload, &theme_spec);
+        let (replayed_fingerprint, _) = build_native_input_fingerprint(
+            &db,
+            &snapshot.payload,
+            &planning_context,
+            title,
+            snapshot.payload.slide_count.unwrap_or(6),
+            &style_mapping,
+            &theme_spec,
+        )
+        .expect("compute replayed native fingerprint");
+        assert!(!snapshot.source_input_fingerprint.trim().is_empty());
+        if replayed_fingerprint != snapshot.source_input_fingerprint {
+            println!(
+                "[Native Debug] sourceFingerprint={} replayedFingerprint={} reason=generation-spec-version-changed payloadSource=same-snapshot",
+                snapshot.source_input_fingerprint, replayed_fingerprint
+            );
+        }
+
+        let resume_project = std::env::var("POME_NATIVE_DEBUG_RESUME_PROJECT")
+            .ok()
+            .map(PathBuf::from);
+        let result = if let Some(project) = resume_project.as_ref() {
+            PptMasterService::generate_from_prompt_ppt_master_native_with_project(
+                &db,
+                snapshot.payload,
+                Some(project.clone()),
+            )
+            .await
+            .expect("native resume service should return a structured result")
+        } else {
+            std::env::set_var("POME_NATIVE_DEBUG_FORCE_NEW_PROJECT", "1");
+            let result = PptMasterService::generate_from_prompt(&db, snapshot.payload)
+                .await
+                .expect("native service should return a structured result");
+            std::env::remove_var("POME_NATIVE_DEBUG_FORCE_NEW_PROJECT");
+            result
+        };
+
+        if let Some(parent) = result_path.parent() {
+            fs::create_dir_all(parent).expect("create native debug result directory");
+        }
+        let result_json = serde_json::to_string_pretty(&serde_json::json!({
+            "schemaVersion": 1,
+            "sourceProjectPath": snapshot.source_project_path,
+            "sourceInputFingerprint": snapshot.source_input_fingerprint,
+            "replayedInputFingerprint": replayed_fingerprint,
+            "completedAt": chrono::Utc::now().to_rfc3339(),
+            "result": result,
+        }))
+        .expect("serialize native debug result");
+        fs::write(&result_path, result_json).expect("write native debug result");
+
+        let result_raw = fs::read_to_string(&result_path).expect("read written debug result");
+        let result_value: serde_json::Value =
+            serde_json::from_str(&result_raw).expect("parse written debug result");
+        let result = &result_value["result"];
+        println!(
+            "[Native Debug Result] success={} project={} pptx={} stage={} qualityCheckPassed={} fallbackUsed={} error={} resultFile={}",
+            result["success"].as_bool().unwrap_or(false),
+            result["projectPath"].as_str().unwrap_or("-"),
+            result["pptxPath"].as_str().unwrap_or("-"),
+            result["failureStage"].as_str().unwrap_or("-"),
+            result["qualityCheckPassed"].as_bool().unwrap_or(false),
+            result["stdout"].as_str().is_some_and(|value| value.contains("fallback=true")),
+            result["error"].as_str().unwrap_or("-"),
+            result_path.display()
+        );
+        if let Some(project) = resume_project {
+            assert_eq!(
+                PathBuf::from(
+                    result["projectPath"]
+                        .as_str()
+                        .expect("resumed project path")
+                )
+                .canonicalize()
+                .expect("canonical resumed result project"),
+                project
+                    .canonicalize()
+                    .expect("canonical requested resume project"),
+                "debug resume must stay in the requested project"
+            );
+        } else {
+            assert_ne!(
+                result["projectPath"].as_str(),
+                Some(snapshot.source_project_path.as_str()),
+                "debug loop must create a new project"
+            );
+        }
+        assert_eq!(result["generationMode"].as_str(), Some("agent"));
+        assert_eq!(
+            result["generationEngine"].as_str(),
+            Some("ppt_master_native")
+        );
+        assert_eq!(
+            result["success"].as_bool(),
+            Some(true),
+            "native debug loop failed; inspect {}",
+            result_path.display()
+        );
+    }
+
+    fn industrial_resume_input(
+        ppt_master_root: String,
+        python_path: String,
+        topic: &str,
+    ) -> PptMasterGenerateInput {
+        let source_material = "面向制造企业质量检测场景，建设工业机器人视觉检测系统。\n\
+项目背景：人工检测效率低、稳定性不足，复杂缺陷容易漏检。\n\
+背景要点：当前存在漏检、误判、节拍波动和人工追溯困难四类问题，适合用多卡片形式表达。\n\
+实施时间轴：第 1 月完成样本采集与标注，第 2 月完成算法验证，第 3 月完成产线联调，第 4 月试运行并验收。\n\
+系统架构：工业相机与光源采集图像，边缘计算节点完成预处理与推理；机器人和 PLC 执行分拣，MES 记录结果并形成可追溯闭环。\n\
+性能目标：单件检测节拍小于 1 秒，典型缺陷检出率不低于 99%，误判率低于 1%，支持可视化追溯。";
+        PptMasterGenerateInput {
+            ppt_master_root,
+            python_path,
+            prompt: topic.to_string(),
+            planning_context: Some(format!(
+                "主题：{topic}\n受众：制造企业技术负责人和项目决策者\n页数：6\n结构：封面、背景多卡片、实施时间轴、系统架构、多行技术说明、性能指标与总结"
+            )),
+            ai_understanding_result: Some(PptUnderstandingInput::Structured(
+                PptUnderstandingDraftInput {
+                    understanding_summary: "以工业机器人视觉检测的建设必要性、四阶段实施时间轴、技术架构和可量化性能为主线。".to_string(),
+                    key_priorities: "突出四类背景问题、实施时间轴、系统闭环、多行技术说明和大数字性能目标。".to_string(),
+                    narrative_mainline: "痛点与目标 → 四阶段实施 → 系统架构 → 技术说明 → 性能价值。".to_string(),
+                    suggested_page_structure: "1 封面；2 背景多卡片；3 四阶段实施时间轴；4 系统架构；5 多行技术说明；6 大数字性能指标与总结。".to_string(),
+                    visual_expression_advice: "使用背景多卡片、时间轴、架构图、多行说明和带独立单位的大数字指标。".to_string(),
+                    open_questions: String::new(),
+                },
+            )),
+            understanding_summary: Some(topic.to_string()),
+            key_priorities: Some("多卡片、时间轴、架构、多行正文、大数字与单位".to_string()),
+            suggested_page_structure: Some("封面、背景多卡片、实施时间轴、系统架构、多行技术说明、性能指标与总结".to_string()),
+            narrative_mainline: Some("从业务痛点到实施节奏、技术闭环与量化价值".to_string()),
+            visual_expression_advice: Some("多卡片、时间轴、架构图、多行说明、重点指标".to_string()),
+            visual_suggestions: None,
+            open_questions: Some(String::new()),
+            raw_material: Some(source_material.to_string()),
+            material_sources: Vec::new(),
+            extra_requirements: Some("必须生成 6 页；全部页面由 ppt-master 原生链路生成；禁止 legacy fallback。".to_string()),
+            model_id: None,
+            title: Some(topic.to_string()),
+            audience: Some("制造企业技术负责人和项目决策者".to_string()),
+            slide_count: Some(6),
+            style: Some("科技蓝".to_string()),
+            custom_style: None,
+            generation_engine: Some("ppt_master_native".to_string()),
+            mode: Some("technical".to_string()),
+            visual_style: Some("dark-tech".to_string()),
+            layout_bias: vec!["architecture".to_string(), "process".to_string()],
+            chart_bias: vec!["process_flow".to_string()],
+            output_dir: std::env::var("POME_NATIVE_REAL_OUTPUT_DIR").ok(),
+            generation_mode: Some("agent".to_string()),
+            block_on_quality_failure: Some(true),
+        }
+    }
+
+    /// 通过与前端相同的 service 入口执行真实原生链路。
+    ///
+    /// 默认忽略，避免普通单元测试意外调用用户配置的外部模型。仅在人工验收时显式传入
+    /// 数据库、ppt-master 和 Python 路径后运行。
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "requires configured AI model and runs the real ppt-master native pipeline"]
+    async fn native_pipeline_from_ui_equivalent_input() {
+        let database_path = required_env("POME_NATIVE_REAL_DB");
+        let ppt_master_root = required_env("POME_NATIVE_REAL_ROOT");
+        let python_path = required_env("POME_NATIVE_REAL_PYTHON");
+        let db = Database::init(&database_path).expect("open configured application database");
+        let topic = "工业机器人视觉检测系统技术方案";
+        let source_material = "面向制造企业质量检测场景，建设工业机器人视觉检测系统。\n\
+项目背景：人工检测效率低、稳定性不足，复杂缺陷容易漏检。\n\
+系统架构：工业相机与光源采集图像，边缘计算节点完成预处理与推理，机器人和 PLC 执行分拣，MES 记录结果。\n\
+检测流程：工件到位、触发采图、图像校正、缺陷检测、结果判定、机器人分拣、数据追溯。\n\
+核心算法：定位与配准、表面缺陷检测、尺寸测量、置信度融合和小样本增量优化。\n\
+性能目标：单件检测节拍小于 1 秒，典型缺陷检出率不低于 99%，误判率低于 1%，支持可视化追溯。";
+
+        let input = PptMasterGenerateInput {
+            ppt_master_root,
+            python_path,
+            prompt: topic.to_string(),
+            planning_context: Some(format!(
+                "主题：{topic}\n受众：制造企业技术负责人和项目决策者\n页数：6\n结构：封面、项目背景、系统架构、检测流程、核心算法、性能与总结"
+            )),
+            ai_understanding_result: Some(PptUnderstandingInput::Structured(
+                PptUnderstandingDraftInput {
+                    understanding_summary: "以工业机器人视觉检测的建设必要性、技术架构、落地流程和可量化性能为主线。".to_string(),
+                    key_priorities: "突出系统闭环、算法能力、工程可实施性和性能目标。".to_string(),
+                    narrative_mainline: "痛点与目标 → 系统架构 → 检测闭环 → 核心算法 → 性能价值。".to_string(),
+                    suggested_page_structure: "1 封面；2 项目背景；3 系统架构；4 检测流程；5 核心算法；6 性能与总结。".to_string(),
+                    visual_expression_advice: "使用架构图、流程图、算法示意和重点指标，不使用重复卡片网格。".to_string(),
+                    open_questions: String::new(),
+                },
+            )),
+            understanding_summary: Some("工业机器人视觉检测系统技术方案".to_string()),
+            key_priorities: Some("架构、流程、算法、性能".to_string()),
+            suggested_page_structure: Some("封面、项目背景、系统架构、检测流程、核心算法、性能与总结".to_string()),
+            narrative_mainline: Some("从业务痛点到技术闭环与量化价值".to_string()),
+            visual_expression_advice: Some("架构图、流程图、算法示意、重点指标".to_string()),
+            visual_suggestions: None,
+            open_questions: Some(String::new()),
+            raw_material: Some(source_material.to_string()),
+            material_sources: Vec::new(),
+            extra_requirements: Some("必须生成 6 页；全部页面由 ppt-master 原生链路生成；禁止 legacy fallback。".to_string()),
+            model_id: None,
+            title: Some(topic.to_string()),
+            audience: Some("制造企业技术负责人和项目决策者".to_string()),
+            slide_count: Some(6),
+            style: Some("科技蓝".to_string()),
+            custom_style: None,
+            generation_engine: Some("ppt_master_native".to_string()),
+            mode: Some("technical".to_string()),
+            visual_style: Some("dark-tech".to_string()),
+            layout_bias: vec!["architecture".to_string(), "process".to_string()],
+            chart_bias: vec!["process_flow".to_string()],
+            output_dir: std::env::var("POME_NATIVE_REAL_OUTPUT_DIR").ok(),
+            generation_mode: Some("agent".to_string()),
+            block_on_quality_failure: Some(true),
+        };
+
+        println!(
+            "[Native Real Entry] generationMode=agent generationEngine=ppt_master_native slideCount=6 rawMaterialLength={}",
+            source_material.chars().count()
+        );
+        let result = PptMasterService::generate_from_prompt(&db, input)
+            .await
+            .expect("native service should return a structured result");
+        println!(
+            "[Native Real Entry Result] success={} project={:?} pptx={:?} final={:?} stage={:?} type={:?}\nstdout:\n{}\nstderr:\n{}\nerror={:?}",
+            result.success,
+            result.project_path,
+            result.pptx_path,
+            result.final_pptx_path,
+            result.failure_stage,
+            result.failure_type,
+            result.stdout,
+            result.stderr,
+            result.error
+        );
+        assert!(result.success, "native pipeline failed: {:?}", result.error);
+        assert_eq!(result.generation_mode, "agent");
+        assert_eq!(result.generation_engine, "ppt_master_native");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "repairs and resumes a real pre-state ppt-master native project"]
+    async fn native_resume_existing_failed_project_without_recalling_ai_for_valid_pages() {
+        let database_path = required_env("POME_NATIVE_REAL_DB");
+        let ppt_master_root = required_env("POME_NATIVE_REAL_ROOT");
+        let python_path = required_env("POME_NATIVE_REAL_PYTHON");
+        let project = PathBuf::from(required_env("POME_NATIVE_RESUME_PROJECT"));
+        let db = Database::init(&database_path).expect("open configured application database");
+        let plan_raw =
+            fs::read_to_string(project.join("slide_plan.json")).expect("read existing slide plan");
+        let plan: SlidePlan = serde_json::from_str(&plan_raw).expect("parse existing slide plan");
+        let prompt = fs::read_to_string(project.join("sources").join("confirmed_prompt.md"))
+            .expect("read confirmed prompt");
+        let planning_context =
+            fs::read_to_string(project.join("sources").join("planning_context.md"))
+                .expect("read planning context");
+        let input = PptMasterGenerateInput {
+            ppt_master_root,
+            python_path,
+            prompt,
+            planning_context: Some(planning_context),
+            ai_understanding_result: None,
+            understanding_summary: None,
+            key_priorities: None,
+            suggested_page_structure: None,
+            narrative_mainline: None,
+            visual_expression_advice: None,
+            visual_suggestions: None,
+            open_questions: None,
+            raw_material: None,
+            material_sources: Vec::new(),
+            extra_requirements: Some(
+                "续跑既有 ppt-master 原生严格项目；禁止 legacy/template fallback。".to_string(),
+            ),
+            model_id: None,
+            title: Some(plan.title.clone()),
+            audience: Some(plan.audience.clone()),
+            slide_count: Some(plan.slides.len()),
+            style: Some(plan.style.clone()),
+            custom_style: None,
+            generation_engine: Some("ppt_master_native".to_string()),
+            mode: Some("technical".to_string()),
+            visual_style: Some("dark-tech".to_string()),
+            layout_bias: Vec::new(),
+            chart_bias: Vec::new(),
+            output_dir: std::env::var("POME_NATIVE_REAL_OUTPUT_DIR").ok(),
+            generation_mode: Some("agent".to_string()),
+            block_on_quality_failure: Some(true),
+        };
+        let result = PptMasterService::generate_from_prompt_ppt_master_native_with_project(
+            &db,
+            input,
+            Some(project.clone()),
+        )
+        .await
+        .expect("resume service result");
+        println!(
+            "[Native Acceptance A] success={} project={:?} pptx={:?}\nstdout:\n{}\nstderr:\n{}\nerror={:?}",
+            result.success,
+            result.project_path,
+            result.pptx_path,
+            result.stdout,
+            result.stderr,
+            result.error
+        );
+        assert!(result.success, "resume failed: {:?}", result.error);
+        let result_project = PathBuf::from(result.project_path.as_ref().expect("result project"));
+        assert_eq!(
+            result_project
+                .canonicalize()
+                .expect("canonical result project"),
+            project.canonicalize().expect("canonical expected project")
+        );
+        assert!(!result.stdout.contains("aiCalled=true"));
+        assert_eq!(
+            result.stdout.matches("aiCalled=false").count(),
+            plan.slides.len()
+        );
+        let repaired = fs::read_to_string(project.join("svg_output").join("01_slide01_origin.svg"))
+            .expect("read repaired SVG");
+        assert!(!repaired.contains("</texttext>"));
+        let state = read_state(&project).expect("read completed state");
+        assert_eq!(state.status, "completed");
+        assert!(state.pages.values().all(|page| page.status == "validated"));
+        assert!(state.pages.values().all(|page| page.attempts == 0));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "requires configured AI model and performs real interrupted native generation"]
+    async fn native_resume_after_injected_page_four_failure_only_calls_ai_for_remaining_pages() {
+        let database_path = required_env("POME_NATIVE_REAL_DB");
+        let ppt_master_root = required_env("POME_NATIVE_REAL_ROOT");
+        let python_path = required_env("POME_NATIVE_REAL_PYTHON");
+        let db = Database::init(&database_path).expect("open configured application database");
+        let topic = std::env::var("POME_NATIVE_TEST_TOPIC").unwrap_or_else(|_| {
+            format!(
+                "工业机器人视觉检测系统断点续跑验收-{}",
+                chrono::Utc::now().format("%Y%m%d%H%M%S")
+            )
+        });
+
+        std::env::set_var("POME_NATIVE_TEST_FAIL_BEFORE_PAGE", "4");
+        let first = PptMasterService::generate_from_prompt(
+            &db,
+            industrial_resume_input(ppt_master_root.clone(), python_path.clone(), &topic),
+        )
+        .await
+        .expect("first interrupted native result");
+        std::env::remove_var("POME_NATIVE_TEST_FAIL_BEFORE_PAGE");
+        println!(
+            "[Native Acceptance B First Run] success={} project={:?} stage={:?} error={:?}\n{}",
+            first.success, first.project_path, first.failure_stage, first.error, first.stdout
+        );
+        assert!(!first.success, "first run must stop before page 4");
+        let project = PathBuf::from(first.project_path.expect("interrupted project path"));
+        let first_state = read_state(&project).expect("read interrupted state");
+        let first_attempts = (1..=3)
+            .map(|page| {
+                let page_state = &first_state.pages[&page.to_string()];
+                assert_eq!(page_state.status, "validated");
+                assert!(page_state.attempts >= 1);
+                (page, page_state.attempts)
+            })
+            .collect::<HashMap<_, _>>();
+        assert_eq!(first_state.pages["4"].attempts, 0);
+        assert_eq!(
+            fs::read_dir(project.join("svg_output"))
+                .expect("read partial SVG directory")
+                .filter_map(Result::ok)
+                .filter(
+                    |entry| entry.path().extension().and_then(|value| value.to_str())
+                        == Some("svg")
+                )
+                .count(),
+            3
+        );
+
+        let second = PptMasterService::generate_from_prompt(
+            &db,
+            industrial_resume_input(ppt_master_root, python_path, &topic),
+        )
+        .await
+        .expect("resumed native result");
+        println!(
+            "[Native Acceptance B Resume] success={} project={:?} pptx={:?}\nstdout:\n{}\nstderr:\n{}\nerror={:?}",
+            second.success,
+            second.project_path,
+            second.pptx_path,
+            second.stdout,
+            second.stderr,
+            second.error
+        );
+        assert!(second.success, "resume failed: {:?}", second.error);
+        let second_project = PathBuf::from(second.project_path.as_ref().expect("resume project"));
+        assert_eq!(
+            second_project
+                .canonicalize()
+                .expect("canonical resume project"),
+            project
+                .canonicalize()
+                .expect("canonical interrupted project")
+        );
+        for page in 1..=3 {
+            assert!(second.stdout.contains(&format!(
+                "page=P{page:02} action=reuse status=validated aiCalled=false"
+            )));
+            assert!(!second
+                .stdout
+                .contains(&format!("page=P{page:02} action=generate aiCalled=true")));
+        }
+        for page in 4..=6 {
+            assert!(second
+                .stdout
+                .contains(&format!("page=P{page:02} action=generate aiCalled=true")));
+        }
+        let state = read_state(&project).expect("read completed state");
+        assert_eq!(state.status, "completed");
+        assert!(state.pages.values().all(|page| page.status == "validated"));
+        for page in 1..=3 {
+            assert_eq!(
+                state.pages[&page.to_string()].attempts,
+                first_attempts[&page],
+                "reused page P{page:02} must not consume another AI attempt"
+            );
+        }
+        for page in 4..=6 {
+            assert!(state.pages[&page.to_string()].attempts >= 1);
+        }
+        let plan = load_native_planning_artifacts(&project, 6)
+            .expect("load completed plan")
+            .0;
+        validate_native_svg_set(&plan, &project.join("svg_output"))
+            .expect("all resumed SVG pages are 1280x720 native pages");
+        let legacy_count = fs::read_dir(project.join("svg_output"))
+            .expect("read completed SVG directory")
+            .filter_map(Result::ok)
+            .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+            .filter(|svg| svg.contains("1600 900") || svg.contains("width=\"1600\""))
+            .count();
+        assert_eq!(legacy_count, 0);
+    }
+
+    /// Continues the persisted Acceptance B project after a human-reviewed SVG
+    /// repair.  This entry deliberately has no failure injection: preflight must
+    /// revalidate pages 1-4, reuse them, and call AI only for pages still absent.
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "requires configured AI model and continues the persisted native acceptance project"]
+    async fn native_complete_existing_interrupted_acceptance_project() {
+        let database_path = required_env("POME_NATIVE_REAL_DB");
+        let ppt_master_root = required_env("POME_NATIVE_REAL_ROOT");
+        let python_path = required_env("POME_NATIVE_REAL_PYTHON");
+        let topic = required_env("POME_NATIVE_TEST_TOPIC");
+        let db = Database::init(&database_path).expect("open configured application database");
+
+        let result = PptMasterService::generate_from_prompt(
+            &db,
+            industrial_resume_input(ppt_master_root, python_path, &topic),
+        )
+        .await
+        .expect("continued native result");
+        println!(
+            "[Native Acceptance B Continue] success={} project={:?} pptx={:?}\nstdout:\n{}\nstderr:\n{}\nerror={:?}",
+            result.success,
+            result.project_path,
+            result.pptx_path,
+            result.stdout,
+            result.stderr,
+            result.error
+        );
+        assert!(result.success, "continuation failed: {:?}", result.error);
+        let project = PathBuf::from(result.project_path.as_ref().expect("continued project"));
+        for page in 1..=4 {
+            assert!(result.stdout.contains(&format!(
+                "page=P{page:02} action=reuse status=validated aiCalled=false"
+            )));
+            assert!(!result
+                .stdout
+                .contains(&format!("page=P{page:02} action=generate aiCalled=true")));
+        }
+        for page in 5..=6 {
+            let reused = result.stdout.contains(&format!(
+                "page=P{page:02} action=reuse status=validated aiCalled=false"
+            ));
+            let generated = result
+                .stdout
+                .contains(&format!("page=P{page:02} action=generate aiCalled=true"));
+            assert_ne!(
+                reused, generated,
+                "page P{page:02} must be either strictly reused or generated, never both/neither"
+            );
+        }
+        let state = read_state(&project).expect("read completed continuation state");
+        assert_eq!(state.status, "completed");
+        assert!(state.pages.values().all(|page| page.status == "validated"));
+        let plan = load_native_planning_artifacts(&project, 6)
+            .expect("load continued plan")
+            .0;
+        validate_native_svg_set(&plan, &project.join("svg_output"))
+            .expect("all continued SVG pages are strict 1280x720 native pages");
+        let legacy_count = fs::read_dir(project.join("svg_output"))
+            .expect("read continued SVG directory")
+            .filter_map(Result::ok)
+            .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+            .filter(|svg| svg.contains("1600 900") || svg.contains("width=\"1600\""))
+            .count();
+        assert_eq!(legacy_count, 0);
+        let pptx = result
+            .final_pptx_path
+            .as_ref()
+            .or(result.pptx_path.as_ref())
+            .map(PathBuf::from)
+            .expect("continued PPTX path");
+        assert!(
+            pptx.is_file(),
+            "continued PPTX must exist: {}",
+            pptx.display()
+        );
     }
 }

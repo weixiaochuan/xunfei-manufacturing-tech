@@ -17,6 +17,7 @@ import {
   Space,
   Spin,
   Steps,
+  Switch,
   Tag,
   Tabs,
   Typography,
@@ -511,6 +512,12 @@ export default function PptGenerationPage() {
   const initializeSelectedModel = usePptGenerationDraftStore((state) => state.initializeSelectedModel);
   const generationMode = usePptGenerationDraftStore((state) => state.generationMode);
   const setGenerationMode = usePptGenerationDraftStore((state) => state.setGenerationMode);
+  const blockOnQualityFailure = usePptGenerationDraftStore(
+    (state) => state.blockOnQualityFailure,
+  );
+  const setBlockOnQualityFailure = usePptGenerationDraftStore(
+    (state) => state.setBlockOnQualityFailure,
+  );
   const outputDir = usePptGenerationDraftStore((state) => state.outputDir);
   const setOutputDir = usePptGenerationDraftStore((state) => state.setOutputDir);
   const initializeOutputDir = usePptGenerationDraftStore((state) => state.initializeOutputDir);
@@ -1437,6 +1444,7 @@ export default function PptGenerationPage() {
       suggestedPageStructure: draft.suggestedPageStructure,
       narrativeMainline: draft.narrativeMainline,
       visualExpressionAdvice: draft.visualExpressionAdvice,
+      visualSuggestions: draft.visualExpressionAdvice,
       openQuestions: draft.openQuestions,
       rawMaterial: sourceMaterial,
       materialSources:
@@ -1453,6 +1461,8 @@ export default function PptGenerationPage() {
       audience: finalSmartValues.audience,
       slideCount: getCurrentSlideCount(smartValues),
       style: finalSmartValues.style,
+      customStyle:
+        smartValues.style === "自定义" ? smartValues.customStyle?.trim() || null : null,
       generationEngine,
       mode: stylePreset?.mode,
       visualStyle: stylePreset?.visualStyle,
@@ -1460,6 +1470,8 @@ export default function PptGenerationPage() {
       chartBias: stylePreset?.chartBias,
       outputDir: outputDir.trim() || null,
       generationMode,
+      blockOnQualityFailure:
+        generationMode === "agent" ? blockOnQualityFailure : undefined,
     };
     console.info("[PPT Understanding Confirmed]", {
       summaryLength: draft.understandingSummary.length,
@@ -1478,6 +1490,7 @@ export default function PptGenerationPage() {
       console.info("[PPT UI] before generateFromPrompt invoke", {
         generationEngine,
         generationMode,
+        blockOnQualityFailure: payload.blockOnQualityFailure,
         slideCount: payload.slideCount,
         style: payload.style,
         hasOutputDir: Boolean(payload.outputDir),
@@ -2078,6 +2091,23 @@ export default function PptGenerationPage() {
                 </Radio>
               </Space>
             </Radio.Group>
+            {generationMode === "agent" && (
+              <div className="mt-4 border-t border-slate-200 pt-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-medium">严格质量检查</div>
+                    <Text type="secondary">
+                      开启：页面达到修复次数后仍不合格，则停止生成。关闭：页面仍不合格也继续生成，并尝试导出 PPTX。
+                    </Text>
+                  </div>
+                  <Switch
+                    checked={blockOnQualityFailure}
+                    onChange={setBlockOnQualityFailure}
+                    aria-label="严格质量检查"
+                  />
+                </div>
+              </div>
+            )}
           </Card>
 
           <Space wrap>
