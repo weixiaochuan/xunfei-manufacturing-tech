@@ -1,0 +1,24 @@
+{
+  "id": "code-assistant",
+  "name": "AI 编程助手",
+  "version": "1.0.0",
+  "description": "基于应用 AI 模型的代码解释、审查、重构和测试生成插件",
+  "author": "Intelligent-NoteBook",
+  "main": "main.js",
+  "styles": "styles.css",
+  "minAppVersion": "1.0.0",
+  "permissions": [
+    "ai:chat",
+    "ai:models",
+    "editor:read",
+    "editor:write"
+  ],
+  "contributes": {
+    "commands": [
+      { "id": "ai.explain-code", "title": "AI: 解释代码" },
+      { "id": "ai.review-code", "title": "AI: 审查代码" },
+      { "id": "ai.refactor-code", "title": "AI: 重构代码" },
+      { "id": "ai.gen-test", "title": "AI: 生成测试" }
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+; win7_winrt_shim/exports.def
+; Export definitions for api-ms-win-core-winrt-l1-1-0.dll shim
+
+EXPORTS
+  ; HSTRING functions
+  WindowsCreateString
+  WindowsCreateStringReference
+  WindowsDeleteString
+  WindowsDuplicateString
+  WindowsGetStringLen
+  WindowsGetStringRawBuffer
+  WindowsIsStringEmpty
+  WindowsStringHasEmbeddedNull
+  WindowsCompareStringOrdinal
+  WindowsConcatString
+  WindowsSubstring
+  WindowsSubstringWithSpecifiedLength
+  WindowsReplaceString
+  WindowsTrimStringStart
+  WindowsTrimStringEnd
+  WindowsPreallocateStringBuffer
+  WindowsPromoteStringBuffer
+  WindowsDeleteStringBuffer
+
+  ; WinRT initialization
+  RoInitialize
+  RoUninitialize
+  RoGetActivationFactory
+  RoActivateInstance
+  RoGetApartmentIdentifier
+  RoGetErrorReportingFlags
+  RoSetErrorReportingFlags
+  RoResolveRestrictedErrorInfoReference
