@@ -1,0 +1,102 @@
+{
+  "authorId": "firstwork-official",
+  "configurationSchema": {
+    "credentialId": {
+      "provider": "xingchen",
+      "required": true,
+      "type": "credential-reference"
+    },
+    "endpoint": {
+      "default": "https://xingchen-api.xf-yun.com/workflow/v1/chat/completions",
+      "readOnly": true,
+      "type": "string"
+    },
+    "externalUrl": {
+      "default": "https://xingchen.xfyun.cn/",
+      "type": "string"
+    },
+    "fields": [
+      {
+        "key": "credentialId",
+        "label": "讯飞 Workflow 凭据",
+        "provider": "xingchen",
+        "type": "credential"
+      },
+      {
+        "key": "flowId",
+        "label": "Flow ID",
+        "required": true,
+        "type": "text"
+      }
+    ],
+    "flowId": {
+      "required": true,
+      "secret": false,
+      "type": "string"
+    },
+    "flowIdProvidedByUser": true,
+    "inputParameter": {
+      "default": "AGENT_USER_INPUT",
+      "type": "string"
+    },
+    "mockAction": "xingchen-agent-test",
+    "responseTextField": {
+      "default": "answer",
+      "type": "string"
+    }
+  },
+  "contributes": {
+    "aiProviders": [
+      {
+        "id": "mock-xingchen",
+        "label": "Mock Xingchen Provider",
+        "providerType": "xingchen"
+      }
+    ],
+    "views": [
+      {
+        "id": "xingchen-demo-config",
+        "title": "星辰学习助手配置"
+      }
+    ]
+  },
+  "credentialRequirements": [
+    {
+      "fields": [
+        "appId",
+        "apiKey",
+        "apiSecret",
+        "token"
+      ],
+      "id": "xingchen-byok",
+      "label": "讯飞星辰 BYOK 凭据",
+      "provider": "xingchen",
+      "required": true
+    }
+  ],
+  "deliveryMode": "byok",
+  "description": "BYOK 模式的讯飞星辰智能体连接器示例，当前只返回 Mock 结果。",
+  "icon": "Bot",
+  "id": "official-xingchen-learning-demo",
+  "integrity": {
+    "sha256": null
+  },
+  "minAppVersion": "1.8.0",
+  "name": "星辰学习助手连接器（演示）",
+  "permissions": [
+    "credentials.use",
+    "agents.invoke",
+    "network.xingchen",
+    "ai.invoke"
+  ],
+  "productType": "xingchen-agent",
+  "protocol": "xingchen-workflow-v1",
+  "runtimeKind": "xingchen-agent",
+  "schemaVersion": 2,
+  "signature": {
+    "signer": null,
+    "status": "unsigned"
+  },
+  "source": "marketplace",
+  "version": "1.0.0"
+}

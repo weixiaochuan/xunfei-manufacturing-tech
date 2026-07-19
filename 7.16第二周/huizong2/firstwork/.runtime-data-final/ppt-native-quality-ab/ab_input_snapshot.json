@@ -1,0 +1,10 @@
+{
+  "audience": "机械制造课程学习者",
+  "engine": "legacy_fallback",
+  "estimatedAiRequests": "2-4",
+  "generationMode": "template",
+  "materialChars": 856,
+  "materialHash": "563dd9c6bde350d8e96f4a799724708f4ff0ecf391f4dfb50781715fc1d384b8",
+  "slideCount": 5,
+  "style": "科技蓝"
+}

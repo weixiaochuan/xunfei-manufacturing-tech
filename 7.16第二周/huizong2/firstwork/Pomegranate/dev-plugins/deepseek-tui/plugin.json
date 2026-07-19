@@ -1,0 +1,17 @@
+{
+  "id": "deepseek-tui",
+  "name": "Deepseek TUI",
+  "version": "1.0.0",
+  "description": "Deepseek 终端风格 AI 对话面板，复用现有 AI 模型配置",
+  "author": "Intelligent-NoteBook",
+  "main": "main.js",
+  "styles": "styles.css",
+  "minAppVersion": "1.0.0",
+  "permissions": ["settings:read"],
+  "contributes": {
+    "commands": [
+      { "id": "deepseek.open", "title": "打开 Deepseek 终端" },
+      { "id": "deepseek.new-session", "title": "新建 Deepseek 会话" }
+    ]
+  }
+}

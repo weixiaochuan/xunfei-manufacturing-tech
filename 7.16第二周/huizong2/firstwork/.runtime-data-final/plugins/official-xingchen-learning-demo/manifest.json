@@ -1,0 +1,77 @@
+{
+  "authorId": "firstwork-official",
+  "configurationSchema": {
+    "fields": [
+      {
+        "key": "credentialId",
+        "label": "凭据ID",
+        "provider": "xingchen",
+        "type": "credential"
+      },
+      {
+        "key": "endpoint",
+        "label": "智能体 Endpoint",
+        "placeholder": "由用户按星辰发布文档填写",
+        "type": "text"
+      },
+      {
+        "key": "agentId",
+        "label": "Agent ID",
+        "type": "text"
+      }
+    ],
+    "mockAction": "xingchen-agent-test"
+  },
+  "contributes": {
+    "aiProviders": [
+      {
+        "id": "mock-xingchen",
+        "label": "Mock Xingchen Provider",
+        "providerType": "xingchen"
+      }
+    ],
+    "views": [
+      {
+        "id": "xingchen-demo-config",
+        "title": "星辰学习助手配置"
+      }
+    ]
+  },
+  "credentialRequirements": [
+    {
+      "fields": [
+        "appId",
+        "apiKey",
+        "apiSecret",
+        "token"
+      ],
+      "id": "xingchen-byok",
+      "label": "讯飞星辰 BYOK 凭据",
+      "provider": "xingchen",
+      "required": true
+    }
+  ],
+  "description": "BYOK 模式的讯飞星辰智能体连接器示例，当前只返回 Mock 结果。",
+  "icon": "Bot",
+  "id": "official-xingchen-learning-demo",
+  "integrity": {
+    "sha256": null
+  },
+  "minAppVersion": "1.8.0",
+  "name": "星辰学习助手连接器（演示）",
+  "permissions": [
+    "credentials.use",
+    "agents.invoke",
+    "network.xingchen",
+    "ai.invoke"
+  ],
+  "productType": "xingchen-agent",
+  "runtimeKind": "xingchen-agent",
+  "schemaVersion": 2,
+  "signature": {
+    "signer": null,
+    "status": "unsigned"
+  },
+  "source": "marketplace",
+  "version": "1.0.0"
+}

@@ -1,0 +1,1407 @@
+{
+  "domain": "manufacturing",
+  "entities": {
+    "Person": [
+      {
+        "name": "Sarah Chen",
+        "email": "sarah.chen@corp.net",
+        "role": "Senior Analyst",
+        "description": "Sarah Chen, senior analyst specializing in manufacturing."
+      },
+      {
+        "name": "James Morrison",
+        "email": "james.morrison@acme.co",
+        "role": "Project Manager",
+        "description": "Project Manager James Morrison \u2014 active in the manufacturing sector with relevant domain expertise."
+      },
+      {
+        "name": "Maria Rodriguez",
+        "email": "maria.rodriguez@example.com",
+        "role": "Technical Lead",
+        "description": "Maria Rodriguez serves as technical lead, contributing to manufacturing initiatives and operations."
+      },
+      {
+        "name": "David Park",
+        "email": "david.park@example.com",
+        "role": "Research Director",
+        "description": "David Park, research director specializing in manufacturing."
+      },
+      {
+        "name": "Elena Volkov",
+        "email": "elena.volkov@example.com",
+        "role": "Operations Manager",
+        "description": "Operations Manager Elena Volkov \u2014 active in the manufacturing sector with relevant domain expertise."
+      }
+    ],
+    "Organization": [
+      {
+        "name": "Meridian Consulting Group",
+        "description": "Meridian Consulting Group is a industrial manufacturing organization operating in the manufacturing space.",
+        "industry": "Industrial Manufacturing"
+      },
+      {
+        "name": "Pacific Northwest Industries",
+        "description": "Automotive entity Pacific Northwest Industries, providing services and resources for manufacturing operations.",
+        "industry": "Automotive"
+      },
+      {
+        "name": "Apex Financial Partners",
+        "description": "Apex Financial Partners \u2014 a aerospace institution active in manufacturing.",
+        "industry": "Aerospace"
+      },
+      {
+        "name": "Greenleaf Technologies",
+        "description": "Greenleaf Technologies is a process engineering organization operating in the manufacturing space.",
+        "industry": "Process Engineering"
+      },
+      {
+        "name": "Summit Healthcare Systems",
+        "description": "Supply Chain entity Summit Healthcare Systems, providing services and resources for manufacturing operations.",
+        "industry": "Supply Chain"
+      }
+    ],
+    "Location": [
+      {
+        "name": "Downtown Medical Center",
+        "address": "987 Elm Court, Miami, FL 33101",
+        "latitude": 43.93,
+        "longitude": -92.14
+      },
+      {
+        "name": "Westside Corporate Campus",
+        "address": "789 Pine Boulevard, Chicago, IL 60601",
+        "latitude": 25.55,
+        "longitude": -97.58
+      },
+      {
+        "name": "Harbor View Complex",
+        "address": "258 Willow Way, San Francisco, CA 94105",
+        "latitude": 36.26,
+        "longitude": -99.0
+      },
+      {
+        "name": "Mountain Ridge Facility",
+        "address": "789 Pine Boulevard, Chicago, IL 60601",
+        "latitude": 42.6,
+        "longitude": -114.97
+      },
+      {
+        "name": "Riverside Research Park",
+        "address": "789 Pine Boulevard, Austin, TX 78701",
+        "latitude": 47.94,
+        "longitude": -100.18
+      }
+    ],
+    "Event": [
+      {
+        "name": "Q4 Strategy Review",
+        "date": "2024-02-26T10:00:00",
+        "description": "Q4 Strategy Review, a event event recorded in the manufacturing timeline."
+      },
+      {
+        "name": "Annual Compliance Audit",
+        "date": "2026-07-14T14:45:00",
+        "description": "Event Annual Compliance Audit \u2014 occurred as part of manufacturing activities."
+      },
+      {
+        "name": "Emergency Response Drill",
+        "date": "2026-05-03T08:15:00",
+        "description": "Recorded event: Emergency Response Drill, relevant to manufacturing workflows."
+      },
+      {
+        "name": "Product Launch Summit",
+        "date": "2026-06-21T14:30:00",
+        "description": "Product Launch Summit, a event event recorded in the manufacturing timeline."
+      },
+      {
+        "name": "Board of Directors Meeting",
+        "date": "2026-09-30T17:15:00",
+        "description": "Event Board of Directors Meeting \u2014 occurred as part of manufacturing activities."
+      }
+    ],
+    "Object": [
+      {
+        "name": "Primary Analysis Report",
+        "description": "Primary Analysis Report, a object used in manufacturing workflows."
+      },
+      {
+        "name": "Standard Operating Procedure",
+        "description": "Object Standard Operating Procedure \u2014 cataloged for manufacturing operations."
+      },
+      {
+        "name": "Quarterly Assessment Document",
+        "description": "Quarterly Assessment Document is a object supporting manufacturing processes."
+      },
+      {
+        "name": "Technical Specification",
+        "description": "Technical Specification, a object used in manufacturing workflows."
+      },
+      {
+        "name": "Compliance Certificate",
+        "description": "Object Compliance Certificate \u2014 cataloged for manufacturing operations."
+      }
+    ],
+    "Machine": [
+      {
+        "name": "CNC Mill Station A3",
+        "machine_id": "MCH-2025-0000",
+        "machine_type": "cnc",
+        "manufacturer": "Meridian Consulting Group",
+        "install_date": "2026-04-25",
+        "status": "operational",
+        "operating_hours": 57
+      },
+      {
+        "name": "Hydraulic Press HP-200",
+        "machine_id": "MCH-2024-0001",
+        "machine_type": "press",
+        "manufacturer": "Pacific Northwest Industries",
+        "install_date": "2024-07-13",
+        "status": "maintenance",
+        "operating_hours": 80
+      },
+      {
+        "name": "Laser Cutter LC-5000",
+        "machine_id": "MCH-2025-0002",
+        "machine_type": "lathe",
+        "manufacturer": "Apex Financial Partners",
+        "install_date": "2025-06-19",
+        "status": "offline",
+        "operating_hours": 90
+      },
+      {
+        "name": "Assembly Robot AR-12",
+        "machine_id": "MCH-2024-0003",
+        "machine_type": "welder",
+        "manufacturer": "Greenleaf Technologies",
+        "install_date": "2024-03-04",
+        "status": "decommissioned",
+        "operating_hours": 64
+      },
+      {
+        "name": "Injection Molder IM-800",
+        "machine_id": "MCH-2026-0004",
+        "machine_type": "assembler",
+        "manufacturer": "Summit Healthcare Systems",
+        "install_date": "2024-11-21",
+        "status": "operational",
+        "operating_hours": 9
+      }
+    ],
+    "Part": [
+      {
+        "name": "Titanium Gear Assembly TGA-401",
+        "part_number": "PRT-2024-0000",
+        "category": "raw_material",
+        "unit_cost": 22509.96,
+        "stock_quantity": 26,
+        "minimum_stock": 8921,
+        "specification": "Titanium Gear Assembly TGA-401 - Specification"
+      },
+      {
+        "name": "Steel Bearing Housing SBH-220",
+        "part_number": "PRT-2024-0001",
+        "category": "component",
+        "unit_cost": 186302.22,
+        "stock_quantity": 79,
+        "minimum_stock": 6634,
+        "specification": "Steel Bearing Housing SBH-220 - Specification"
+      },
+      {
+        "name": "Aluminum Heat Sink AHS-150",
+        "part_number": "PRT-2026-0002",
+        "category": "subassembly",
+        "unit_cost": 319832.49,
+        "stock_quantity": 86,
+        "minimum_stock": 696,
+        "specification": "Aluminum Heat Sink AHS-150 - Specification"
+      },
+      {
+        "name": "Carbon Fiber Panel CFP-88",
+        "part_number": "PRT-2024-0003",
+        "category": "finished_good",
+        "unit_cost": 335631.84,
+        "stock_quantity": 24,
+        "minimum_stock": 268,
+        "specification": "Carbon Fiber Panel CFP-88 - Specification"
+      },
+      {
+        "name": "Precision Valve PV-610",
+        "part_number": "PRT-2024-0004",
+        "category": "raw_material",
+        "unit_cost": 201138.43,
+        "stock_quantity": 8,
+        "minimum_stock": 891,
+        "specification": "Precision Valve PV-610 - Specification"
+      }
+    ],
+    "WorkOrder": [
+      {
+        "name": "WO-2025-0412 Batch Production",
+        "work_order_id": "WO-2024-0000",
+        "description": "WO-2025-0412 Batch Production, a workorder relevant to manufacturing operations.",
+        "priority": "low",
+        "status": "planned",
+        "start_date": "2026-03-08T12:30:00",
+        "due_date": "2024-05-28T11:30:00",
+        "quantity": 21
+      },
+      {
+        "name": "WO-2025-0587 Custom Fabrication",
+        "work_order_id": "WO-2025-0001",
+        "description": "WorkOrder WO-2025-0587 Custom Fabrication \u2014 part of the manufacturing knowledge graph.",
+        "priority": "medium",
+        "status": "in_progress",
+        "start_date": "2026-04-06T09:15:00",
+        "due_date": "2024-02-25T08:15:00",
+        "quantity": 68
+      },
+      {
+        "name": "WO-2025-0721 Maintenance Overhaul",
+        "work_order_id": "WO-2024-0002",
+        "description": "WO-2025-0721 Maintenance Overhaul is a workorder tracked within the manufacturing domain.",
+        "priority": "high",
+        "status": "completed",
+        "start_date": "2026-09-18T15:15:00",
+        "due_date": "2026-03-15T14:15:00",
+        "quantity": 4
+      },
+      {
+        "name": "WO-2025-0893 Quality Rework",
+        "work_order_id": "WO-2025-0003",
+        "description": "WO-2025-0893 Quality Rework, a workorder relevant to manufacturing operations.",
+        "priority": "critical",
+        "status": "on_hold",
+        "start_date": "2026-10-19T08:45:00",
+        "due_date": "2026-07-29T15:00:00",
+        "quantity": 65
+      },
+      {
+        "name": "WO-2025-1045 Prototype Build",
+        "work_order_id": "WO-2026-0004",
+        "description": "WorkOrder WO-2025-1045 Prototype Build \u2014 part of the manufacturing knowledge graph.",
+        "priority": "low",
+        "status": "cancelled",
+        "start_date": "2024-10-23T16:30:00",
+        "due_date": "2026-09-13T08:15:00",
+        "quantity": 47
+      }
+    ],
+    "Supplier": [
+      {
+        "name": "Pacific Steel Corp",
+        "supplier_id": "SUP-2026-0000",
+        "country": "United States",
+        "lead_time_days": 3666,
+        "quality_rating": 0.79,
+        "status": "approved"
+      },
+      {
+        "name": "Rhine Valley Components",
+        "supplier_id": "SUP-2024-0001",
+        "country": "United Kingdom",
+        "lead_time_days": 3852,
+        "quality_rating": 0.67,
+        "status": "probationary"
+      },
+      {
+        "name": "Shanghai Precision Parts",
+        "supplier_id": "SUP-2025-0002",
+        "country": "Canada",
+        "lead_time_days": 8791,
+        "quality_rating": 0.6,
+        "status": "suspended"
+      },
+      {
+        "name": "Great Lakes Polymers",
+        "supplier_id": "SUP-2024-0003",
+        "country": "Germany",
+        "lead_time_days": 4941,
+        "quality_rating": 0.82,
+        "status": "blacklisted"
+      },
+      {
+        "name": "Nordic Metals AB",
+        "supplier_id": "SUP-2025-0004",
+        "country": "France",
+        "lead_time_days": 7623,
+        "quality_rating": 0.95,
+        "status": "approved"
+      }
+    ],
+    "QualityReport": [
+      {
+        "name": "QR-2025-041 Dimensional Check",
+        "report_id": "QUA-2025-0000",
+        "inspection_date": "2025-01-21T14:30:00",
+        "inspector": "QR-2025-041 Dimensional Check - Inspector",
+        "result": "pass",
+        "defect_count": 51,
+        "defect_type": "QR-2025-041 Dimensional Check - Defect Type",
+        "notes": "QR-2025-041 Dimensional Check, a qualityreport relevant to manufacturing operations."
+      },
+      {
+        "name": "QR-2025-078 Material Test",
+        "report_id": "QUA-2025-0001",
+        "inspection_date": "2025-12-06T15:45:00",
+        "inspector": "QR-2025-078 Material Test - Inspector",
+        "result": "fail",
+        "defect_count": 83,
+        "defect_type": "QR-2025-078 Material Test - Defect Type",
+        "notes": "QualityReport QR-2025-078 Material Test \u2014 part of the manufacturing knowledge graph."
+      },
+      {
+        "name": "QR-2025-112 Surface Finish Audit",
+        "report_id": "QUA-2026-0002",
+        "inspection_date": "2024-08-13T12:00:00",
+        "inspector": "QR-2025-112 Surface Finish Audit - Inspector",
+        "result": "conditional_pass",
+        "defect_count": 82,
+        "defect_type": "QR-2025-112 Surface Finish Audit - Defect Type",
+        "notes": "QR-2025-112 Surface Finish Audit is a qualityreport tracked within the manufacturing domain."
+      },
+      {
+        "name": "QR-2025-156 Stress Analysis",
+        "report_id": "QUA-2026-0003",
+        "inspection_date": "2025-12-11T14:15:00",
+        "inspector": "QR-2025-156 Stress Analysis - Inspector",
+        "result": "pass",
+        "defect_count": 49,
+        "defect_type": "QR-2025-156 Stress Analysis - Defect Type",
+        "notes": "QR-2025-156 Stress Analysis, a qualityreport relevant to manufacturing operations."
+      },
+      {
+        "name": "QR-2025-041 Dimensional Check 1",
+        "report_id": "QUA-2025-0004",
+        "inspection_date": "2024-05-02T08:45:00",
+        "inspector": "QR-2025-041 Dimensional Check 1 - Inspector",
+        "result": "fail",
+        "defect_count": 37,
+        "defect_type": "QR-2025-041 Dimensional Check 1 - Defect Type",
+        "notes": "QualityReport QR-2025-041 Dimensional Check 1 \u2014 part of the manufacturing knowledge graph."
+      }
+    ],
+    "ProductionLine": [
+      {
+        "name": "Line A - High Volume",
+        "line_id": "PRO-2025-0000",
+        "capacity_per_hour": 1521,
+        "efficiency_rating": 0.86,
+        "status": "active",
+        "shift_pattern": "single"
+      },
+      {
+        "name": "Line B - Custom Orders",
+        "line_id": "PRO-2024-0001",
+        "capacity_per_hour": 329,
+        "efficiency_rating": 0.69,
+        "status": "idle",
+        "shift_pattern": "double"
+      },
+      {
+        "name": "Line C - Precision Parts",
+        "line_id": "PRO-2025-0002",
+        "capacity_per_hour": 8292,
+        "efficiency_rating": 0.54,
+        "status": "maintenance",
+        "shift_pattern": "triple"
+      },
+      {
+        "name": "Line D - Assembly",
+        "line_id": "PRO-2025-0003",
+        "capacity_per_hour": 9060,
+        "efficiency_rating": 0.99,
+        "status": "retooling",
+        "shift_pattern": "continuous"
+      },
+      {
+        "name": "Line A - High Volume 1",
+        "line_id": "PRO-2025-0004",
+        "capacity_per_hour": 2191,
+        "efficiency_rating": 0.65,
+        "status": "active",
+        "shift_pattern": "single"
+      }
+    ]
+  },
+  "relationships": [
+    {
+      "type": "WORKS_FOR",
+      "source_label": "Person",
+      "source_name": "Sarah Chen",
+      "target_label": "Organization",
+      "target_name": "Greenleaf Technologies"
+    },
+    {
+      "type": "WORKS_FOR",
+      "source_label": "Person",
+      "source_name": "Sarah Chen",
+      "target_label": "Organization",
+      "target_name": "Pacific Northwest Industries"
+    },
+    {
+      "type": "WORKS_FOR",
+      "source_label": "Person",
+      "source_name": "James Morrison",
+      "target_label": "Organization",
+      "target_name": "Summit Healthcare Systems"
+    },
+    {
+      "type": "WORKS_FOR",
+      "source_label": "Person",
+      "source_name": "Maria Rodriguez",
+      "target_label": "Organization",
+      "target_name": "Greenleaf Technologies"
+    },
+    {
+      "type": "WORKS_FOR",
+      "source_label": "Person",
+      "source_name": "Maria Rodriguez",
+      "target_label": "Organization",
+      "target_name": "Summit Healthcare Systems"
+    },
+    {
+      "type": "WORKS_FOR",
+      "source_label": "Person",
+      "source_name": "David Park",
+      "target_label": "Organization",
+      "target_name": "Greenleaf Technologies"
+    },
+    {
+      "type": "WORKS_FOR",
+      "source_label": "Person",
+      "source_name": "Elena Volkov",
+      "target_label": "Organization",
+      "target_name": "Summit Healthcare Systems"
+    },
+    {
+      "type": "LOCATED_AT",
+      "source_label": "Organization",
+      "source_name": "Meridian Consulting Group",
+      "target_label": "Location",
+      "target_name": "Harbor View Complex"
+    },
+    {
+      "type": "LOCATED_AT",
+      "source_label": "Organization",
+      "source_name": "Meridian Consulting Group",
+      "target_label": "Location",
+      "target_name": "Westside Corporate Campus"
+    },
+    {
+      "type": "LOCATED_AT",
+      "source_label": "Organization",
+      "source_name": "Pacific Northwest Industries",
+      "target_label": "Location",
+      "target_name": "Mountain Ridge Facility"
+    },
+    {
+      "type": "LOCATED_AT",
+      "source_label": "Organization",
+      "source_name": "Apex Financial Partners",
+      "target_label": "Location",
+      "target_name": "Mountain Ridge Facility"
+    },
+    {
+      "type": "LOCATED_AT",
+      "source_label": "Organization",
+      "source_name": "Greenleaf Technologies",
+      "target_label": "Location",
+      "target_name": "Mountain Ridge Facility"
+    },
+    {
+      "type": "LOCATED_AT",
+      "source_label": "Organization",
+      "source_name": "Summit Healthcare Systems",
+      "target_label": "Location",
+      "target_name": "Harbor View Complex"
+    },
+    {
+      "type": "LOCATED_AT",
+      "source_label": "Organization",
+      "source_name": "Summit Healthcare Systems",
+      "target_label": "Location",
+      "target_name": "Riverside Research Park"
+    },
+    {
+      "type": "PARTICIPATED_IN",
+      "source_label": "Person",
+      "source_name": "Sarah Chen",
+      "target_label": "Event",
+      "target_name": "Emergency Response Drill"
+    },
+    {
+      "type": "PARTICIPATED_IN",
+      "source_label": "Person",
+      "source_name": "James Morrison",
+      "target_label": "Event",
+      "target_name": "Product Launch Summit"
+    },
+    {
+      "type": "PARTICIPATED_IN",
+      "source_label": "Person",
+      "source_name": "James Morrison",
+      "target_label": "Event",
+      "target_name": "Emergency Response Drill"
+    },
+    {
+      "type": "PARTICIPATED_IN",
+      "source_label": "Person",
+      "source_name": "Maria Rodriguez",
+      "target_label": "Event",
+      "target_name": "Q4 Strategy Review"
+    },
+    {
+      "type": "PARTICIPATED_IN",
+      "source_label": "Person",
+      "source_name": "David Park",
+      "target_label": "Event",
+      "target_name": "Product Launch Summit"
+    },
+    {
+      "type": "PARTICIPATED_IN",
+      "source_label": "Person",
+      "source_name": "Elena Volkov",
+      "target_label": "Event",
+      "target_name": "Emergency Response Drill"
+    },
+    {
+      "type": "PARTICIPATED_IN",
+      "source_label": "Person",
+      "source_name": "Elena Volkov",
+      "target_label": "Event",
+      "target_name": "Product Launch Summit"
+    },
+    {
+      "type": "ASSEMBLED_FROM",
+      "source_label": "Part",
+      "source_name": "Steel Bearing Housing SBH-220",
+      "target_label": "Part",
+      "target_name": "Carbon Fiber Panel CFP-88"
+    },
+    {
+      "type": "ASSEMBLED_FROM",
+      "source_label": "Part",
+      "source_name": "Steel Bearing Housing SBH-220",
+      "target_label": "Part",
+      "target_name": "Aluminum Heat Sink AHS-150"
+    },
+    {
+      "type": "ASSEMBLED_FROM",
+      "source_label": "Part",
+      "source_name": "Aluminum Heat Sink AHS-150",
+      "target_label": "Part",
+      "target_name": "Precision Valve PV-610"
+    },
+    {
+      "type": "ASSEMBLED_FROM",
+      "source_label": "Part",
+      "source_name": "Aluminum Heat Sink AHS-150",
+      "target_label": "Part",
+      "target_name": "Carbon Fiber Panel CFP-88"
+    },
+    {
+      "type": "ASSEMBLED_FROM",
+      "source_label": "Part",
+      "source_name": "Carbon Fiber Panel CFP-88",
+      "target_label": "Part",
+      "target_name": "Precision Valve PV-610"
+    },
+    {
+      "type": "ASSEMBLED_FROM",
+      "source_label": "Part",
+      "source_name": "Precision Valve PV-610",
+      "target_label": "Part",
+      "target_name": "Titanium Gear Assembly TGA-401"
+    },
+    {
+      "type": "SUPPLIED_BY",
+      "source_label": "Part",
+      "source_name": "Titanium Gear Assembly TGA-401",
+      "target_label": "Supplier",
+      "target_name": "Pacific Steel Corp"
+    },
+    {
+      "type": "SUPPLIED_BY",
+      "source_label": "Part",
+      "source_name": "Titanium Gear Assembly TGA-401",
+      "target_label": "Supplier",
+      "target_name": "Shanghai Precision Parts"
+    },
+    {
+      "type": "SUPPLIED_BY",
+      "source_label": "Part",
+      "source_name": "Steel Bearing Housing SBH-220",
+      "target_label": "Supplier",
+      "target_name": "Shanghai Precision Parts"
+    },
+    {
+      "type": "SUPPLIED_BY",
+      "source_label": "Part",
+      "source_name": "Aluminum Heat Sink AHS-150",
+      "target_label": "Supplier",
+      "target_name": "Great Lakes Polymers"
+    },
+    {
+      "type": "SUPPLIED_BY",
+      "source_label": "Part",
+      "source_name": "Aluminum Heat Sink AHS-150",
+      "target_label": "Supplier",
+      "target_name": "Nordic Metals AB"
+    },
+    {
+      "type": "SUPPLIED_BY",
+      "source_label": "Part",
+      "source_name": "Carbon Fiber Panel CFP-88",
+      "target_label": "Supplier",
+      "target_name": "Rhine Valley Components"
+    },
+    {
+      "type": "SUPPLIED_BY",
+      "source_label": "Part",
+      "source_name": "Precision Valve PV-610",
+      "target_label": "Supplier",
+      "target_name": "Rhine Valley Components"
+    },
+    {
+      "type": "SUPPLIED_BY",
+      "source_label": "Part",
+      "source_name": "Precision Valve PV-610",
+      "target_label": "Supplier",
+      "target_name": "Shanghai Precision Parts"
+    },
+    {
+      "type": "INSPECTED",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-041 Dimensional Check",
+      "target_label": "Part",
+      "target_name": "Steel Bearing Housing SBH-220"
+    },
+    {
+      "type": "INSPECTED",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-041 Dimensional Check",
+      "target_label": "Part",
+      "target_name": "Carbon Fiber Panel CFP-88"
+    },
+    {
+      "type": "INSPECTED",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-078 Material Test",
+      "target_label": "Part",
+      "target_name": "Aluminum Heat Sink AHS-150"
+    },
+    {
+      "type": "INSPECTED",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-112 Surface Finish Audit",
+      "target_label": "Part",
+      "target_name": "Titanium Gear Assembly TGA-401"
+    },
+    {
+      "type": "INSPECTED",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-112 Surface Finish Audit",
+      "target_label": "Part",
+      "target_name": "Carbon Fiber Panel CFP-88"
+    },
+    {
+      "type": "INSPECTED",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-156 Stress Analysis",
+      "target_label": "Part",
+      "target_name": "Carbon Fiber Panel CFP-88"
+    },
+    {
+      "type": "INSPECTED",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-041 Dimensional Check 1",
+      "target_label": "Part",
+      "target_name": "Carbon Fiber Panel CFP-88"
+    },
+    {
+      "type": "INSPECTED",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-041 Dimensional Check 1",
+      "target_label": "Part",
+      "target_name": "Aluminum Heat Sink AHS-150"
+    },
+    {
+      "type": "PRODUCED_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0412 Batch Production",
+      "target_label": "ProductionLine",
+      "target_name": "Line A - High Volume 1"
+    },
+    {
+      "type": "PRODUCED_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0412 Batch Production",
+      "target_label": "ProductionLine",
+      "target_name": "Line C - Precision Parts"
+    },
+    {
+      "type": "PRODUCED_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0587 Custom Fabrication",
+      "target_label": "ProductionLine",
+      "target_name": "Line C - Precision Parts"
+    },
+    {
+      "type": "PRODUCED_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0587 Custom Fabrication",
+      "target_label": "ProductionLine",
+      "target_name": "Line D - Assembly"
+    },
+    {
+      "type": "PRODUCED_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0721 Maintenance Overhaul",
+      "target_label": "ProductionLine",
+      "target_name": "Line D - Assembly"
+    },
+    {
+      "type": "PRODUCED_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0721 Maintenance Overhaul",
+      "target_label": "ProductionLine",
+      "target_name": "Line A - High Volume"
+    },
+    {
+      "type": "PRODUCED_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0893 Quality Rework",
+      "target_label": "ProductionLine",
+      "target_name": "Line C - Precision Parts"
+    },
+    {
+      "type": "PRODUCED_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-1045 Prototype Build",
+      "target_label": "ProductionLine",
+      "target_name": "Line D - Assembly"
+    },
+    {
+      "type": "PRODUCED_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-1045 Prototype Build",
+      "target_label": "ProductionLine",
+      "target_name": "Line A - High Volume 1"
+    },
+    {
+      "type": "DEPENDS_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0412 Batch Production",
+      "target_label": "Part",
+      "target_name": "Titanium Gear Assembly TGA-401"
+    },
+    {
+      "type": "DEPENDS_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0587 Custom Fabrication",
+      "target_label": "Part",
+      "target_name": "Aluminum Heat Sink AHS-150"
+    },
+    {
+      "type": "DEPENDS_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0587 Custom Fabrication",
+      "target_label": "Part",
+      "target_name": "Precision Valve PV-610"
+    },
+    {
+      "type": "DEPENDS_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0721 Maintenance Overhaul",
+      "target_label": "Part",
+      "target_name": "Carbon Fiber Panel CFP-88"
+    },
+    {
+      "type": "DEPENDS_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0893 Quality Rework",
+      "target_label": "Part",
+      "target_name": "Carbon Fiber Panel CFP-88"
+    },
+    {
+      "type": "DEPENDS_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0893 Quality Rework",
+      "target_label": "Part",
+      "target_name": "Precision Valve PV-610"
+    },
+    {
+      "type": "DEPENDS_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-1045 Prototype Build",
+      "target_label": "Part",
+      "target_name": "Precision Valve PV-610"
+    },
+    {
+      "type": "DEPENDS_ON",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-1045 Prototype Build",
+      "target_label": "Part",
+      "target_name": "Carbon Fiber Panel CFP-88"
+    },
+    {
+      "type": "OPERATED_BY",
+      "source_label": "Machine",
+      "source_name": "CNC Mill Station A3",
+      "target_label": "ProductionLine",
+      "target_name": "Line C - Precision Parts"
+    },
+    {
+      "type": "OPERATED_BY",
+      "source_label": "Machine",
+      "source_name": "CNC Mill Station A3",
+      "target_label": "ProductionLine",
+      "target_name": "Line A - High Volume"
+    },
+    {
+      "type": "OPERATED_BY",
+      "source_label": "Machine",
+      "source_name": "Hydraulic Press HP-200",
+      "target_label": "ProductionLine",
+      "target_name": "Line A - High Volume"
+    },
+    {
+      "type": "OPERATED_BY",
+      "source_label": "Machine",
+      "source_name": "Laser Cutter LC-5000",
+      "target_label": "ProductionLine",
+      "target_name": "Line C - Precision Parts"
+    },
+    {
+      "type": "OPERATED_BY",
+      "source_label": "Machine",
+      "source_name": "Laser Cutter LC-5000",
+      "target_label": "ProductionLine",
+      "target_name": "Line A - High Volume"
+    },
+    {
+      "type": "OPERATED_BY",
+      "source_label": "Machine",
+      "source_name": "Assembly Robot AR-12",
+      "target_label": "ProductionLine",
+      "target_name": "Line A - High Volume 1"
+    },
+    {
+      "type": "OPERATED_BY",
+      "source_label": "Machine",
+      "source_name": "Injection Molder IM-800",
+      "target_label": "ProductionLine",
+      "target_name": "Line B - Custom Orders"
+    },
+    {
+      "type": "OPERATED_BY",
+      "source_label": "Machine",
+      "source_name": "Injection Molder IM-800",
+      "target_label": "ProductionLine",
+      "target_name": "Line A - High Volume 1"
+    },
+    {
+      "type": "ASSIGNED_TO",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0412 Batch Production",
+      "target_label": "Machine",
+      "target_name": "Assembly Robot AR-12"
+    },
+    {
+      "type": "ASSIGNED_TO",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0412 Batch Production",
+      "target_label": "Machine",
+      "target_name": "Hydraulic Press HP-200"
+    },
+    {
+      "type": "ASSIGNED_TO",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0587 Custom Fabrication",
+      "target_label": "Machine",
+      "target_name": "Laser Cutter LC-5000"
+    },
+    {
+      "type": "ASSIGNED_TO",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0587 Custom Fabrication",
+      "target_label": "Machine",
+      "target_name": "Hydraulic Press HP-200"
+    },
+    {
+      "type": "ASSIGNED_TO",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0721 Maintenance Overhaul",
+      "target_label": "Machine",
+      "target_name": "Hydraulic Press HP-200"
+    },
+    {
+      "type": "ASSIGNED_TO",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-0893 Quality Rework",
+      "target_label": "Machine",
+      "target_name": "Assembly Robot AR-12"
+    },
+    {
+      "type": "ASSIGNED_TO",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-1045 Prototype Build",
+      "target_label": "Machine",
+      "target_name": "Injection Molder IM-800"
+    },
+    {
+      "type": "ASSIGNED_TO",
+      "source_label": "WorkOrder",
+      "source_name": "WO-2025-1045 Prototype Build",
+      "target_label": "Machine",
+      "target_name": "Laser Cutter LC-5000"
+    },
+    {
+      "type": "REPORTED_BY",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-041 Dimensional Check",
+      "target_label": "Person",
+      "target_name": "James Morrison"
+    },
+    {
+      "type": "REPORTED_BY",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-041 Dimensional Check",
+      "target_label": "Person",
+      "target_name": "Elena Volkov"
+    },
+    {
+      "type": "REPORTED_BY",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-078 Material Test",
+      "target_label": "Person",
+      "target_name": "Sarah Chen"
+    },
+    {
+      "type": "REPORTED_BY",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-112 Surface Finish Audit",
+      "target_label": "Person",
+      "target_name": "David Park"
+    },
+    {
+      "type": "REPORTED_BY",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-156 Stress Analysis",
+      "target_label": "Person",
+      "target_name": "James Morrison"
+    },
+    {
+      "type": "REPORTED_BY",
+      "source_label": "QualityReport",
+      "source_name": "QR-2025-041 Dimensional Check 1",
+      "target_label": "Person",
+      "target_name": "Elena Volkov"
+    }
+  ],
+  "documents": [
+    {
+      "template_id": "work_order_doc",
+      "template_name": "Work Order",
+      "title": "Work Order: WO-2025-0412 Batch Production",
+      "content": "# Work Order\n\n**Date:** 2026-04-24  \n**Domain:** Manufacturing  \n**Reference:** WorkOrder: WO-2025-0412 Batch Production, Part: Titanium Gear Assembly TGA-401, ProductionLine: Line A - High Volume, Machine: CNC Mill Station A3\n\n## Summary\n\nThis work order documents production work orders with specifications and requirements. It pertains to WorkOrder: WO-2025-0412 Batch Production, Part: Titanium Gear Assembly TGA-401, ProductionLine: Line A - High Volume, Machine: CNC Mill Station A3 and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to WorkOrder: WO-2025-0412 Batch Production, Part: Titanium Gear Assembly TGA-401, ProductionLine: Line A - High Volume, Machine: CNC Mill Station A3 are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of WorkOrder: WO-2025-0412 Batch Production, Part: Titanium Gear Assembly TGA-401, ProductionLine: Line A - High Volume, Machine: CNC Mill Station A3, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior work order records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "work_order_doc",
+      "template_name": "Work Order",
+      "title": "Work Order: WO-2025-0587 Custom Fabrication",
+      "content": "# Work Order\n\n**Date:** 2024-11-23  \n**Domain:** Manufacturing  \n**Reference:** WorkOrder: WO-2025-0587 Custom Fabrication, Part: Steel Bearing Housing SBH-220, ProductionLine: Line B - Custom Orders, Machine: Hydraulic Press HP-200\n\n## Summary\n\nThis work order documents production work orders with specifications and requirements. It pertains to WorkOrder: WO-2025-0587 Custom Fabrication, Part: Steel Bearing Housing SBH-220, ProductionLine: Line B - Custom Orders, Machine: Hydraulic Press HP-200 and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to WorkOrder: WO-2025-0587 Custom Fabrication, Part: Steel Bearing Housing SBH-220, ProductionLine: Line B - Custom Orders, Machine: Hydraulic Press HP-200 are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of WorkOrder: WO-2025-0587 Custom Fabrication, Part: Steel Bearing Housing SBH-220, ProductionLine: Line B - Custom Orders, Machine: Hydraulic Press HP-200, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior work order records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "work_order_doc",
+      "template_name": "Work Order",
+      "title": "Work Order: WO-2025-0721 Maintenance Overhaul",
+      "content": "# Work Order\n\n**Date:** 2024-08-08  \n**Domain:** Manufacturing  \n**Reference:** WorkOrder: WO-2025-0721 Maintenance Overhaul, Part: Aluminum Heat Sink AHS-150, ProductionLine: Line C - Precision Parts, Machine: Laser Cutter LC-5000\n\n## Summary\n\nThis work order documents production work orders with specifications and requirements. It pertains to WorkOrder: WO-2025-0721 Maintenance Overhaul, Part: Aluminum Heat Sink AHS-150, ProductionLine: Line C - Precision Parts, Machine: Laser Cutter LC-5000 and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to WorkOrder: WO-2025-0721 Maintenance Overhaul, Part: Aluminum Heat Sink AHS-150, ProductionLine: Line C - Precision Parts, Machine: Laser Cutter LC-5000 are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of WorkOrder: WO-2025-0721 Maintenance Overhaul, Part: Aluminum Heat Sink AHS-150, ProductionLine: Line C - Precision Parts, Machine: Laser Cutter LC-5000, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior work order records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "work_order_doc",
+      "template_name": "Work Order",
+      "title": "Work Order: WO-2025-0893 Quality Rework",
+      "content": "# Work Order\n\n**Date:** 2024-01-29  \n**Domain:** Manufacturing  \n**Reference:** WorkOrder: WO-2025-0893 Quality Rework, Part: Carbon Fiber Panel CFP-88, ProductionLine: Line D - Assembly, Machine: Assembly Robot AR-12\n\n## Summary\n\nThis work order documents production work orders with specifications and requirements. It pertains to WorkOrder: WO-2025-0893 Quality Rework, Part: Carbon Fiber Panel CFP-88, ProductionLine: Line D - Assembly, Machine: Assembly Robot AR-12 and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to WorkOrder: WO-2025-0893 Quality Rework, Part: Carbon Fiber Panel CFP-88, ProductionLine: Line D - Assembly, Machine: Assembly Robot AR-12 are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of WorkOrder: WO-2025-0893 Quality Rework, Part: Carbon Fiber Panel CFP-88, ProductionLine: Line D - Assembly, Machine: Assembly Robot AR-12, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior work order records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "work_order_doc",
+      "template_name": "Work Order",
+      "title": "Work Order: WO-2025-1045 Prototype Build",
+      "content": "# Work Order\n\n**Date:** 2025-02-18  \n**Domain:** Manufacturing  \n**Reference:** WorkOrder: WO-2025-1045 Prototype Build, Part: Precision Valve PV-610, ProductionLine: Line A - High Volume 1, Machine: Injection Molder IM-800\n\n## Summary\n\nThis work order documents production work orders with specifications and requirements. It pertains to WorkOrder: WO-2025-1045 Prototype Build, Part: Precision Valve PV-610, ProductionLine: Line A - High Volume 1, Machine: Injection Molder IM-800 and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to WorkOrder: WO-2025-1045 Prototype Build, Part: Precision Valve PV-610, ProductionLine: Line A - High Volume 1, Machine: Injection Molder IM-800 are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of WorkOrder: WO-2025-1045 Prototype Build, Part: Precision Valve PV-610, ProductionLine: Line A - High Volume 1, Machine: Injection Molder IM-800, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior work order records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "quality_audit",
+      "template_name": "Quality Audit",
+      "title": "Quality Audit: QR-2025-041 Dimensional Check",
+      "content": "# Quality Audit\n\n**Date:** 2025-04-03  \n**Domain:** Manufacturing  \n**Reference:** QualityReport: QR-2025-041 Dimensional Check, Part: Titanium Gear Assembly TGA-401, ProductionLine: Line A - High Volume, Person: Sarah Chen\n\n## Summary\n\nThis quality audit documents quality inspection and audit reports. It pertains to QualityReport: QR-2025-041 Dimensional Check, Part: Titanium Gear Assembly TGA-401, ProductionLine: Line A - High Volume, Person: Sarah Chen and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to QualityReport: QR-2025-041 Dimensional Check, Part: Titanium Gear Assembly TGA-401, ProductionLine: Line A - High Volume, Person: Sarah Chen are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of QualityReport: QR-2025-041 Dimensional Check, Part: Titanium Gear Assembly TGA-401, ProductionLine: Line A - High Volume, Person: Sarah Chen, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior quality audit records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "quality_audit",
+      "template_name": "Quality Audit",
+      "title": "Quality Audit: QR-2025-078 Material Test",
+      "content": "# Quality Audit\n\n**Date:** 2024-10-20  \n**Domain:** Manufacturing  \n**Reference:** QualityReport: QR-2025-078 Material Test, Part: Steel Bearing Housing SBH-220, ProductionLine: Line B - Custom Orders, Person: James Morrison\n\n## Summary\n\nThis quality audit documents quality inspection and audit reports. It pertains to QualityReport: QR-2025-078 Material Test, Part: Steel Bearing Housing SBH-220, ProductionLine: Line B - Custom Orders, Person: James Morrison and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to QualityReport: QR-2025-078 Material Test, Part: Steel Bearing Housing SBH-220, ProductionLine: Line B - Custom Orders, Person: James Morrison are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of QualityReport: QR-2025-078 Material Test, Part: Steel Bearing Housing SBH-220, ProductionLine: Line B - Custom Orders, Person: James Morrison, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior quality audit records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "quality_audit",
+      "template_name": "Quality Audit",
+      "title": "Quality Audit: QR-2025-112 Surface Finish Audit",
+      "content": "# Quality Audit\n\n**Date:** 2026-10-30  \n**Domain:** Manufacturing  \n**Reference:** QualityReport: QR-2025-112 Surface Finish Audit, Part: Aluminum Heat Sink AHS-150, ProductionLine: Line C - Precision Parts, Person: Maria Rodriguez\n\n## Summary\n\nThis quality audit documents quality inspection and audit reports. It pertains to QualityReport: QR-2025-112 Surface Finish Audit, Part: Aluminum Heat Sink AHS-150, ProductionLine: Line C - Precision Parts, Person: Maria Rodriguez and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to QualityReport: QR-2025-112 Surface Finish Audit, Part: Aluminum Heat Sink AHS-150, ProductionLine: Line C - Precision Parts, Person: Maria Rodriguez are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of QualityReport: QR-2025-112 Surface Finish Audit, Part: Aluminum Heat Sink AHS-150, ProductionLine: Line C - Precision Parts, Person: Maria Rodriguez, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior quality audit records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "quality_audit",
+      "template_name": "Quality Audit",
+      "title": "Quality Audit: QR-2025-156 Stress Analysis",
+      "content": "# Quality Audit\n\n**Date:** 2026-12-27  \n**Domain:** Manufacturing  \n**Reference:** QualityReport: QR-2025-156 Stress Analysis, Part: Carbon Fiber Panel CFP-88, ProductionLine: Line D - Assembly, Person: David Park\n\n## Summary\n\nThis quality audit documents quality inspection and audit reports. It pertains to QualityReport: QR-2025-156 Stress Analysis, Part: Carbon Fiber Panel CFP-88, ProductionLine: Line D - Assembly, Person: David Park and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to QualityReport: QR-2025-156 Stress Analysis, Part: Carbon Fiber Panel CFP-88, ProductionLine: Line D - Assembly, Person: David Park are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of QualityReport: QR-2025-156 Stress Analysis, Part: Carbon Fiber Panel CFP-88, ProductionLine: Line D - Assembly, Person: David Park, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior quality audit records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "quality_audit",
+      "template_name": "Quality Audit",
+      "title": "Quality Audit: QR-2025-041 Dimensional Check 1",
+      "content": "# Quality Audit\n\n**Date:** 2024-12-24  \n**Domain:** Manufacturing  \n**Reference:** QualityReport: QR-2025-041 Dimensional Check 1, Part: Precision Valve PV-610, ProductionLine: Line A - High Volume 1, Person: Elena Volkov\n\n## Summary\n\nThis quality audit documents quality inspection and audit reports. It pertains to QualityReport: QR-2025-041 Dimensional Check 1, Part: Precision Valve PV-610, ProductionLine: Line A - High Volume 1, Person: Elena Volkov and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to QualityReport: QR-2025-041 Dimensional Check 1, Part: Precision Valve PV-610, ProductionLine: Line A - High Volume 1, Person: Elena Volkov are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of QualityReport: QR-2025-041 Dimensional Check 1, Part: Precision Valve PV-610, ProductionLine: Line A - High Volume 1, Person: Elena Volkov, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior quality audit records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "supplier_evaluation",
+      "template_name": "Supplier Evaluation",
+      "title": "Supplier Evaluation: Pacific Steel Corp",
+      "content": "# Supplier Evaluation\n\n**Date:** 2025-12-22  \n**Domain:** Manufacturing  \n**Reference:** Supplier: Pacific Steel Corp, Part: Titanium Gear Assembly TGA-401, QualityReport: QR-2025-041 Dimensional Check\n\n## Summary\n\nThis supplier evaluation documents periodic supplier performance evaluations. It pertains to Supplier: Pacific Steel Corp, Part: Titanium Gear Assembly TGA-401, QualityReport: QR-2025-041 Dimensional Check and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to Supplier: Pacific Steel Corp, Part: Titanium Gear Assembly TGA-401, QualityReport: QR-2025-041 Dimensional Check are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of Supplier: Pacific Steel Corp, Part: Titanium Gear Assembly TGA-401, QualityReport: QR-2025-041 Dimensional Check, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior supplier evaluation records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "supplier_evaluation",
+      "template_name": "Supplier Evaluation",
+      "title": "Supplier Evaluation: Rhine Valley Components",
+      "content": "# Supplier Evaluation\n\n**Date:** 2025-01-26  \n**Domain:** Manufacturing  \n**Reference:** Supplier: Rhine Valley Components, Part: Steel Bearing Housing SBH-220, QualityReport: QR-2025-078 Material Test\n\n## Summary\n\nThis supplier evaluation documents periodic supplier performance evaluations. It pertains to Supplier: Rhine Valley Components, Part: Steel Bearing Housing SBH-220, QualityReport: QR-2025-078 Material Test and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to Supplier: Rhine Valley Components, Part: Steel Bearing Housing SBH-220, QualityReport: QR-2025-078 Material Test are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of Supplier: Rhine Valley Components, Part: Steel Bearing Housing SBH-220, QualityReport: QR-2025-078 Material Test, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior supplier evaluation records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "supplier_evaluation",
+      "template_name": "Supplier Evaluation",
+      "title": "Supplier Evaluation: Shanghai Precision Parts",
+      "content": "# Supplier Evaluation\n\n**Date:** 2025-04-24  \n**Domain:** Manufacturing  \n**Reference:** Supplier: Shanghai Precision Parts, Part: Aluminum Heat Sink AHS-150, QualityReport: QR-2025-112 Surface Finish Audit\n\n## Summary\n\nThis supplier evaluation documents periodic supplier performance evaluations. It pertains to Supplier: Shanghai Precision Parts, Part: Aluminum Heat Sink AHS-150, QualityReport: QR-2025-112 Surface Finish Audit and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to Supplier: Shanghai Precision Parts, Part: Aluminum Heat Sink AHS-150, QualityReport: QR-2025-112 Surface Finish Audit are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of Supplier: Shanghai Precision Parts, Part: Aluminum Heat Sink AHS-150, QualityReport: QR-2025-112 Surface Finish Audit, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior supplier evaluation records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "supplier_evaluation",
+      "template_name": "Supplier Evaluation",
+      "title": "Supplier Evaluation: Great Lakes Polymers",
+      "content": "# Supplier Evaluation\n\n**Date:** 2025-08-25  \n**Domain:** Manufacturing  \n**Reference:** Supplier: Great Lakes Polymers, Part: Carbon Fiber Panel CFP-88, QualityReport: QR-2025-156 Stress Analysis\n\n## Summary\n\nThis supplier evaluation documents periodic supplier performance evaluations. It pertains to Supplier: Great Lakes Polymers, Part: Carbon Fiber Panel CFP-88, QualityReport: QR-2025-156 Stress Analysis and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to Supplier: Great Lakes Polymers, Part: Carbon Fiber Panel CFP-88, QualityReport: QR-2025-156 Stress Analysis are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of Supplier: Great Lakes Polymers, Part: Carbon Fiber Panel CFP-88, QualityReport: QR-2025-156 Stress Analysis, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior supplier evaluation records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "supplier_evaluation",
+      "template_name": "Supplier Evaluation",
+      "title": "Supplier Evaluation: Nordic Metals AB",
+      "content": "# Supplier Evaluation\n\n**Date:** 2025-07-10  \n**Domain:** Manufacturing  \n**Reference:** Supplier: Nordic Metals AB, Part: Precision Valve PV-610, QualityReport: QR-2025-041 Dimensional Check 1\n\n## Summary\n\nThis supplier evaluation documents periodic supplier performance evaluations. It pertains to Supplier: Nordic Metals AB, Part: Precision Valve PV-610, QualityReport: QR-2025-041 Dimensional Check 1 and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to Supplier: Nordic Metals AB, Part: Precision Valve PV-610, QualityReport: QR-2025-041 Dimensional Check 1 are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of Supplier: Nordic Metals AB, Part: Precision Valve PV-610, QualityReport: QR-2025-041 Dimensional Check 1, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior supplier evaluation records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "maintenance_log",
+      "template_name": "Maintenance Log",
+      "title": "Maintenance Log: CNC Mill Station A3",
+      "content": "# Maintenance Log\n\n**Date:** 2024-11-03  \n**Domain:** Manufacturing  \n**Reference:** Machine: CNC Mill Station A3, ProductionLine: Line A - High Volume, Person: Sarah Chen\n\n## Summary\n\nThis maintenance log documents equipment maintenance and repair logs. It pertains to Machine: CNC Mill Station A3, ProductionLine: Line A - High Volume, Person: Sarah Chen and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to Machine: CNC Mill Station A3, ProductionLine: Line A - High Volume, Person: Sarah Chen are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of Machine: CNC Mill Station A3, ProductionLine: Line A - High Volume, Person: Sarah Chen, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior maintenance log records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "maintenance_log",
+      "template_name": "Maintenance Log",
+      "title": "Maintenance Log: Hydraulic Press HP-200",
+      "content": "# Maintenance Log\n\n**Date:** 2025-01-01  \n**Domain:** Manufacturing  \n**Reference:** Machine: Hydraulic Press HP-200, ProductionLine: Line B - Custom Orders, Person: James Morrison\n\n## Summary\n\nThis maintenance log documents equipment maintenance and repair logs. It pertains to Machine: Hydraulic Press HP-200, ProductionLine: Line B - Custom Orders, Person: James Morrison and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to Machine: Hydraulic Press HP-200, ProductionLine: Line B - Custom Orders, Person: James Morrison are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of Machine: Hydraulic Press HP-200, ProductionLine: Line B - Custom Orders, Person: James Morrison, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior maintenance log records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "maintenance_log",
+      "template_name": "Maintenance Log",
+      "title": "Maintenance Log: Laser Cutter LC-5000",
+      "content": "# Maintenance Log\n\n**Date:** 2026-03-24  \n**Domain:** Manufacturing  \n**Reference:** Machine: Laser Cutter LC-5000, ProductionLine: Line C - Precision Parts, Person: Maria Rodriguez\n\n## Summary\n\nThis maintenance log documents equipment maintenance and repair logs. It pertains to Machine: Laser Cutter LC-5000, ProductionLine: Line C - Precision Parts, Person: Maria Rodriguez and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to Machine: Laser Cutter LC-5000, ProductionLine: Line C - Precision Parts, Person: Maria Rodriguez are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of Machine: Laser Cutter LC-5000, ProductionLine: Line C - Precision Parts, Person: Maria Rodriguez, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior maintenance log records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "maintenance_log",
+      "template_name": "Maintenance Log",
+      "title": "Maintenance Log: Assembly Robot AR-12",
+      "content": "# Maintenance Log\n\n**Date:** 2024-02-08  \n**Domain:** Manufacturing  \n**Reference:** Machine: Assembly Robot AR-12, ProductionLine: Line D - Assembly, Person: David Park\n\n## Summary\n\nThis maintenance log documents equipment maintenance and repair logs. It pertains to Machine: Assembly Robot AR-12, ProductionLine: Line D - Assembly, Person: David Park and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to Machine: Assembly Robot AR-12, ProductionLine: Line D - Assembly, Person: David Park are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of Machine: Assembly Robot AR-12, ProductionLine: Line D - Assembly, Person: David Park, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior maintenance log records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "maintenance_log",
+      "template_name": "Maintenance Log",
+      "title": "Maintenance Log: Injection Molder IM-800",
+      "content": "# Maintenance Log\n\n**Date:** 2024-04-19  \n**Domain:** Manufacturing  \n**Reference:** Machine: Injection Molder IM-800, ProductionLine: Line A - High Volume 1, Person: Elena Volkov\n\n## Summary\n\nThis maintenance log documents equipment maintenance and repair logs. It pertains to Machine: Injection Molder IM-800, ProductionLine: Line A - High Volume 1, Person: Elena Volkov and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to Machine: Injection Molder IM-800, ProductionLine: Line A - High Volume 1, Person: Elena Volkov are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of Machine: Injection Molder IM-800, ProductionLine: Line A - High Volume 1, Person: Elena Volkov, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior maintenance log records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "production_report",
+      "template_name": "Production Report",
+      "title": "Production Report: Line A - High Volume",
+      "content": "# Production Report\n\n**Date:** 2024-12-19  \n**Domain:** Manufacturing  \n**Reference:** ProductionLine: Line A - High Volume, WorkOrder: WO-2025-0412 Batch Production, QualityReport: QR-2025-041 Dimensional Check\n\n## Summary\n\nThis production report documents daily or weekly production summary reports. It pertains to ProductionLine: Line A - High Volume, WorkOrder: WO-2025-0412 Batch Production, QualityReport: QR-2025-041 Dimensional Check and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to ProductionLine: Line A - High Volume, WorkOrder: WO-2025-0412 Batch Production, QualityReport: QR-2025-041 Dimensional Check are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of ProductionLine: Line A - High Volume, WorkOrder: WO-2025-0412 Batch Production, QualityReport: QR-2025-041 Dimensional Check, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior production report records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "production_report",
+      "template_name": "Production Report",
+      "title": "Production Report: Line B - Custom Orders",
+      "content": "# Production Report\n\n**Date:** 2026-10-11  \n**Domain:** Manufacturing  \n**Reference:** ProductionLine: Line B - Custom Orders, WorkOrder: WO-2025-0587 Custom Fabrication, QualityReport: QR-2025-078 Material Test\n\n## Summary\n\nThis production report documents daily or weekly production summary reports. It pertains to ProductionLine: Line B - Custom Orders, WorkOrder: WO-2025-0587 Custom Fabrication, QualityReport: QR-2025-078 Material Test and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to ProductionLine: Line B - Custom Orders, WorkOrder: WO-2025-0587 Custom Fabrication, QualityReport: QR-2025-078 Material Test are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of ProductionLine: Line B - Custom Orders, WorkOrder: WO-2025-0587 Custom Fabrication, QualityReport: QR-2025-078 Material Test, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior production report records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "production_report",
+      "template_name": "Production Report",
+      "title": "Production Report: Line C - Precision Parts",
+      "content": "# Production Report\n\n**Date:** 2025-05-12  \n**Domain:** Manufacturing  \n**Reference:** ProductionLine: Line C - Precision Parts, WorkOrder: WO-2025-0721 Maintenance Overhaul, QualityReport: QR-2025-112 Surface Finish Audit\n\n## Summary\n\nThis production report documents daily or weekly production summary reports. It pertains to ProductionLine: Line C - Precision Parts, WorkOrder: WO-2025-0721 Maintenance Overhaul, QualityReport: QR-2025-112 Surface Finish Audit and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to ProductionLine: Line C - Precision Parts, WorkOrder: WO-2025-0721 Maintenance Overhaul, QualityReport: QR-2025-112 Surface Finish Audit are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of ProductionLine: Line C - Precision Parts, WorkOrder: WO-2025-0721 Maintenance Overhaul, QualityReport: QR-2025-112 Surface Finish Audit, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior production report records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "production_report",
+      "template_name": "Production Report",
+      "title": "Production Report: Line D - Assembly",
+      "content": "# Production Report\n\n**Date:** 2025-06-27  \n**Domain:** Manufacturing  \n**Reference:** ProductionLine: Line D - Assembly, WorkOrder: WO-2025-0893 Quality Rework, QualityReport: QR-2025-156 Stress Analysis\n\n## Summary\n\nThis production report documents daily or weekly production summary reports. It pertains to ProductionLine: Line D - Assembly, WorkOrder: WO-2025-0893 Quality Rework, QualityReport: QR-2025-156 Stress Analysis and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to ProductionLine: Line D - Assembly, WorkOrder: WO-2025-0893 Quality Rework, QualityReport: QR-2025-156 Stress Analysis are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of ProductionLine: Line D - Assembly, WorkOrder: WO-2025-0893 Quality Rework, QualityReport: QR-2025-156 Stress Analysis, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior production report records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    },
+    {
+      "template_id": "production_report",
+      "template_name": "Production Report",
+      "title": "Production Report: Line A - High Volume 1",
+      "content": "# Production Report\n\n**Date:** 2024-02-19  \n**Domain:** Manufacturing  \n**Reference:** ProductionLine: Line A - High Volume 1, WorkOrder: WO-2025-1045 Prototype Build, QualityReport: QR-2025-041 Dimensional Check 1\n\n## Summary\n\nThis production report documents daily or weekly production summary reports. It pertains to ProductionLine: Line A - High Volume 1, WorkOrder: WO-2025-1045 Prototype Build, QualityReport: QR-2025-041 Dimensional Check 1 and was prepared as part of standard manufacturing operations.\n\n## Details\n\nThe following information has been compiled based on available records and observations. All referenced entities have been verified against the current knowledge graph.\n\nKey findings and observations related to ProductionLine: Line A - High Volume 1, WorkOrder: WO-2025-1045 Prototype Build, QualityReport: QR-2025-041 Dimensional Check 1 are documented below. This record should be reviewed in conjunction with related documents and entity records for complete context.\n\n## Recommendations\n\nBased on the analysis of ProductionLine: Line A - High Volume 1, WorkOrder: WO-2025-1045 Prototype Build, QualityReport: QR-2025-041 Dimensional Check 1, the following actions are recommended for continued monitoring and follow-up. Please refer to the relevant entity profiles and prior production report records for historical context and trend analysis.\n\n---\n\n*Document generated for Manufacturing context graph application.*"
+    }
+  ],
+  "traces": [
+    {
+      "id": "production_scheduling",
+      "task": "Determine optimal scheduling for work order WO-2025-0001 on available production lines",
+      "steps": [
+        {
+          "thought": "Assess current production line capacity and availability",
+          "action": "Query production lines, current workload, and maintenance schedules",
+          "observation": "Found 9 relevant records in the manufacturing knowledge graph. Top result: Emergency Response Drill with 2 connected entities."
+        },
+        {
+          "thought": "Check material availability for all required parts",
+          "action": "Verify stock levels against bill of materials requirements",
+          "observation": "Verified QR-2025-156 Stress Analysis against manufacturing standards. All 3 checked parameters within acceptable thresholds."
+        },
+        {
+          "thought": "Evaluate machine assignments and tooling requirements",
+          "action": "Match work order specifications to capable machines",
+          "observation": "Action completed for Laser Cutter LC-5000. Results consistent with expected manufacturing domain patterns."
+        },
+        {
+          "thought": "Optimize for due date compliance and line efficiency",
+          "action": "Calculate scheduling options ranked by efficiency and on-time delivery",
+          "observation": "Analysis of James Morrison complete. Key metrics computed and compared against historical baselines \u2014 2 indicators flagged for review."
+        }
+      ],
+      "outcome": "Schedule: the assessed criteria on the assessed criteria with estimated completion the assessed criteria"
+    },
+    {
+      "id": "supplier_selection",
+      "task": "Select supplier for part PRT-2024-0000 given quality and lead time requirements",
+      "steps": [
+        {
+          "thought": "Review available suppliers for this part category",
+          "action": "Query approved suppliers and their historical performance",
+          "observation": "Found 9 relevant records in the manufacturing knowledge graph. Top result: David Park with 4 connected entities."
+        },
+        {
+          "thought": "Compare quality ratings and defect rates",
+          "action": "Analyze quality reports linked to each supplier's parts",
+          "observation": "Analysis of WO-2025-1045 Prototype Build complete. Key metrics computed and compared against historical baselines \u2014 3 indicators flagged for review."
+        },
+        {
+          "thought": "Factor in lead time, cost, and risk diversification",
+          "action": "Rank suppliers by weighted score of quality, cost, and reliability",
+          "observation": "Action completed for David Park. Results consistent with expected manufacturing domain patterns."
+        }
+      ],
+      "outcome": "Selected supplier: the assessed criteria \u2014 analysis of available data and alignment with operational guidelines"
+    },
+    {
+      "id": "defect_investigation",
+      "task": "Investigate root cause of quality defects in Aluminum Heat Sink AHS-150 batch",
+      "steps": [
+        {
+          "thought": "Review defect details and patterns from quality reports",
+          "action": "Query recent quality reports for this part with fail results",
+          "observation": "Found 4 relevant records in the manufacturing knowledge graph. Top result: WO-2025-0587 Custom Fabrication with 5 connected entities."
+        },
+        {
+          "thought": "Trace back through production process and materials",
+          "action": "Follow production chain: machine, line, supplier, raw materials",
+          "observation": "Action completed for Rhine Valley Components. Results consistent with expected manufacturing domain patterns."
+        },
+        {
+          "thought": "Identify common factors across defective units",
+          "action": "Correlate defects with machine, shift, material batch, or operator",
+          "observation": "Action completed for QR-2025-041 Dimensional Check. Results consistent with expected manufacturing domain patterns."
+        }
+      ],
+      "outcome": "Root cause: the assessed criteria. Corrective action: immediate follow-up recommended"
+    },
+    {
+      "id": "supply_chain_disruption",
+      "task": "Assess impact and alternatives when supplier Nordic Metals AB reports delivery delay for Carbon Fiber Panel CFP-88",
+      "steps": [
+        {
+          "thought": "Identify all work orders depending on the delayed part",
+          "action": "Query work orders with DEPENDS_ON relationship to the affected part",
+          "observation": "Found 10 relevant records in the manufacturing knowledge graph. Top result: David Park with 6 connected entities."
+        },
+        {
+          "thought": "Check current stock levels against immediate production needs",
+          "action": "Compare part stock_quantity to work order quantities with upcoming due dates",
+          "observation": "Action completed for Assembly Robot AR-12. Results consistent with expected manufacturing domain patterns."
+        },
+        {
+          "thought": "Find alternative approved suppliers for the same part",
+          "action": "Query other suppliers linked to the part or its category with approved status",
+          "observation": "Found 11 relevant records in the manufacturing knowledge graph. Top result: WO-2025-1045 Prototype Build with 5 connected entities."
+        },
+        {
+          "thought": "Evaluate expedited shipping or substitute parts",
+          "action": "Compare lead times and costs across alternative suppliers and compatible parts",
+          "observation": "Action completed for Aluminum Heat Sink AHS-150. Results consistent with expected manufacturing domain patterns."
+        }
+      ],
+      "outcome": "Impact: the assessed criteria work orders at risk. Mitigation: the assessed criteria"
+    },
+    {
+      "id": "equipment_maintenance",
+      "task": "Determine maintenance priority for Laser Cutter LC-5000 with 90 operating hours",
+      "steps": [
+        {
+          "thought": "Review machine maintenance history and current status",
+          "action": "Query maintenance logs and current status for the machine",
+          "observation": "Found 12 relevant records in the manufacturing knowledge graph. Top result: Line D - Assembly with 2 connected entities."
+        },
+        {
+          "thought": "Assess impact on production line if machine goes offline",
+          "action": "Check production line assignment and active work orders using this machine",
+          "observation": "Verified Pacific Northwest Industries against manufacturing standards. All 5 checked parameters within acceptable thresholds."
+        },
+        {
+          "thought": "Compare operating hours to manufacturer maintenance intervals",
+          "action": "Evaluate operating_hours against recommended service thresholds",
+          "observation": "Action completed for Compliance Certificate. Results consistent with expected manufacturing domain patterns."
+        },
+        {
+          "thought": "Schedule maintenance window to minimize production disruption",
+          "action": "Identify lowest-impact time slot based on work order due dates and line capacity",
+          "observation": "Action completed for QR-2025-041 Dimensional Check. Results consistent with expected manufacturing domain patterns."
+        }
+      ],
+      "outcome": "Maintenance priority: high. Schedule: the assessed criteria. Estimated downtime: the assessed criteria"
+    },
+    {
+      "id": "quality_audit",
+      "task": "Conduct quality audit for parts produced on Line A - High Volume 1 over the past period",
+      "steps": [
+        {
+          "thought": "Aggregate quality report outcomes for the production line",
+          "action": "Query quality reports for parts produced on this line, grouped by result",
+          "observation": "Found 11 relevant records in the manufacturing knowledge graph. Top result: Aluminum Heat Sink AHS-150 with 6 connected entities."
+        },
+        {
+          "thought": "Identify recurring defect types and patterns",
+          "action": "Analyze defect_type distribution and correlate with specific machines or shifts",
+          "observation": "Analysis of Great Lakes Polymers complete. Key metrics computed and compared against historical baselines \u2014 4 indicators flagged for review."
+        },
+        {
+          "thought": "Compare pass rates against target quality thresholds",
+          "action": "Calculate pass rate percentage and benchmark against line efficiency_rating",
+          "observation": "Analysis of Hydraulic Press HP-200 complete. Key metrics computed and compared against historical baselines \u2014 3 indicators flagged for review."
+        }
+      ],
+      "outcome": "Audit result: the assessed criteria% pass rate. Top defect: the assessed criteria. Action: immediate follow-up recommended"
+    },
+    {
+      "id": "material_selection",
+      "task": "Select optimal material supplier for Precision Valve PV-610 balancing cost, quality, and lead time",
+      "steps": [
+        {
+          "thought": "List all suppliers providing this part or compatible raw materials",
+          "action": "Query suppliers linked to the part via SUPPLIED_BY relationship",
+          "observation": "Found 12 relevant records in the manufacturing knowledge graph. Top result: CNC Mill Station A3 with 4 connected entities."
+        },
+        {
+          "thought": "Rank suppliers by quality rating and historical defect rates",
+          "action": "Join supplier quality_rating with quality report pass rates for their parts",
+          "observation": "Action completed for Board of Directors Meeting. Results consistent with expected manufacturing domain patterns."
+        },
+        {
+          "thought": "Factor in lead time urgency against work order due dates",
+          "action": "Compare supplier lead_time_days to nearest work order deadlines",
+          "observation": "Action completed for Hydraulic Press HP-200. Results consistent with expected manufacturing domain patterns."
+        },
+        {
+          "thought": "Calculate total cost including shipping and potential rework",
+          "action": "Estimate unit_cost multiplied by quantity plus rework costs from defect rates",
+          "observation": "Action completed for Assembly Robot AR-12. Results consistent with expected manufacturing domain patterns."
+        }
+      ],
+      "outcome": "Selected: the assessed criteria \u2014 cost $the assessed criteria/unit, the assessed criteria day lead, the assessed criteria% quality"
+    },
+    {
+      "id": "capacity_optimization",
+      "task": "Optimize production capacity across all lines to meet pending work orders",
+      "steps": [
+        {
+          "thought": "Survey current utilization of all production lines",
+          "action": "Query production lines with status, capacity_per_hour, and assigned work orders",
+          "observation": "Found 3 relevant records in the manufacturing knowledge graph. Top result: Line D - Assembly with 3 connected entities."
+        },
+        {
+          "thought": "Identify bottleneck lines with overloaded schedules",
+          "action": "Compare total assigned quantity to available capacity for each line",
+          "observation": "Action completed for CNC Mill Station A3. Results consistent with expected manufacturing domain patterns."
+        },
+        {
+          "thought": "Redistribute work orders to balance load across lines",
+          "action": "Match work order requirements to capable machines on underutilized lines",
+          "observation": "Action completed for Meridian Consulting Group. Results consistent with expected manufacturing domain patterns."
+        },
+        {
+          "thought": "Evaluate shift pattern changes to increase throughput",
+          "action": "Model output gains from shifting idle lines to double or triple shifts",
+          "observation": "Action completed for Great Lakes Polymers. Results consistent with expected manufacturing domain patterns."
+        }
+      ],
+      "outcome": "Optimization: the assessed criteria orders redistributed. Projected throughput increase: the assessed criteria%"
+    },
+    {
+      "id": "preventive_maintenance_planning",
+      "task": "Plan preventive maintenance schedule for machines on Line C - Precision Parts",
+      "steps": [
+        {
+          "thought": "Inventory all machines assigned to the production line",
+          "action": "Query machines with OPERATED_BY relationship to the production line",
+          "observation": "Found 8 relevant records in the manufacturing knowledge graph. Top result: QR-2025-156 Stress Analysis with 4 connected entities."
+        },
+        {
+          "thought": "Assess each machine's operating hours and last maintenance date",
+          "action": "Review operating_hours and install_date to estimate service intervals",
+          "observation": "Review of Riverside Research Park completed. Identified 3 key factors relevant to the current decision context."
+        },
+        {
+          "thought": "Prioritize machines by criticality and failure risk",
+          "action": "Rank machines by hours since last maintenance and impact on line output",
+          "observation": "Action completed for Technical Specification. Results consistent with expected manufacturing domain patterns."
+        }
+      ],
+      "outcome": "Maintenance plan: the assessed criteria machines scheduled. Next critical: the assessed criteria in the assessed criteria days"
+    },
+    {
+      "id": "work_order_prioritization",
+      "task": "Reprioritize work orders when Hydraulic Press HP-200 goes offline unexpectedly",
+      "steps": [
+        {
+          "thought": "Identify all work orders assigned to the offline machine",
+          "action": "Query work orders with ASSIGNED_TO relationship to the machine",
+          "observation": "Found 4 relevant records in the manufacturing knowledge graph. Top result: Great Lakes Polymers with 4 connected entities."
+        },
+        {
+          "thought": "Assess due date urgency and customer impact for each order",
+          "action": "Rank affected work orders by due_date and priority level",
+          "observation": "Action completed for Compliance Certificate. Results consistent with expected manufacturing domain patterns."
+        },
+        {
+          "thought": "Find alternative machines capable of handling the work",
+          "action": "Query machines of same type on other production lines with operational status",
+          "observation": "Found 4 relevant records in the manufacturing knowledge graph. Top result: WO-2025-0893 Quality Rework with 5 connected entities."
+        },
+        {
+          "thought": "Reassign critical orders and adjust schedules",
+          "action": "Move highest-priority orders to available machines and update timelines",
+          "observation": "Action completed for James Morrison. Results consistent with expected manufacturing domain patterns."
+        }
+      ],
+      "outcome": "Reassigned the assessed criteria orders. the assessed criteria critical orders preserved. New completion: the assessed criteria"
+    }
+  ]
+}

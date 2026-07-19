@@ -1,0 +1,52 @@
+{
+  "authorId": "firstwork-official",
+  "configurationSchema": {
+    "mockAction": "mcp-test",
+    "tools": [
+      {
+        "description": "返回固定演示搜索结果",
+        "name": "mock_search"
+      },
+      {
+        "description": "返回固定演示摘要",
+        "name": "mock_summarize"
+      }
+    ]
+  },
+  "contributes": {
+    "mcpServers": [
+      {
+        "id": "mock-local-knowledge",
+        "label": "Mock Local Knowledge MCP",
+        "transport": "mock"
+      }
+    ],
+    "views": [
+      {
+        "id": "mock-mcp-tools",
+        "title": "本地知识工具说明"
+      }
+    ]
+  },
+  "credentialRequirements": [],
+  "description": "安全 Mock MCP 连接器，不执行系统命令、不访问外网。",
+  "icon": "Plug",
+  "id": "official-local-knowledge-mcp-demo",
+  "integrity": {
+    "sha256": null
+  },
+  "minAppVersion": "1.8.0",
+  "name": "本地知识工具MCP（演示）",
+  "permissions": [
+    "mcp.connect"
+  ],
+  "productType": "mcp-connector",
+  "runtimeKind": "mcp-connector",
+  "schemaVersion": 2,
+  "signature": {
+    "signer": null,
+    "status": "unsigned"
+  },
+  "source": "marketplace",
+  "version": "1.0.0"
+}

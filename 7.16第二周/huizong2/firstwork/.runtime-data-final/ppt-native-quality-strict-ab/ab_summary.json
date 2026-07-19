@@ -1,0 +1,525 @@
+{
+  "a": {
+    "densities": [
+      "anchor",
+      "dense",
+      "dense",
+      "dense",
+      "breathing"
+    ],
+    "exportStdout": "PPT Master - SVG to PPTX Tool\r\n==================================================\r\n  Project path: D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203718\r\n  SVG directory: svg_output\r\n  Output file: D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203718\\exports\\pome_ppt_20260719_203718_20260719_203719.pptx\r\n\r\n  Detected canvas format: PPT 16:9\r\n  Slide dimensions: 1280 x 720 px\r\n  SVG file count: 5\r\n  Mode: Native DrawingML shapes (directly editable)\r\n  Image optimization: Enabled (cap max 2560 px, JPEG q85)\r\n  Transition effect: Fade\r\n  Speaker notes: Enabled (no notes files found)\r\n\r\n  Flattened positional <tspan> into independent <text>\r\n  Converted 17 elements, skipped 0\r\n  [1/5] 01_slide.svg (Native)\r\n  Flattened positional <tspan> into independent <text>\r\n  Converted 22 elements, skipped 0\r\n  [2/5] 02_slide.svg (Native)\r\n  Flattened positional <tspan> into independent <text>\r\n  Converted 26 elements, skipped 0\r\n  [3/5] 03_slide.svg (Native)\r\n  Flattened positional <tspan> into independent <text>\r\n  Converted 35 elements, skipped 0\r\n  [4/5] 04_slide.svg (Native)\r\n  Flattened positional <tspan> into independent <text>\r\n  Converted 26 elements, skipped 0\r\n  [5/5] 05_slide.svg (Native)\r\n\r\n[Done] Saved: D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203718\\exports\\pome_ppt_20260719_203718_20260719_203719.pptx\r\n  Succeeded: 5, Failed: 0\r\n  svg_output backup: D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203718\\backup\\20260719_203719\\svg_output\r\n",
+    "exportSuccess": true,
+    "label": "A",
+    "nativeQualityPlanExists": false,
+    "nativeQualityPlanPath": "D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203718\\native_quality_plan.json",
+    "pptxPath": "D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203718\\exports\\pome_ppt_20260719_203718_20260719_203719.pptx",
+    "previewDir": "D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203718\\render_preview",
+    "project": "D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203718",
+    "qualityStdout": "\r\n[SCAN] Checking 5 SVG file(s)...\r\n\r\n[OK] 01_slide.svg - Passed\r\n   viewBox: 0 0 1280 720\r\n\r\n[OK] 02_slide.svg - Passed\r\n   viewBox: 0 0 1280 720\r\n\r\n[OK] 03_slide.svg - Passed\r\n   viewBox: 0 0 1280 720\r\n\r\n[OK] 04_slide.svg - Passed\r\n   viewBox: 0 0 1280 720\r\n\r\n[OK] 05_slide.svg - Passed\r\n   viewBox: 0 0 1280 720\r\n\r\n================================================================================\r\n[SUMMARY] Check Summary\r\n================================================================================\r\n\r\nTotal files: 5\r\n  [OK] Fully passed: 5 (100%)\r\n  [WARN] With warnings: 0 (0%)\r\n  [ERROR] With errors: 0 (0%)\r\n",
+    "qualitySuccess": true,
+    "renderWarnings": [
+      "rejected=quote_statement reason=quote layout cannot preserve the available supporting detail",
+      "[Stable Visual Fullness] visual occupancy too low ratio=0.01 required=0.20 severity=warning",
+      "rejected=plain_editorial reason=density dense is not supported",
+      "rejected=evidence_strip reason=available block height cannot carry evidence strip content",
+      "rejected=split_panel reason=requires comparison, dual-side, cause-effect, or matrix semantics",
+      "[Stable Content Degradation] block=editorial-support-1 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-1 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-2 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-2 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-3 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-3 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "rejected=big_number_block reason=no meaningful numeric anchor for every displayed block",
+      "rejected=plain_editorial reason=supports at most 3 blocks",
+      "[Stable Local Repair] page=P03 block=evidence-support-1 role=text failure=ContainerOverflow level=TextBox strategy=reduce_font_and_rewrap result=failed",
+      "[Stable Local Repair] page=P03 block=evidence-support-2 role=text failure=ContainerOverflow level=ContentBlock strategy=expand_target_block_and_compact_padding result=failed",
+      "[Stable Local Repair] page=P03 block=evidence-support-1 role=text failure=ContainerOverflow level=Motif strategy=reflow_current_motif_internal_layout result=passed",
+      "[Stable Content Degradation] block=editorial-support-1 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-1 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-2 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-2 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-3 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-3 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-4 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-4 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "initial evidence_led/evidence_strip: evidence-support-1-text overflows container, evidence-support-2-text overflows container, evidence-support-3-text overflows container",
+      "level=TextBox evidence_led/evidence_strip: evidence-support-2-text overflows container, evidence-support-3-text overflows container",
+      "level=ContentBlock evidence_led/evidence_strip: evidence-support-1-text overflows container, evidence-support-2 overlaps evidence-support-3, evidence-support-3-text overflows container",
+      "rejected=plain_editorial reason=supports at most 3 blocks",
+      "rejected=evidence_strip reason=available block height cannot carry evidence strip content",
+      "rejected=split_panel reason=requires comparison, dual-side, cause-effect, or matrix semantics",
+      "[Stable Local Repair] page=P04 block=editorial-support-4 role=text failure=ContainerOverflow level=TextBox strategy=reduce_font_and_rewrap result=failed",
+      "[Stable Local Repair] page=P04 block=editorial-support-4 role=text failure=ContainerOverflow level=ContentBlock strategy=expand_target_block_and_compact_padding result=failed",
+      "[Stable Local Repair] page=P04 block=editorial-support-3 role=layout failure=ContainerOverflow level=Motif strategy=reflow_current_motif_internal_layout result=passed",
+      "[Stable Content Degradation] block=category-card-2 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=category-card-3 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=category-card-4 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "initial editorial_split/numbered_badge_card: editorial-support-4-text overflows container",
+      "level=TextBox editorial_split/numbered_badge_card: editorial-support-4-text overflows container",
+      "level=ContentBlock editorial_split/numbered_badge_card: editorial-support-3 overlaps editorial-support-4",
+      "rejected=hub_spoke reason=status=experimental",
+      "rejected=section_banner reason=density breathing is not supported",
+      "[Stable Content Degradation] block=summary-point-1 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-1 field=evidence action=shortened_to_single_tag_and_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-2 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-2 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-3 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-3 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-4 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-4 field=evidence action=omitted_to_speaker_notes severity=warning"
+    ],
+    "slideCount": 5,
+    "slidePlanPath": "D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203718\\slide_plan.json",
+    "slideResponsibilities": [
+      {
+        "chartType": "summary",
+        "contentBlockCount": 2,
+        "coreMessage": "增材制造的质量控制是一个贯穿设计、成形、检测和后处理的系统工程，理解各环节的约束与关联是稳定制造合格零件的基础。",
+        "density": "anchor",
+        "evidenceCount": 4,
+        "page": 1,
+        "pageTheme": "科技蓝渐变",
+        "relation": "process",
+        "title": "增材制造质量控制与工艺优化"
+      },
+      {
+        "chartType": "cards",
+        "contentBlockCount": 3,
+        "coreMessage": "设计阶段需评估零件是否适合增材制造，通过几何约束优化降低后期试错成本。",
+        "density": "dense",
+        "evidenceCount": 4,
+        "page": 2,
+        "pageTheme": "深蓝科技",
+        "relation": "category",
+        "title": "设计约束：把工艺规则嵌入结构方案"
+      },
+      {
+        "chartType": "process",
+        "contentBlockCount": 4,
+        "coreMessage": "激光功率、扫描速度、层厚、道间距和预热温度共同决定能量密度，参数不当会导致孔隙、残余应力和组织缺陷。",
+        "density": "dense",
+        "evidenceCount": 6,
+        "page": 3,
+        "pageTheme": "亮蓝科技",
+        "relation": "cause",
+        "title": "工艺参数与过程控制"
+      },
+      {
+        "chartType": "timeline",
+        "contentBlockCount": 4,
+        "coreMessage": "制造前仿真、制造中监测、制造后检测需与后处理工艺协同，形成质量闭环。",
+        "density": "dense",
+        "evidenceCount": 5,
+        "page": 4,
+        "pageTheme": "深蓝科技 - P04",
+        "relation": "process",
+        "title": "缺陷检测与后处理工艺链"
+      },
+      {
+        "chartType": "highlight",
+        "contentBlockCount": 4,
+        "coreMessage": "质量控制是从方案选择到服役评价的系统工程，质量体系确保一次成功转化为可重复制造。",
+        "density": "breathing",
+        "evidenceCount": 4,
+        "page": 5,
+        "pageTheme": "亮蓝科技 - P05",
+        "relation": "category",
+        "title": "工程案例与质量体系"
+      }
+    ],
+    "svgOutput": "D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203718\\svg_output",
+    "theme": {
+      "accent": "#38bdf8",
+      "background": "#f8fbff",
+      "name": "tech-blue",
+      "primary": "#2563eb",
+      "secondary": "#7c3aed"
+    }
+  },
+  "aiRequests": {
+    "aRender": 0,
+    "authorizedExperimentTotal": 1,
+    "bRender": 0,
+    "basePlanReused": true,
+    "thisHarnessRunBaseSlidePlan": 0,
+    "thisHarnessRunTotal": 0
+  },
+  "b": {
+    "densities": [
+      "breathing",
+      "balanced",
+      "dense",
+      "dense",
+      "breathing"
+    ],
+    "exportStdout": "PPT Master - SVG to PPTX Tool\r\n==================================================\r\n  Project path: D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203719\r\n  SVG directory: svg_output\r\n  Output file: D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203719\\exports\\pome_ppt_20260719_203719_20260719_203721.pptx\r\n\r\n  Detected canvas format: PPT 16:9\r\n  Slide dimensions: 1280 x 720 px\r\n  SVG file count: 5\r\n  Mode: Native DrawingML shapes (directly editable)\r\n  Image optimization: Enabled (cap max 2560 px, JPEG q85)\r\n  Transition effect: Fade\r\n  Speaker notes: Enabled (no notes files found)\r\n\r\n  Flattened positional <tspan> into independent <text>\r\n  Converted 17 elements, skipped 0\r\n  [1/5] 01_slide.svg (Native)\r\n  Flattened positional <tspan> into independent <text>\r\n  Converted 22 elements, skipped 0\r\n  [2/5] 02_slide.svg (Native)\r\n  Flattened positional <tspan> into independent <text>\r\n  Converted 26 elements, skipped 0\r\n  [3/5] 03_slide.svg (Native)\r\n  Flattened positional <tspan> into independent <text>\r\n  Converted 35 elements, skipped 0\r\n  [4/5] 04_slide.svg (Native)\r\n  Flattened positional <tspan> into independent <text>\r\n  Converted 26 elements, skipped 0\r\n  [5/5] 05_slide.svg (Native)\r\n\r\n[Done] Saved: D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203719\\exports\\pome_ppt_20260719_203719_20260719_203721.pptx\r\n  Succeeded: 5, Failed: 0\r\n  svg_output backup: D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203719\\backup\\20260719_203721\\svg_output\r\n",
+    "exportSuccess": true,
+    "label": "B",
+    "nativeQualityPlanExists": true,
+    "nativeQualityPlanPath": "D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203719\\native_quality_plan.json",
+    "pptxPath": "D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203719\\exports\\pome_ppt_20260719_203719_20260719_203721.pptx",
+    "previewDir": "D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203719\\render_preview",
+    "project": "D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203719",
+    "qualityStdout": "\r\n[SCAN] Checking 5 SVG file(s)...\r\n\r\n[OK] 01_slide.svg - Passed\r\n   viewBox: 0 0 1280 720\r\n\r\n[OK] 02_slide.svg - Passed\r\n   viewBox: 0 0 1280 720\r\n\r\n[OK] 03_slide.svg - Passed\r\n   viewBox: 0 0 1280 720\r\n\r\n[OK] 04_slide.svg - Passed\r\n   viewBox: 0 0 1280 720\r\n\r\n[OK] 05_slide.svg - Passed\r\n   viewBox: 0 0 1280 720\r\n\r\n================================================================================\r\n[SUMMARY] Check Summary\r\n================================================================================\r\n\r\nTotal files: 5\r\n  [OK] Fully passed: 5 (100%)\r\n  [WARN] With warnings: 0 (0%)\r\n  [ERROR] With errors: 0 (0%)\r\n",
+    "qualitySuccess": true,
+    "renderWarnings": [
+      "[Native Quality] enabled=true",
+      "[Native Quality] phase=planning-theme-density",
+      "[Native Quality] P01 role=opening and audience orientation density=breathing severity=normal units=4",
+      "[Native Quality] P02 role=evidence for 设计阶段需评估零件是否适合增材制造，通过几何约束优化降低后期试错成本。 density=balanced severity=normal units=4",
+      "[Native Quality] P03 role=evidence for 激光功率、扫描速度、层厚、道间距和预热温度共同决定能量密度，参数不当会导致孔隙、残余应力和组织缺陷。 density=dense severity=normal units=6",
+      "[Native Quality] P04 role=evidence for 制造前仿真、制造中监测、制造后检测需与后处理工艺协同，形成质量闭环。 density=dense severity=normal units=5",
+      "[Native Quality] P05 role=summary and closing action density=breathing severity=normal units=4",
+      "[Native Quality] theme=tech-blue userThemePriority=style",
+      "[Native Quality] density normal=5 sparse=0 slightlyDense=0 hardDense=0",
+      "rejected=section_banner reason=density breathing is not supported",
+      "rejected=quote_statement reason=quote layout cannot preserve the available supporting detail",
+      "[Stable Visual Fullness] visual occupancy too low ratio=0.01 required=0.22 severity=warning",
+      "rejected=evidence_strip reason=available block height cannot carry evidence strip content",
+      "rejected=split_panel reason=requires comparison, dual-side, cause-effect, or matrix semantics",
+      "[Stable Content Degradation] block=editorial-support-1 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-1 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-2 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-2 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-3 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-3 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "rejected=big_number_block reason=no meaningful numeric anchor for every displayed block",
+      "rejected=plain_editorial reason=supports at most 3 blocks",
+      "[Stable Local Repair] page=P03 block=evidence-support-1 role=text failure=ContainerOverflow level=TextBox strategy=reduce_font_and_rewrap result=failed",
+      "[Stable Local Repair] page=P03 block=evidence-support-2 role=text failure=ContainerOverflow level=ContentBlock strategy=expand_target_block_and_compact_padding result=failed",
+      "[Stable Local Repair] page=P03 block=evidence-support-1 role=text failure=ContainerOverflow level=Motif strategy=reflow_current_motif_internal_layout result=passed",
+      "[Stable Content Degradation] block=editorial-support-1 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-1 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-2 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-2 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-3 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-3 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-4 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=editorial-support-4 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "initial evidence_led/evidence_strip: evidence-support-1-text overflows container, evidence-support-2-text overflows container, evidence-support-3-text overflows container",
+      "level=TextBox evidence_led/evidence_strip: evidence-support-2-text overflows container, evidence-support-3-text overflows container",
+      "level=ContentBlock evidence_led/evidence_strip: evidence-support-1-text overflows container, evidence-support-2 overlaps evidence-support-3, evidence-support-3-text overflows container",
+      "rejected=plain_editorial reason=supports at most 3 blocks",
+      "rejected=evidence_strip reason=available block height cannot carry evidence strip content",
+      "rejected=split_panel reason=requires comparison, dual-side, cause-effect, or matrix semantics",
+      "[Stable Local Repair] page=P04 block=editorial-support-4 role=text failure=ContainerOverflow level=TextBox strategy=reduce_font_and_rewrap result=failed",
+      "[Stable Local Repair] page=P04 block=editorial-support-4 role=text failure=ContainerOverflow level=ContentBlock strategy=expand_target_block_and_compact_padding result=failed",
+      "[Stable Local Repair] page=P04 block=editorial-support-3 role=layout failure=ContainerOverflow level=Motif strategy=reflow_current_motif_internal_layout result=passed",
+      "[Stable Content Degradation] block=category-card-2 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=category-card-3 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=category-card-4 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "initial editorial_split/numbered_badge_card: editorial-support-4-text overflows container",
+      "level=TextBox editorial_split/numbered_badge_card: editorial-support-4-text overflows container",
+      "level=ContentBlock editorial_split/numbered_badge_card: editorial-support-3 overlaps editorial-support-4",
+      "rejected=hub_spoke reason=status=experimental",
+      "rejected=section_banner reason=density breathing is not supported",
+      "[Stable Content Degradation] block=summary-point-1 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-1 field=evidence action=shortened_to_single_tag_and_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-2 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-2 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-3 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-3 field=evidence action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-4 field=detail action=omitted_to_speaker_notes severity=warning",
+      "[Stable Content Degradation] block=summary-point-4 field=evidence action=omitted_to_speaker_notes severity=warning"
+    ],
+    "slideCount": 5,
+    "slidePlanPath": "D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203719\\slide_plan.json",
+    "slideResponsibilities": [
+      {
+        "chartType": "summary",
+        "contentBlockCount": 2,
+        "coreMessage": "增材制造的质量控制是一个贯穿设计、成形、检测和后处理的系统工程，理解各环节的约束与关联是稳定制造合格零件的基础。",
+        "density": "breathing",
+        "evidenceCount": 4,
+        "page": 1,
+        "pageTheme": "科技蓝渐变",
+        "relation": "process",
+        "title": "增材制造质量控制与工艺优化"
+      },
+      {
+        "chartType": "cards",
+        "contentBlockCount": 3,
+        "coreMessage": "设计阶段需评估零件是否适合增材制造，通过几何约束优化降低后期试错成本。",
+        "density": "balanced",
+        "evidenceCount": 4,
+        "page": 2,
+        "pageTheme": "深蓝科技",
+        "relation": "category",
+        "title": "设计约束：把工艺规则嵌入结构方案"
+      },
+      {
+        "chartType": "process",
+        "contentBlockCount": 4,
+        "coreMessage": "激光功率、扫描速度、层厚、道间距和预热温度共同决定能量密度，参数不当会导致孔隙、残余应力和组织缺陷。",
+        "density": "dense",
+        "evidenceCount": 6,
+        "page": 3,
+        "pageTheme": "亮蓝科技",
+        "relation": "cause",
+        "title": "工艺参数与过程控制"
+      },
+      {
+        "chartType": "timeline",
+        "contentBlockCount": 4,
+        "coreMessage": "制造前仿真、制造中监测、制造后检测需与后处理工艺协同，形成质量闭环。",
+        "density": "dense",
+        "evidenceCount": 5,
+        "page": 4,
+        "pageTheme": "深蓝科技 - P04",
+        "relation": "process",
+        "title": "缺陷检测与后处理工艺链"
+      },
+      {
+        "chartType": "highlight",
+        "contentBlockCount": 4,
+        "coreMessage": "质量控制是从方案选择到服役评价的系统工程，质量体系确保一次成功转化为可重复制造。",
+        "density": "breathing",
+        "evidenceCount": 4,
+        "page": 5,
+        "pageTheme": "亮蓝科技 - P05",
+        "relation": "category",
+        "title": "工程案例与质量体系"
+      }
+    ],
+    "svgOutput": "D:\\ag\\firstwork\\ppt-master\\projects\\pome_ppt_20260719_203719\\svg_output",
+    "theme": {
+      "accent": "#7C3AED",
+      "background": "#081426",
+      "name": "tech-blue",
+      "primary": "#2563EB",
+      "secondary": "#38BDF8"
+    }
+  },
+  "baseSlidePlanHash": "0bec098cf055397baf601c470d0a50b031f9f4184ffe9efa5846f25103511af9",
+  "elapsedMs": 3136,
+  "fieldDiff": {
+    "pageCount": {
+      "a": 5,
+      "b": 5,
+      "changed": false
+    },
+    "slides": [
+      {
+        "chartType": {
+          "a": "summary",
+          "b": "summary",
+          "changed": false
+        },
+        "contentBlockCount": {
+          "a": 2,
+          "b": 2
+        },
+        "contentChanged": false,
+        "coreMessage": {
+          "a": "增材制造的质量控制是一个贯穿设计、成形、检测和后处理的系统工程，理解各环节的约束与关联是稳定制造合格零件的基础。",
+          "b": "增材制造的质量控制是一个贯穿设计、成形、检测和后处理的系统工程，理解各环节的约束与关联是稳定制造合格零件的基础。",
+          "changed": false
+        },
+        "density": {
+          "a": "anchor",
+          "b": "breathing",
+          "changed": true
+        },
+        "evidenceCount": {
+          "a": 4,
+          "b": 4
+        },
+        "page": 1,
+        "pageTheme": {
+          "a": "科技蓝渐变",
+          "b": "科技蓝渐变",
+          "changed": false
+        },
+        "relation": {
+          "a": "process",
+          "b": "process",
+          "changed": false
+        },
+        "titleChanged": false
+      },
+      {
+        "chartType": {
+          "a": "cards",
+          "b": "cards",
+          "changed": false
+        },
+        "contentBlockCount": {
+          "a": 3,
+          "b": 3
+        },
+        "contentChanged": false,
+        "coreMessage": {
+          "a": "设计阶段需评估零件是否适合增材制造，通过几何约束优化降低后期试错成本。",
+          "b": "设计阶段需评估零件是否适合增材制造，通过几何约束优化降低后期试错成本。",
+          "changed": false
+        },
+        "density": {
+          "a": "dense",
+          "b": "balanced",
+          "changed": true
+        },
+        "evidenceCount": {
+          "a": 4,
+          "b": 4
+        },
+        "page": 2,
+        "pageTheme": {
+          "a": "深蓝科技",
+          "b": "深蓝科技",
+          "changed": false
+        },
+        "relation": {
+          "a": "category",
+          "b": "category",
+          "changed": false
+        },
+        "titleChanged": false
+      },
+      {
+        "chartType": {
+          "a": "process",
+          "b": "process",
+          "changed": false
+        },
+        "contentBlockCount": {
+          "a": 4,
+          "b": 4
+        },
+        "contentChanged": false,
+        "coreMessage": {
+          "a": "激光功率、扫描速度、层厚、道间距和预热温度共同决定能量密度，参数不当会导致孔隙、残余应力和组织缺陷。",
+          "b": "激光功率、扫描速度、层厚、道间距和预热温度共同决定能量密度，参数不当会导致孔隙、残余应力和组织缺陷。",
+          "changed": false
+        },
+        "density": {
+          "a": "dense",
+          "b": "dense",
+          "changed": false
+        },
+        "evidenceCount": {
+          "a": 6,
+          "b": 6
+        },
+        "page": 3,
+        "pageTheme": {
+          "a": "亮蓝科技",
+          "b": "亮蓝科技",
+          "changed": false
+        },
+        "relation": {
+          "a": "cause",
+          "b": "cause",
+          "changed": false
+        },
+        "titleChanged": false
+      },
+      {
+        "chartType": {
+          "a": "timeline",
+          "b": "timeline",
+          "changed": false
+        },
+        "contentBlockCount": {
+          "a": 4,
+          "b": 4
+        },
+        "contentChanged": false,
+        "coreMessage": {
+          "a": "制造前仿真、制造中监测、制造后检测需与后处理工艺协同，形成质量闭环。",
+          "b": "制造前仿真、制造中监测、制造后检测需与后处理工艺协同，形成质量闭环。",
+          "changed": false
+        },
+        "density": {
+          "a": "dense",
+          "b": "dense",
+          "changed": false
+        },
+        "evidenceCount": {
+          "a": 5,
+          "b": 5
+        },
+        "page": 4,
+        "pageTheme": {
+          "a": "深蓝科技 - P04",
+          "b": "深蓝科技 - P04",
+          "changed": false
+        },
+        "relation": {
+          "a": "process",
+          "b": "process",
+          "changed": false
+        },
+        "titleChanged": false
+      },
+      {
+        "chartType": {
+          "a": "highlight",
+          "b": "highlight",
+          "changed": false
+        },
+        "contentBlockCount": {
+          "a": 4,
+          "b": 4
+        },
+        "contentChanged": false,
+        "coreMessage": {
+          "a": "质量控制是从方案选择到服役评价的系统工程，质量体系确保一次成功转化为可重复制造。",
+          "b": "质量控制是从方案选择到服役评价的系统工程，质量体系确保一次成功转化为可重复制造。",
+          "changed": false
+        },
+        "density": {
+          "a": "breathing",
+          "b": "breathing",
+          "changed": false
+        },
+        "evidenceCount": {
+          "a": 4,
+          "b": 4
+        },
+        "page": 5,
+        "pageTheme": {
+          "a": "亮蓝科技 - P05",
+          "b": "亮蓝科技 - P05",
+          "changed": false
+        },
+        "relation": {
+          "a": "category",
+          "b": "category",
+          "changed": false
+        },
+        "titleChanged": false
+      }
+    ],
+    "theme": {
+      "a": {
+        "accent": "#38bdf8",
+        "background": "#f8fbff",
+        "name": "tech-blue",
+        "primary": "#2563eb",
+        "secondary": "#7c3aed"
+      },
+      "b": {
+        "accent": "#7C3AED",
+        "background": "#081426",
+        "name": "tech-blue",
+        "primary": "#2563EB",
+        "secondary": "#38BDF8"
+      },
+      "changed": true
+    }
+  },
+  "fixedInputs": {
+    "audience": "机械制造课程学习者",
+    "model": "current default provider from runtime DB",
+    "pptMasterMode": "template/stable-offline",
+    "slideCount": 5,
+    "style": "科技蓝",
+    "title": "增材制造质量控制与工艺优化"
+  },
+  "inputHash": "3d2a833a96ca40d6c9daa6a58136adb0752e492da06f14afdc95e2b5d0e08b83",
+  "leakScan": {
+    "a": [],
+    "b": []
+  },
+  "materialChars": 1543
+}

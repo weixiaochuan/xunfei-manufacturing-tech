@@ -1,0 +1,48 @@
+{
+  "authorId": "firstwork-official",
+  "configurationSchema": {
+    "sections": [
+      {
+        "description": "安装后自动导入到提示词库。",
+        "title": "Prompt模板"
+      }
+    ]
+  },
+  "contributes": {
+    "prompts": [
+      {
+        "id": "study-summary",
+        "title": "学习总结"
+      },
+      {
+        "id": "mistake-review",
+        "title": "错题复盘"
+      },
+      {
+        "id": "weekly-plan",
+        "title": "学习周计划"
+      }
+    ]
+  },
+  "credentialRequirements": [],
+  "description": "本地 Prompt 模板包，安装后导入 3 个学习总结模板。",
+  "icon": "Sparkles",
+  "id": "official-study-summary-prompts",
+  "integrity": {
+    "sha256": null
+  },
+  "minAppVersion": "1.8.0",
+  "name": "学习总结Prompt包",
+  "permissions": [
+    "prompts.register"
+  ],
+  "productType": "prompt-pack",
+  "runtimeKind": "prompt-pack",
+  "schemaVersion": 2,
+  "signature": {
+    "signer": null,
+    "status": "unsigned"
+  },
+  "source": "marketplace",
+  "version": "1.0.0"
+}

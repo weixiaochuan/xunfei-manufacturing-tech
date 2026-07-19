@@ -1,0 +1,7 @@
+# Optional static web preview. The normal local service serves web/ directly
+# from the FastAPI backend at http://127.0.0.1:8000/.
+FROM nginx:1.27-alpine
+
+COPY web /usr/share/nginx/html
+
+EXPOSE 80

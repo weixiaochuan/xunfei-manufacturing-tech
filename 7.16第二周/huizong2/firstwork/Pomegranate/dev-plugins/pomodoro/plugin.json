@@ -1,0 +1,18 @@
+{
+  "id": "example-pomodoro",
+  "name": "番茄钟",
+  "version": "1.0.0",
+  "description": "任务创建后启动 25 分钟番茄钟，完成后在描述中追加记录",
+  "author": "Intelligent-NoteBook",
+  "main": "main.js",
+  "minAppVersion": "1.0.0",
+  "permissions": [
+    "tasks.subscribe",
+    "tasks.write"
+  ],
+  "contributes": {
+    "commands": [
+      { "id": "pomodoro.start", "title": "启动番茄钟" }
+    ]
+  }
+}

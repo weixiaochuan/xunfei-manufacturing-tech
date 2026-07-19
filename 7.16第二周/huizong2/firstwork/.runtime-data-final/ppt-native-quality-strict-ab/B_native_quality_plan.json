@@ -1,0 +1,226 @@
+{
+  "schemaVersion": 1,
+  "specVersion": "pomegranate-native-quality-v1",
+  "enabled": true,
+  "theme": {
+    "themeName": "tech-blue",
+    "mood": "precise, modern, data oriented",
+    "backgroundStrategy": "deep or cool blue palette with bright technical accents",
+    "backgroundColor": "#081426",
+    "secondaryBackgroundColor": "#0D2340",
+    "surfaceColor": "#102B4E",
+    "primaryColor": "#2563EB",
+    "secondaryColor": "#38BDF8",
+    "accentColor": "#7C3AED",
+    "textPrimary": "#F8FBFF",
+    "textSecondary": "#CBD5E1",
+    "sourceStyle": "科技蓝",
+    "userThemePriority": "style"
+  },
+  "slides": [
+    {
+      "page": 1,
+      "pageId": "P01",
+      "narrativeRole": "opening and audience orientation",
+      "layoutIntent": "hero",
+      "pageTheme": "科技蓝渐变",
+      "density": {
+        "pageRhythm": "breathing",
+        "contentDensity": "medium",
+        "visualWeight": "strong",
+        "focalRegion": "single-dominant-region",
+        "supportingRegions": [
+          "supporting-context"
+        ],
+        "expectedContentUnits": 4,
+        "minimumSupportingRegions": 1,
+        "allowLargeWhitespace": true,
+        "layoutCapacityStrategy": "single-focal-anchor",
+        "severity": "normal"
+      },
+      "requiredFacts": [
+        "工艺链概览: 增材制造以数字模型为基础，通过材料逐层堆积形成零件，常见工艺包括SLM、LDED、FDM和SLA。",
+        "质量控制逻辑: 质量控制必须贯穿设计、制造和后处理全过程，涉及工艺参数、过程监测、后处理与验证放行。",
+        "增材制造是一类以数字模型为基础、通过材料逐层堆积形成零件的制造方法",
+        "常见工艺包括选择性激光熔化、激光定向能量沉积、熔融沉积成形和光固化成形",
+        "质量控制必须贯穿设计、制造和后处理全过程"
+      ],
+      "avoid": [
+        "Do not cover 深蓝科技; owned by P02",
+        "Do not cover 亮蓝科技; owned by P03",
+        "Do not cover 深蓝科技 - P04; owned by P04",
+        "Do not cover 亮蓝科技 - P05; owned by P05",
+        "Do not use unsupported exact numbers, rankings, award counts, fellow counts, laboratory counts, or years",
+        "Do not show non-content process notes",
+        "Do not show implementation labels",
+        "Do not duplicate adjacent page themes"
+      ],
+      "warnings": []
+    },
+    {
+      "page": 2,
+      "pageId": "P02",
+      "narrativeRole": "evidence for 设计阶段需评估零件是否适合增材制造，通过几何约束优化降低后期试错成本。",
+      "layoutIntent": "editorial-split",
+      "pageTheme": "深蓝科技",
+      "density": {
+        "pageRhythm": "balanced",
+        "contentDensity": "medium",
+        "visualWeight": "balanced",
+        "focalRegion": "main-content-region",
+        "supportingRegions": [
+          "secondary-information"
+        ],
+        "expectedContentUnits": 4,
+        "minimumSupportingRegions": 1,
+        "allowLargeWhitespace": false,
+        "layoutCapacityStrategy": "full-main-region-with-support",
+        "severity": "normal"
+      },
+      "requiredFacts": [
+        "几何约束: 壁厚过薄会导致成形不稳定，悬垂角过大增加支撑和后处理成本，封闭空腔可能造成未熔粉末难以清理。",
+        "承力构件设计: 避免把关键受力面直接放在粗糙支撑接触区。",
+        "设计规则的作用: 设计规则不是限制创新，而是把工艺约束提前纳入结构方案，减少后期试错。",
+        "壁厚过薄会导致成形不稳定，悬垂角过大会增加支撑和后处理成本，封闭空腔可能造成未熔粉末难以清理",
+        "设计时采用圆角过渡、减小孤立尖角、设置排粉孔，并让载荷路径与材料沉积方向相匹配"
+      ],
+      "avoid": [
+        "Do not cover 科技蓝渐变; owned by P01",
+        "Do not cover 亮蓝科技; owned by P03",
+        "Do not cover 深蓝科技 - P04; owned by P04",
+        "Do not cover 亮蓝科技 - P05; owned by P05",
+        "Do not use unsupported exact numbers, rankings, award counts, fellow counts, laboratory counts, or years",
+        "Do not show non-content process notes",
+        "Do not show implementation labels",
+        "Do not duplicate adjacent page themes"
+      ],
+      "warnings": []
+    },
+    {
+      "page": 3,
+      "pageId": "P03",
+      "narrativeRole": "evidence for 激光功率、扫描速度、层厚、道间距和预热温度共同决定能量密度，参数不当会导致孔隙、残余应力和组织缺陷。",
+      "layoutIntent": "cause-effect",
+      "pageTheme": "亮蓝科技",
+      "density": {
+        "pageRhythm": "dense",
+        "contentDensity": "high",
+        "visualWeight": "balanced",
+        "focalRegion": "main-evidence-region",
+        "supportingRegions": [
+          "secondary-evidence",
+          "navigation-structure"
+        ],
+        "expectedContentUnits": 6,
+        "minimumSupportingRegions": 2,
+        "allowLargeWhitespace": false,
+        "layoutCapacityStrategy": "full-main-region-with-support",
+        "severity": "normal"
+      },
+      "requiredFacts": [
+        "能量密度控制: 激光功率、扫描速度、层厚、道间距和预热温度共同决定能量密度。",
+        "扫描策略: 连续长扫描会积累热量并引起翘曲，分区扫描和层间旋转可降低残余应力。",
+        "粉末状态管理: 粉末的粒度分布、含氧量、流动性和循环使用次数影响铺粉均匀性。",
+        "过程记录与SPC: 实际生产中常把参数窗口、粉末批次和设备状态一起记录，形成可追溯的过程数据。",
+        "激光功率、扫描速度、层厚、道间距和预热温度共同决定能量密度"
+      ],
+      "avoid": [
+        "Do not cover 科技蓝渐变; owned by P01",
+        "Do not cover 深蓝科技; owned by P02",
+        "Do not cover 深蓝科技 - P04; owned by P04",
+        "Do not cover 亮蓝科技 - P05; owned by P05",
+        "Do not use unsupported exact numbers, rankings, award counts, fellow counts, laboratory counts, or years",
+        "Do not show non-content process notes",
+        "Do not show implementation labels",
+        "Do not duplicate adjacent page themes"
+      ],
+      "warnings": []
+    },
+    {
+      "page": 4,
+      "pageId": "P04",
+      "narrativeRole": "evidence for 制造前仿真、制造中监测、制造后检测需与后处理工艺协同，形成质量闭环。",
+      "layoutIntent": "process",
+      "pageTheme": "深蓝科技 - P04",
+      "density": {
+        "pageRhythm": "dense",
+        "contentDensity": "high",
+        "visualWeight": "balanced",
+        "focalRegion": "main-evidence-region",
+        "supportingRegions": [
+          "secondary-evidence",
+          "navigation-structure"
+        ],
+        "expectedContentUnits": 5,
+        "minimumSupportingRegions": 2,
+        "allowLargeWhitespace": false,
+        "layoutCapacityStrategy": "full-main-region-with-support",
+        "severity": "normal"
+      },
+      "requiredFacts": [
+        "制造前仿真: 用仿真预测热变形和支撑风险，提前规避问题。",
+        "制造中监测: 通过熔池监测、铺粉图像、温度场记录和声音信号发现异常。",
+        "制造后检测: 使用三坐标测量、工业CT、金相分析、硬度测试和拉伸试验验证结果。",
+        "后处理工艺: 去支撑和喷砂改善表面状态，热处理释放残余应力并调整组织，热等静压降低内部孔隙，机械加工保证装配精度。",
+        "制造前可用仿真预测热变形和支撑风险"
+      ],
+      "avoid": [
+        "Do not cover 科技蓝渐变; owned by P01",
+        "Do not cover 深蓝科技; owned by P02",
+        "Do not cover 亮蓝科技; owned by P03",
+        "Do not cover 亮蓝科技 - P05; owned by P05",
+        "Do not use unsupported exact numbers, rankings, award counts, fellow counts, laboratory counts, or years",
+        "Do not show non-content process notes",
+        "Do not show implementation labels",
+        "Do not duplicate adjacent page themes"
+      ],
+      "warnings": []
+    },
+    {
+      "page": 5,
+      "pageId": "P05",
+      "narrativeRole": "summary and closing action",
+      "layoutIntent": "summary",
+      "pageTheme": "亮蓝科技 - P05",
+      "density": {
+        "pageRhythm": "breathing",
+        "contentDensity": "medium",
+        "visualWeight": "strong",
+        "focalRegion": "single-dominant-region",
+        "supportingRegions": [
+          "supporting-context"
+        ],
+        "expectedContentUnits": 4,
+        "minimumSupportingRegions": 1,
+        "allowLargeWhitespace": true,
+        "layoutCapacityStrategy": "single-focal-anchor",
+        "severity": "normal"
+      },
+      "requiredFacts": [
+        "冷却通道模具案例: 增材制造可实现更均匀的温度控制，但内表面粗糙、残粉清理不足或热处理不稳定会影响模具寿命。",
+        "轻量化支架案例: 晶格杆径、节点过渡和构建方向必须与载荷路径匹配，否则局部应力集中会抵消轻量化收益。",
+        "质量体系要素: 原材料入厂、设备校准、参数锁定、过程记录、检测报告到批次放行。",
+        "教学转化目标: 学生应理解设计选择如何影响支撑和残余应力，参数窗口如何影响孔隙和组织，检测方法如何服务于缺陷定位。",
+        "复杂冷却通道模具可通过增材制造实现更均匀的温度控制，但如果通道内表面粗糙、残粉清理不足或热处理制度不稳定，模具寿命仍会受到影响"
+      ],
+      "avoid": [
+        "Do not cover 科技蓝渐变; owned by P01",
+        "Do not cover 深蓝科技; owned by P02",
+        "Do not cover 亮蓝科技; owned by P03",
+        "Do not cover 深蓝科技 - P04; owned by P04",
+        "Do not use unsupported exact numbers, rankings, award counts, fellow counts, laboratory counts, or years",
+        "Do not show non-content process notes",
+        "Do not show implementation labels",
+        "Do not duplicate adjacent page themes"
+      ],
+      "warnings": []
+    }
+  ],
+  "densitySummary": {
+    "sparsePages": 0,
+    "normalPages": 5,
+    "slightlyDensePages": 0,
+    "hardDensePages": 0
+  },
+  "warnings": []
+}

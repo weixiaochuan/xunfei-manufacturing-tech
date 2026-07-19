@@ -1,0 +1,46 @@
+{
+  "authorId": "firstwork-official",
+  "configurationSchema": {
+    "sections": [
+      {
+        "description": "更新后继续使用 Mock Provider，并保留相同最小权限。",
+        "title": "AI 摘要"
+      }
+    ]
+  },
+  "contributes": {
+    "editorToolbar": [
+      {
+        "action": "mock-document-summary",
+        "icon": "Sparkles",
+        "id": "ai-document-summary",
+        "label": "AI 摘要",
+        "tooltip": "生成当前文档的 Mock 摘要预览"
+      }
+    ]
+  },
+  "credentialRequirements": [],
+  "description": "声明式文档工具栏插件，启用后在文档编辑器显示 AI 摘要按钮。",
+  "icon": "FileText",
+  "id": "official-ai-document-summary-plugin",
+  "integrity": {
+    "sha256": null
+  },
+  "minAppVersion": "1.8.0",
+  "name": "AI 文档摘要插件",
+  "permissions": [
+    "document.read",
+    "document.write",
+    "ui.editor.toolbar",
+    "ai.invoke"
+  ],
+  "productType": "local-plugin",
+  "runtimeKind": "declarative-ui",
+  "schemaVersion": 2,
+  "signature": {
+    "signer": null,
+    "status": "unsigned"
+  },
+  "source": "marketplace",
+  "version": "1.1.0"
+}

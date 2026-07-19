@@ -1,0 +1,75 @@
+{
+  "authorId": "firstwork-official",
+  "configurationSchema": {
+    "authenticationType": "bearer",
+    "credentialId": {
+      "provider": "hosted-api",
+      "required": false,
+      "type": "credential-reference"
+    },
+    "endpoint": {
+      "default": "mock://hosted-api",
+      "type": "string"
+    },
+    "externalUrl": {
+      "default": "",
+      "type": "string"
+    },
+    "mockOnly": true,
+    "requestBodySchema": "{\"input\":\"string\"}",
+    "requestMethod": "POST",
+    "responseTextField": "data.text",
+    "streaming": true
+  },
+  "contributes": {
+    "aiProviders": [
+      {
+        "id": "mock-xingchen",
+        "label": "Mock Xingchen Provider",
+        "providerType": "xingchen"
+      }
+    ],
+    "views": [
+      {
+        "id": "xingchen-demo-config",
+        "title": "星辰学习助手配置"
+      }
+    ]
+  },
+  "credentialRequirements": [
+    {
+      "fields": [
+        "bearerToken"
+      ],
+      "id": "hosted-service-token",
+      "label": "托管服务访问 Token（可选）",
+      "provider": "hosted-api",
+      "required": false
+    }
+  ],
+  "deliveryMode": "hosted-api",
+  "description": "Hosted API 交付模式示例，仅验证安全配置与 Mock Provider。",
+  "icon": "Cloud",
+  "id": "official-hosted-ai-api-demo",
+  "integrity": {
+    "sha256": null
+  },
+  "minAppVersion": "1.8.0",
+  "name": "开发者托管 AI API（演示）",
+  "permissions": [
+    "credentials.use",
+    "agents.invoke",
+    "network.request",
+    "ai.invoke"
+  ],
+  "productType": "xingchen-agent",
+  "protocol": "hosted-api",
+  "runtimeKind": "xingchen-agent",
+  "schemaVersion": 2,
+  "signature": {
+    "signer": null,
+    "status": "unsigned"
+  },
+  "source": "marketplace",
+  "version": "1.0.0"
+}

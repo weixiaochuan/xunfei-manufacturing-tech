@@ -1,0 +1,43 @@
+{
+  "authorId": "firstwork-official",
+  "configurationSchema": {
+    "autoApplyDefault": false,
+    "sections": [
+      {
+        "description": "在 AI 对话中按会话维护 plan.md、findings.md 和 progress.md。默认每次确认后应用 AI 提出的规划更新。",
+        "title": "Planning with Files"
+      }
+    ],
+    "workspace": "planning-workspaces/{sessionId}"
+  },
+  "contributes": {},
+  "credentialRequirements": [],
+  "deliveryMode": null,
+  "description": "按会话工作的规划文件插件，让 AI 对话携带计划、发现和进度继续协作。",
+  "icon": "ListChecks",
+  "id": "official-planning-with-files",
+  "integrity": {
+    "sha256": null
+  },
+  "minAppVersion": "1.8.0",
+  "name": "Planning with Files",
+  "permissions": [
+    "ai.context.read",
+    "ai.context.augment",
+    "ai.session.read",
+    "planning.files.read",
+    "planning.files.write",
+    "ui.chat.toolbar",
+    "ui.chat.panel"
+  ],
+  "productType": "local-plugin",
+  "protocol": null,
+  "runtimeKind": "declarative-ui",
+  "schemaVersion": 2,
+  "signature": {
+    "signer": null,
+    "status": "unsigned"
+  },
+  "source": "marketplace",
+  "version": "1.0.0"
+}

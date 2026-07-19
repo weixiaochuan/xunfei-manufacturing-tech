@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>教师端 · 教学看板</title>
+<style>
+  :root{ --ink:#1a2233; --sub:#6b7686; --line:#e6e9ef; --brand:#2d5bd7; --bg:#f6f7fb;
+         --bad:#c0392b; --warn:#d98800; --ok:#137a4b; --soft:#f7f9ff; }
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+       margin:0;background:var(--bg);color:var(--ink);line-height:1.6}
+  .wrap{max-width:1000px;margin:0 auto;padding:22px 18px 60px}
+  h1{font-size:20px;margin:6px 0 2px}
+  h2{font-size:15px;margin:0 0 12px;display:flex;align-items:center;gap:8px}
+  h2 .hint{font-weight:400;color:var(--sub);font-size:12px}
+  .meta{color:var(--sub);font-size:13px;margin-bottom:14px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+  select,button{font:inherit;padding:7px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink)}
+  button{cursor:pointer}
+  button.primary{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+  table.pool{width:100%;border-collapse:collapse;font-size:13.5px}
+  table.pool th{text-align:left;padding:8px;border-bottom:2px solid #e8ecf5;color:var(--sub);font-weight:600}
+  table.pool td{padding:9px 8px;border-bottom:1px solid #eef1f7;vertical-align:top}
+  table.pool .stemcell{line-height:1.6}
+  .poolimg{max-width:260px;margin-top:6px;border:1px solid #e6eaf2;border-radius:8px;background:#fff}
+  .srcline{margin-top:6px;font-size:12px;color:var(--sub)}
+  .srcline .more{color:var(--brand);cursor:pointer;margin-left:6px}
+  .srcline .full{display:none;color:var(--sub)}
+  .pooltitle{font-size:15px;font-weight:700;cursor:pointer;padding:4px 0;list-style:none}
+  .pooltitle::-webkit-details-marker{display:none}
+  .pooltitle:before{content:"▸ ";color:var(--sub)}
+  details[open] > .pooltitle:before{content:"▾ "}
+  table.pool th select{width:100%;font-size:12.5px;padding:4px 6px;border:1px solid #dde3ee;border-radius:6px;background:#fff}
+  .ansbox{margin-top:6px;padding:8px 10px;background:var(--soft);border-radius:8px;font-size:13px}
+  .tab{padding:7px 16px;border-radius:999px;border:1px solid var(--line);background:#fff;cursor:pointer;font-size:14px}
+  .tab.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+  .kpi{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+  .kpi .n{font-size:24px;font-weight:800}
+  .kpi .l{color:var(--sub);font-size:12px}
+  .kpi.alert .n{color:#c05c5c}
+  .panel{background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:16px}
+  .row{display:flex;align-items:center;gap:10px;margin:7px 0}
+  .row .name{width:42%;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .barwrap{flex:1;background:#eef1f6;border-radius:8px;height:16px;overflow:hidden}
+  .row .bar{height:100%;border-radius:8px}
+  .row .val{width:106px;text-align:right;font-size:12.5px;color:var(--sub)}
+  .empty{color:var(--sub);font-size:14px;padding:14px;background:#fafbfd;border-radius:10px}
+  /* 重点告警区（突出重点） */
+  .focus{background:#fdf3f3;border:1px solid #f3d5d5;border-radius:14px;padding:14px 16px;margin-bottom:16px}
+  .focus.ok{background:#f5f8fc;border-color:#dde5f0}
+  .focus h3{margin:0 0 8px;font-size:14px;color:#b35555}
+  .focus.ok h3{color:var(--sub)}
+  .focus ul{margin:0;padding-left:18px}
+  .focus li{margin:5px 0;font-size:14px}
+  .focus .pct{font-weight:700;color:#c05c5c}
+  /* 误区分类折叠 */
+  .cat{border:1px solid var(--line);border-radius:12px;margin-bottom:8px;overflow:hidden}
+  .cat summary{cursor:pointer;padding:10px 14px;background:#fafbfd;font-size:14px;display:flex;
+       justify-content:space-between;align-items:center}
+  .cat .inner{padding:8px 14px 12px}
+  .cat .item{font-size:13px;color:var(--ink);padding:6px 0;border-bottom:1px dashed var(--line)}
+  .cat .item:last-child{border:none}
+  .cat .item .k{color:var(--sub);font-size:12px}
+  /* 折线图 */
+  svg.line{width:100%;height:170px}
+  .legend{color:var(--sub);font-size:12px;margin-top:6px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line)}
+  th{color:var(--sub);font-weight:600;font-size:13px}
+  tr.clickable{cursor:pointer}
+  tr.clickable:hover{background:var(--soft)}
+  a{color:var(--brand)}
+  pre.export{background:#0f172a;color:#e2e8f0;padding:14px;border-radius:12px;overflow:auto;
+       font-size:12px;max-height:340px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>教师端 · 教学看板</h1>
+  <div class="meta">聚合学生作答数据，回答三个问题：<b>全班哪里最吃力</b>、<b>错在什么原因</b>、<b>下节课该讲什么</b>。<a href="/">← 回到答题</a></div>
+
+  <div class="tabs">
+    <div class="tab on" data-tab="class" onclick="switchTab('class')">全班总览</div>
+    <div class="tab" data-tab="chapter" onclick="switchTab('chapter')">按章节</div>
+    <div class="tab" data-tab="student" onclick="switchTab('student')">按学生</div>
+    <div class="tab" data-tab="pool" onclick="switchTab('pool')">出题素材（历年真题）</div>
+    <div class="tab" data-tab="export" onclick="switchTab('export')">给助教的数据</div>
+  </div>
+
+  <div class="bar" id="filters"></div>
+
+  <div id="view"></div>
+</div>
+
+<script>
+let TAB='class', CHAPTER='', STUDENT='', D=null;
+
+/* 颜色：低错误率=平静的蓝，中=琥珀，高=砖红。比原来的红黄绿柔和，且不依赖颜色本身
+   （每条都带百分比数字，色盲/黑白打印也能看）。 */
+/* 淡红色系（低饱和度）：高错误率=淡红，中=浅橘粉，低=淡蓝灰。不刺眼但一眼能分辨。 */
+function color(rate){ return rate>=0.6?'#e08585':(rate>=0.35?'#eebb9a':'#a8bcd8'); }
+function level(rate){ return rate>=0.6?'需重点讲':(rate>=0.35?'需关注':'掌握较好'); }
+function bar(pct,c){ return `<div class="barwrap"><div class="bar" style="width:${Math.max(2,pct)}%;background:${c}"></div></div>`; }
+function esc(s){return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function rich(s){
+  let t=esc(s);
+  t=t.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
+  t=t.replace(/\n/g,'<br>');
+  return t;
+}
+/* 误区文本在学生端是第二人称（"你可能…"），教师端看的是"学生群体"，
+   所以这里转成中性表述，避免老师读到"你可能把A和B搞混"这种奇怪的人称。 */
+function toThird(s){
+  return String(s==null?'':s)
+    .replace(/^该干扰项对应的?认知误区[：:]\s*/,'')
+    .replace(/^认知误区[：:]\s*/,'')
+    .replace(/^你可能会/,'学生可能会').replace(/^你可能/,'学生可能')
+    .replace(/^你误以为/,'学生误以为').replace(/^你容易/,'学生容易')
+    .replace(/^你会/,'学生会').replace(/^你把/,'学生把').replace(/^你/,'学生');
+}
+
+async function load(){
+  const qs=new URLSearchParams();
+  if(CHAPTER) qs.set('chapter',CHAPTER);
+  if(STUDENT) qs.set('student',STUDENT);
+  D = await (await fetch('/api/teacher?'+qs)).json();
+  renderFilters(); render();
+}
+function switchTab(t){
+  TAB=t; document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===t));
+  if(t!=='chapter') CHAPTER='';
+  if(t!=='student') STUDENT='';
+  load();
+}
+function renderFilters(){
+  const f=document.getElementById('filters');
+  if(TAB==='chapter'||TAB==='export'){
+    const opts=(D.all_chapters||[]).map(c=>`<option value="${c}" ${c===CHAPTER?'selected':''}>${c}</option>`).join('');
+    f.innerHTML=`<label style="color:var(--sub);font-size:13px">选择章节：</label>
+      <select onchange="CHAPTER=this.value;load()"><option value="">全部章节</option>${opts}</select>`;
+  } else if(TAB==='student'){
+    const opts=(D.students||[]).map(s=>`<option value="${s.student_id}" ${s.student_id===STUDENT?'selected':''}>${s.student_id}</option>`).join('');
+    f.innerHTML=`<label style="color:var(--sub);font-size:13px">选择学生：</label>
+      <select onchange="STUDENT=this.value;load()"><option value="">全班</option>${opts}</select>`;
+  } else { f.innerHTML=''; }
+}
+
+function kpis(){
+  const k=D.kpi;
+  const er=(k.error_rate*100).toFixed(0);
+  return `<div class="cards">
+    <div class="kpi"><div class="n">${k.answers}</div><div class="l">累计作答</div></div>
+    <div class="kpi ${k.error_rate>=0.5?'alert':''}"><div class="n">${er}%</div><div class="l">总体错误率</div></div>
+    <div class="kpi"><div class="n">${k.students}</div><div class="l">参与学生</div></div>
+    <div class="kpi"><div class="n">${k.nodes}</div><div class="l">涉及知识点</div></div>
+  </div>`;
+}
+
+/* 突出重点：标题和措辞随当前标签页/筛选范围变化（不再千篇一律） */
+function scopeLabel(){
+  if(TAB==='student' && STUDENT) return {who:`该生（${STUDENT}）`, verb:'最该补'};
+  if(TAB==='chapter' && CHAPTER)  return {who:`该章节（${CHAPTER}）`, verb:'最该讲'};
+  if(TAB==='chapter')             return {who:'全部章节', verb:'最该讲'};
+  return {who:'本班', verb:'最该补'};
+}
+function focusBlock(){
+  const h=(D.hardest||[]).filter(x=>x.error_rate>=0.5).slice(0,3);
+  const sc=scopeLabel();
+  if(!h.length){
+    return `<div class="focus ok"><h3>${sc.who}：暂无高风险知识点</h3>
+      <div style="font-size:14px;color:var(--sub)">当前范围内没有错误率≥50%的知识点（或数据还太少）。</div></div>`;
+  }
+  const advice = TAB==='student'
+    ? '建议给该生单独推送这几个知识点的练习题。'
+    : (TAB==='chapter' ? '建议下次讲这一章时，重点澄清这几个点。'
+                       : '建议下节课优先讲这几个点。');
+  return `<div class="focus">
+    <h3>⚠ ${sc.who}${sc.verb}的 ${h.length} 个知识点</h3>
+    <ul>${h.map(x=>`<li>${esc(x.title||x.knowledge_id)} —— 错误率 <span class="pct">${(x.error_rate*100).toFixed(0)}%</span>（错 ${x.wrong}/${x.total}）</li>`).join('')}</ul>
+    <div style="margin-top:8px;font-size:13px;color:var(--sub)">${advice}</div>
+  </div>`;
+}
+
+function hardestPanel(){
+  const h=D.hardest||[];
+  if(!h.length) return `<div class="panel"><h2>知识点错误率</h2><div class="empty">还没有作答数据。让学生做几道题后刷新即可。</div></div>`;
+  return `<div class="panel"><h2>知识点错误率</h2>
+    ${h.map(x=>{const p=Math.round(x.error_rate*100);
+      return `<div class="row"><div class="name" title="${x.knowledge_id}">${esc(x.title||x.knowledge_id)}</div>
+        ${bar(p,color(x.error_rate))}<div class="val">${p}% · ${level(x.error_rate)}</div></div>`;}).join('')}
+  </div>`;
+}
+
+/* 章节错误率对比（横向条形，回答"哪一章最难"） */
+function chapterPanel(){
+  const c=D.by_chapter||[];
+  if(!c.length) return '';
+  return `<div class="panel"><h2>各章错误率对比</h2>
+    ${c.map(x=>{const p=Math.round(x.error_rate*100);
+      return `<div class="row"><div class="name">${esc(x.chapter)}</div>${bar(p,color(x.error_rate))}
+        <div class="val">${p}%（${x.wrong}/${x.total}）</div></div>`;}).join('')}
+  </div>`;
+}
+
+/* 趋势折线：错误率随时间变化（回答"讲过之后有没有变好"） */
+function trendPanel(){
+  const t=(D.trend||[]).filter(x=>x.total>0);
+  if(t.length<2) return `<div class="panel"><h2>错误率趋势</h2>
+    <div class="empty">至少需要两天的作答数据才能画趋势。目前数据点：${t.length}</div></div>`;
+  const W=900,H=150,P=28;
+  const xs=(i)=>P+i*(W-2*P)/(t.length-1);
+  const ys=(v)=>H-P-(v)*(H-2*P);
+  const pts=t.map((x,i)=>`${xs(i)},${ys(x.error_rate)}`).join(' ');
+  return `<div class="panel"><h2>错误率趋势 <span class="hint">看讲解之后有没有改善</span></h2>
+    <svg class="line" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+      <line x1="${P}" y1="${ys(0)}" x2="${W-P}" y2="${ys(0)}" stroke="#e6e9ef"/>
+      <line x1="${P}" y1="${ys(0.5)}" x2="${W-P}" y2="${ys(0.5)}" stroke="#f0e2e0" stroke-dasharray="4 4"/>
+      <line x1="${P}" y1="${ys(1)}" x2="${W-P}" y2="${ys(1)}" stroke="#e6e9ef"/>
+      <polyline points="${pts}" fill="none" stroke="var(--brand)" stroke-width="2.5"/>
+      ${t.map((x,i)=>`<circle cx="${xs(i)}" cy="${ys(x.error_rate)}" r="4" fill="var(--brand)"/>`).join('')}
+      <text x="4" y="${ys(1)+4}" font-size="11" fill="#6b7686">100%</text>
+      <text x="4" y="${ys(0)+4}" font-size="11" fill="#6b7686">0%</text>
+    </svg>
+    <div class="legend">${t.map(x=>x.date.slice(5)+'：'+(x.error_rate*100).toFixed(0)+'%').join('　·　')}</div>
+  </div>`;
+}
+
+/* 误区：先按"原因大类"归并，展开后细化到具体知识点（用户要求） */
+function misconceptionPanel(){
+  const cats=D.misconception_categories||[];
+  if(!cats.length) return '';
+  const max=Math.max(...cats.map(c=>c.count));
+  return `<div class="panel"><h2>认知误区（按原因分类） <span class="hint">点开可细化到具体知识点</span></h2>
+    ${cats.map(c=>`<details class="cat">
+      <summary><span>${esc(c.category)}</span><span style="color:var(--sub);font-size:13px">${c.count} 次</span></summary>
+      <div class="inner">
+        <div class="row"><div class="name" style="width:20%">占比</div>${bar(Math.round(100*c.count/max),'var(--brand)')}<div class="val">${c.count} 次</div></div>
+        ${c.items.map(it=>`<div class="item">${rich(toThird(it.misconception))}
+          <div class="k">${esc(it.chapter||'')}　·　${esc(it.knowledge_title||'')}　·　${it.count} 次</div></div>`).join('')}
+      </div></details>`).join('')}
+  </div>`;
+}
+
+function studentPanel(){
+  const s=D.students||[];
+  if(!s.length) return `<div class="panel"><h2>学生列表</h2><div class="empty">还没有学生作答数据。</div></div>`;
+  return `<div class="panel"><h2>学生列表 <span class="hint">点一行看该生详情</span></h2>
+    <table><tr><th>学生ID</th><th>作答</th><th>正确</th><th>正确率</th></tr>
+    ${s.map(x=>`<tr class="clickable" onclick="STUDENT='${x.student_id}';load()">
+      <td>${esc(x.student_id)}</td><td>${x.total}</td><td>${x.correct}</td>
+      <td style="color:${x.accuracy>=0.6?'var(--ok)':'var(--bad)'}">${(x.accuracy*100).toFixed(0)}%</td></tr>`).join('')}
+    </table></div>`;
+}
+
+function bankPanel(){
+  const b=D.bank||[];
+  if(!b.length) return '';
+  const max=Math.max(...b.map(x=>x.n));
+  return `<div class="panel"><h2>题库概览（已通过审核）</h2>
+    ${b.map(x=>`<div class="row"><div class="name">${esc(x.chapter)}</div>${bar(Math.round(100*x.n/max),'#9aa7c7')}
+      <div class="val">${x.n} 道</div></div>`).join('')}</div>`;
+}
+
+async function exportPanel(){
+  const qs=new URLSearchParams(); if(CHAPTER) qs.set('chapter',CHAPTER);
+  const d=await (await fetch('/api/teaching_export?'+qs)).json();
+  const v=document.getElementById('view');
+  v.innerHTML=`
+    <div class="panel"><h2>给【助教组】的教学重点数据 <span class="hint">可直接用来生成PPT/教案</span></h2>
+      <div class="meta">接口：<code>GET /api/teaching_export?chapter=…</code></div>
+      ${(d.focus_points||[]).length? `
+        <table><tr><th>建议讲解重点</th><th>错误率</th><th>学生的典型误区</th></tr>
+        ${d.focus_points.map(f=>`<tr>
+          <td><b>${esc(f.knowledge_title||f.knowledge_id)}</b><div class="k" style="color:var(--sub);font-size:12px">${esc(f.chapter||'')}</div></td>
+          <td style="color:${color(f.error_rate)};font-weight:700">${(f.error_rate*100).toFixed(0)}%</td>
+          <td>${(f.student_misconceptions||[]).map((m,i)=>`<div style="font-size:13px">${'①②③④⑤'[i]||'·'} ${rich(toThird(m.misconception))} <span style="color:var(--sub)">(${m.count}次)</span></div>`).join('')||'<span style="color:var(--sub)">—</span>'}</td>
+        </tr>`).join('')}</table>`
+        : `<div class="empty">还没有足够的作答数据来生成教学重点。</div>`}
+      <div style="margin-top:12px"><button class="primary" onclick="downloadJSON()">导出为 JSON</button>
+      <button onclick="downloadCSV()">导出为 CSV（可用Excel打开）</button></div>
+    </div>
+    <div class="panel"><h2>原始数据（助教组可直接对接）</h2>
+      <pre class="export">${esc(JSON.stringify(d,null,2))}</pre></div>`;
+  window.__EXPORT=d;
+}
+function downloadJSON(){
+  const blob=new Blob([JSON.stringify(window.__EXPORT,null,2)],{type:'application/json'});
+  dl(blob,'teaching_focus.json');
+}
+function downloadCSV(){
+  const d=window.__EXPORT||{}; const rows=[['知识点','章节','错误率','错/总','典型误区']];
+  (d.focus_points||[]).forEach(f=>rows.push([
+    f.knowledge_title||f.knowledge_id, f.chapter||'', (f.error_rate*100).toFixed(0)+'%',
+    `${f.wrong}/${f.total}`, (f.student_misconceptions||[]).map(m=>m.misconception).join(' | ')]));
+  const csv='\ufeff'+rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
+  dl(new Blob([csv],{type:'text/csv'}),'teaching_focus.csv');
+}
+function dl(blob,name){
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click();
+}
+
+function render(){
+  const v=document.getElementById('view');
+  if(TAB==='pool'){ poolPanel(); return; }
+  if(TAB==='export'){ exportPanel(); return; }
+  if(TAB==='student'){
+    v.innerHTML = kpis() + (STUDENT? focusBlock()+hardestPanel()+misconceptionPanel() : studentPanel()+chapterPanel());
+    return;
+  }
+  if(TAB==='chapter'){
+    v.innerHTML = kpis() + focusBlock() + hardestPanel() + misconceptionPanel() + trendPanel();
+    return;
+  }
+  v.innerHTML = kpis() + focusBlock() + chapterPanel() + hardestPanel() + misconceptionPanel() + trendPanel() + bankPanel();
+}
+/* 出题素材库：历年真题。分两类——
+   · 有标准答案的：学生也在练（能给反馈）
+   · 没有标准答案的：**只在这里出现**，学生端看不到。
+     因为没有标准答案，给学生做的话反馈必然是错的；但它们都是真实考过的题，
+     对老师出题很有价值，所以保留。 */
+let POOL=[], POOL_F={type:'',chapter:'',usage:''};
+
+async function poolPanel(){
+  const v=document.getElementById('view');
+  if(!POOL.length){
+    v.innerHTML='<div class="panel">正在加载出题素材…</div>';
+    const r=await (await fetch('/api/exam_pool')).json();
+    POOL=r.items||[];
+  }
+  renderPool();
+}
+
+function renderPool(){
+  const v=document.getElementById('view');
+  const all=POOL;
+  const noAnsAll=all.filter(x=>!x.has_answer), hasAnsAll=all.filter(x=>x.has_answer);
+
+  // 筛选（用户要求：表头可以按题型/章节筛选，方便查找）
+  const f=x=> (!POOL_F.type||x.type===POOL_F.type) && (!POOL_F.chapter||x.chapter===POOL_F.chapter);
+  const noAns=noAnsAll.filter(f), hasAns=hasAnsAll.filter(f);
+
+  const types=[...new Set(all.map(x=>x.type))];
+  const chaps=[...new Set(all.map(x=>x.chapter))].sort();
+  const sel=(id,cur,opts,label)=>`<select onchange="POOL_F.${id}=this.value;renderPool()">
+      <option value="">${label}（全部）</option>
+      ${opts.map(o=>`<option value="${esc(o)}" ${o===cur?'selected':''}>${esc(o)}</option>`).join('')}
+    </select>`;
+
+  const row=x=>`<tr>
+    <td><span class="tag">${esc(x.type)}</span></td>
+    <td>${esc(x.chapter||'').replace(/^第(.)章_/,'第$1章 ')}</td>
+    <td>${x.total_score?x.total_score+'分':'—'}</td>
+    <td class="stemcell">${esc(x.stem)}
+      ${x.image?`<div><img src="${x.image}" class="poolimg"></div>`:''}
+      <div class="srcline">📄 <b>${esc(x.exam_source||'历年真题')}</b>
+        ${x.exam_source_full && x.exam_source_full!==x.exam_source
+          ? `<span class="more" onclick="this.nextElementSibling.style.display='inline';this.style.display='none'">详情</span><span class="full">${esc(x.exam_source_full)}</span>`:''}</div>
+      ${x.has_answer?`<details><summary>参考答案</summary><div class="ansbox">${rich(x.answer||'')}</div></details>`:''}</td>
+  </tr>`;
+
+  const tbl=(list)=>`<table class="pool">
+    <thead><tr>
+      <th style="width:110px">${sel('type', POOL_F.type, types, '题型')}</th>
+      <th style="width:170px">${sel('chapter', POOL_F.chapter, chaps, '章节')}</th>
+      <th style="width:56px">分值</th>
+      <th>题目 · 出处 · 参考答案</th>
+    </tr></thead>
+    <tbody>${list.map(row).join('')||'<tr><td colspan="4" style="color:var(--sub)">（当前筛选下没有题目）</td></tr>'}</tbody></table>`;
+
+  v.innerHTML=`
+  <div class="focus ok">
+    <h3>历年真题出题素材库（共 ${all.length} 道）</h3>
+    <div style="font-size:13px;color:var(--sub);line-height:1.7">
+      <b>${hasAnsAll.length} 道有标准答案</b>——学生端也在练，做完能拿到采分点批改。<br>
+      <b>${noAnsAll.length} 道没有标准答案</b>（原卷就没给，或转换时丢失）——学生端看不到。
+      每道都标注了出处，您可以回原卷核对，放心用来出题。
+    </div>
+  </div>
+
+  <details class="panel" open>
+    <summary class="pooltitle">✅ 有标准答案（${hasAns.length} 道）<span class="hint">学生端也在练</span></summary>
+    ${tbl(hasAns)}
+  </details>
+
+  <details class="panel">
+    <summary class="pooltitle">📘 没有标准答案（${noAns.length} 道）<span class="hint">仅供出题参考</span></summary>
+    ${tbl(noAns)}
+  </details>`;
+}
+
+load();
+</script>
+</body>
+</html>

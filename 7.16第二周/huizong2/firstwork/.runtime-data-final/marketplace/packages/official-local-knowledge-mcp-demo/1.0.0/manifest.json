@@ -1,0 +1,75 @@
+{
+  "authorId": "firstwork-official",
+  "configurationSchema": {
+    "authenticationType": "none",
+    "capabilities": [
+      "tools"
+    ],
+    "credentialId": {
+      "provider": "remote-mcp",
+      "required": false,
+      "type": "credential-reference"
+    },
+    "externalUrl": {
+      "default": "",
+      "type": "string"
+    },
+    "mockAction": "mcp-test",
+    "mockOnly": true,
+    "serverUrl": {
+      "default": "mock://remote-mcp",
+      "type": "string"
+    },
+    "timeoutMs": 30000,
+    "tools": [
+      {
+        "description": "返回固定演示搜索结果",
+        "name": "mock_search"
+      },
+      {
+        "description": "返回固定演示摘要",
+        "name": "mock_summarize"
+      }
+    ],
+    "transport": "streamable-http"
+  },
+  "contributes": {
+    "mcpServers": [
+      {
+        "id": "mock-local-knowledge",
+        "label": "Mock Local Knowledge MCP",
+        "transport": "mock"
+      }
+    ],
+    "views": [
+      {
+        "id": "mock-mcp-tools",
+        "title": "本地知识工具说明"
+      }
+    ]
+  },
+  "credentialRequirements": [],
+  "deliveryMode": "remote-mcp",
+  "description": "安全 Mock MCP 连接器，不执行系统命令、不访问外网。",
+  "icon": "Plug",
+  "id": "official-local-knowledge-mcp-demo",
+  "integrity": {
+    "sha256": null
+  },
+  "minAppVersion": "1.8.0",
+  "name": "本地知识工具MCP（演示）",
+  "permissions": [
+    "mcp.connect",
+    "network.request"
+  ],
+  "productType": "mcp-connector",
+  "protocol": "streamable-http",
+  "runtimeKind": "mcp-connector",
+  "schemaVersion": 2,
+  "signature": {
+    "signer": null,
+    "status": "unsigned"
+  },
+  "source": "marketplace",
+  "version": "1.0.0"
+}
