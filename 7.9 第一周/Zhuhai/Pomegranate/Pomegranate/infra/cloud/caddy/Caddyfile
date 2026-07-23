@@ -1,0 +1,33 @@
+{
+	servers {
+		timeouts {
+			read_body 2m
+			read_header 15s
+			write 2m
+			idle 5m
+		}
+	}
+}
+{$AUTH_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy casdoor:8000 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+	}
+}
+
+{$API_DOMAIN} {
+	request_body {
+		max_size {$CADDY_MAX_REQUEST_BODY}
+	}
+
+	reverse_proxy account-server:3010 {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+
+		transport http {
+			dial_timeout 10s
+			response_header_timeout 60s
+		}
+	}
+}

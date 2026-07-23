@@ -1,0 +1,158 @@
+name: pomegranate-cloud
+
+x-account-environment: &account-environment
+  DEPLOYMENT_PROFILE: "${DEPLOYMENT_PROFILE}"
+  ACCOUNT_SERVER_HOST: "${ACCOUNT_SERVER_HOST}"
+  ACCOUNT_SERVER_PORT: "${ACCOUNT_SERVER_PORT}"
+  ACCOUNT_SERVER_PUBLIC_URL: "${ACCOUNT_SERVER_PUBLIC_URL}"
+  ACCOUNT_DB_HOST: "${ACCOUNT_DB_HOST}"
+  ACCOUNT_DB_PORT: "${ACCOUNT_DB_PORT}"
+  ACCOUNT_DB_NAME: "${ACCOUNT_DB_NAME}"
+  ACCOUNT_DB_USER: "${ACCOUNT_DB_USER}"
+  ACCOUNT_DB_PASSWORD: "${ACCOUNT_DB_PASSWORD}"
+  NODE_ENV: "${NODE_ENV}"
+  CASDOOR_PUBLIC_URL: "${CASDOOR_PUBLIC_URL}"
+  CASDOOR_CLIENT_ID: "${CASDOOR_CLIENT_ID}"
+  CASDOOR_CLIENT_SECRET: "${CASDOOR_CLIENT_SECRET}"
+  CASDOOR_REDIRECT_URI: "${CASDOOR_REDIRECT_URI}"
+  CASDOOR_ORGANIZATION: "${CASDOOR_ORGANIZATION}"
+  CASDOOR_APPLICATION: "${CASDOOR_APPLICATION}"
+  FILE_STORAGE_BACKEND: "${FILE_STORAGE_BACKEND}"
+  USER_FILES_ROOT: "${USER_FILES_ROOT}"
+  FILE_STORAGE_ALLOW_LEGACY_ROLLBACK: "${FILE_STORAGE_ALLOW_LEGACY_ROLLBACK}"
+  USER_FILE_MAX_BYTES: "${USER_FILE_MAX_BYTES}"
+  OIDC_DEBUG_CLAIM_TYPES: "${OIDC_DEBUG_CLAIM_TYPES}"
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_ADMIN_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_ADMIN_PASSWORD}"
+      POSTGRES_DB: postgres
+      CASDOOR_DB_NAME: "${CASDOOR_DB_NAME}"
+      CASDOOR_DB_USER: "${CASDOOR_DB_USER}"
+      CASDOOR_DB_PASSWORD: "${CASDOOR_DB_PASSWORD}"
+      ACCOUNT_DB_NAME: "${ACCOUNT_DB_NAME}"
+      ACCOUNT_DB_USER: "${ACCOUNT_DB_USER}"
+      ACCOUNT_DB_PASSWORD: "${ACCOUNT_DB_PASSWORD}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/cloud/postgres/001-init-cloud-databases.sh:/docker-entrypoint-initdb.d/001-init-cloud-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    networks:
+      - backend
+
+  casdoor:
+    image: casbin/casdoor:3.119.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RUNNING_IN_DOCKER: "true"
+      driverName: postgres
+      dataSourceName: >-
+        user=${CASDOOR_DB_USER} password=${CASDOOR_DB_PASSWORD}
+        host=${CASDOOR_DB_HOST} port=${CASDOOR_DB_PORT}
+        sslmode=disable dbname=${CASDOOR_DB_NAME}
+      dbName: "${CASDOOR_DB_NAME}"
+      httpport: "8000"
+      runmode: prod
+      origin: "https://${AUTH_DOMAIN}"
+      originFrontend: "https://${AUTH_DOMAIN}"
+    volumes:
+      - ./infra/cloud/casdoor/app.conf:/conf/app.conf:ro
+    networks:
+      - backend
+      - edge
+
+  account-migrate:
+    build:
+      context: .
+      dockerfile: services/account-server/Dockerfile
+    image: pomegranate-account-server:${ACCOUNT_SERVER_IMAGE_TAG}
+    restart: "no"
+    command: ["node", "dist/scripts/migrate.js"]
+    environment: *account-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - "${POMEGRANATE_DATA_DIR}/user-files:${USER_FILES_ROOT}"
+    networks:
+      - backend
+
+  account-server:
+    build:
+      context: .
+      dockerfile: services/account-server/Dockerfile
+    image: pomegranate-account-server:${ACCOUNT_SERVER_IMAGE_TAG}
+    restart: unless-stopped
+    environment: *account-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      account-migrate:
+        condition: service_completed_successfully
+      casdoor:
+        condition: service_started
+    volumes:
+      - "${POMEGRANATE_DATA_DIR}/user-files:${USER_FILES_ROOT}"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:' + (process.env.ACCOUNT_SERVER_PORT || '3010') + '/health/ready')
+          .then((response) => { if (!response.ok) process.exit(1); })
+          .catch(() => process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - backend
+      - edge
+
+  caddy:
+    image: caddy:2.10.0-alpine
+    restart: unless-stopped
+    depends_on:
+      account-server:
+        condition: service_healthy
+      casdoor:
+        condition: service_started
+    environment:
+      AUTH_DOMAIN: "${AUTH_DOMAIN}"
+      API_DOMAIN: "${API_DOMAIN}"
+      CADDY_MAX_REQUEST_BODY: "${CADDY_MAX_REQUEST_BODY}"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./infra/cloud/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  backend:
+    name: pomegranate_backend
+    internal: true
+  edge:
+    name: pomegranate_edge

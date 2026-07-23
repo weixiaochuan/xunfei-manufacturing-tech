@@ -1,0 +1,15 @@
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!services/
+!services/account-server/
+!services/account-server/**
+services/account-server/.data/
+services/account-server/.env
+services/account-server/.env.*
+services/account-server/coverage/
+services/account-server/dist/
+services/account-server/logs/
+services/account-server/node_modules/
+services/account-server/user-files/
