@@ -6,9 +6,23 @@ import { List, Modal, Typography, message } from "antd";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { NavigateFunction } from "react-router-dom";
 
-import { noteApi, importApi, pdfApi, sourceFileApi, tagApi, folderApi } from "./api";
+import { accountFilesApi, importApi, pdfApi, sourceFileApi } from "./api";
+import {
+  isAccountDocumentSource,
+  noteApi,
+  tagApi,
+  folderApi,
+} from "./documents/repository";
 import { importWordFiles } from "./wordImport";
 import { useAppStore } from "@/store";
+import { documentErrorMessage } from "./documents/documentError";
+import {
+  assertCurrentDocumentRequest,
+  captureDocumentRequest,
+} from "./documents/documentSession";
+
+let accountCreateInFlight: Promise<void> | null = null;
+let accountUploadInFlight: Promise<void> | null = null;
 
 /**
  * 导入完成后的统一跳转规则（业界 Bear / Apple Notes / VS Code 路线）：
@@ -44,6 +58,23 @@ function untitledTitle(): string {
   )} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+export async function uploadAccountDocument(navigate?: NavigateFunction): Promise<void> {
+  if (accountUploadInFlight) return accountUploadInFlight;
+  const operation = (async () => {
+    const identity = captureDocumentRequest();
+    const result = await accountFilesApi.pickAndUpload();
+    if (result.status === "cancelled") return;
+    assertCurrentDocumentRequest(identity);
+    useAppStore.getState().bumpNotesRefresh();
+    message.success(`已上传“${result.file.originalName}”`);
+    navigate?.("/notes");
+  })();
+  accountUploadInFlight = operation.finally(() => {
+    accountUploadInFlight = null;
+  });
+  return accountUploadInFlight;
+}
+
 /**
  * 创建一篇空白笔记并跳转到编辑器。用户想写就写，不想保留可直接删除。
  *
@@ -57,13 +88,27 @@ export async function createBlankAndOpen(
   navigate: NavigateFunction,
   opts?: { useDefaults?: boolean },
 ): Promise<void> {
+  if (isAccountDocumentSource && accountCreateInFlight) return accountCreateInFlight;
+  const operation = createBlankAndOpenInternal(folderId, navigate, opts);
+  if (!isAccountDocumentSource) return operation;
+  accountCreateInFlight = operation.finally(() => {
+    accountCreateInFlight = null;
+  });
+  return accountCreateInFlight;
+}
+
+async function createBlankAndOpenInternal(
+  folderId: number | null,
+  navigate: NavigateFunction,
+  opts?: { useDefaults?: boolean },
+): Promise<void> {
   try {
     let finalFolderId = folderId;
     let appliedTagIds: number[] = [];
     let appliedFolderName: string | null = null;
     let appliedTagNames: string[] = [];
 
-    if (opts?.useDefaults && folderId == null) {
+    if (!isAccountDocumentSource && opts?.useDefaults && folderId == null) {
       const { defaultFolderId, defaultTagIds } = useAppStore.getState();
       if (defaultFolderId != null) {
         finalFolderId = defaultFolderId;
@@ -119,7 +164,7 @@ export async function createBlankAndOpen(
       message.success(`已新建文档 · 默认套用 ${parts.join(" + ")}`, 3);
     }
   } catch (e) {
-    message.error(String(e));
+    message.error(documentErrorMessage(e));
   }
 }
 
@@ -149,6 +194,13 @@ export async function importTextFlow(
   folderId: number | null,
   navigate?: NavigateFunction,
 ): Promise<void> {
+  if (isAccountDocumentSource) {
+    await uploadAccountDocument(navigate).catch((error) => {
+      const detail = error as { message?: string };
+      message.error(detail.message || "上传失败");
+    });
+    return;
+  }
   const picked = await openDialog({
     multiple: true,
     filters: [
@@ -211,6 +263,13 @@ export async function importPdfsFlow(
   folderId: number | null,
   navigate?: NavigateFunction,
 ): Promise<void> {
+  if (isAccountDocumentSource) {
+    await uploadAccountDocument(navigate).catch((error) => {
+      const detail = error as { message?: string };
+      message.error(detail.message || "上传失败");
+    });
+    return;
+  }
   const picked = await openDialog({
     multiple: true,
     filters: [{ name: "PDF", extensions: ["pdf"] }],
@@ -257,6 +316,13 @@ export async function importWordFlow(
   folderId: number | null,
   navigate?: NavigateFunction,
 ): Promise<void> {
+  if (isAccountDocumentSource) {
+    await uploadAccountDocument(navigate).catch((error) => {
+      const detail = error as { message?: string };
+      message.error(detail.message || "上传失败");
+    });
+    return;
+  }
   const converter = await sourceFileApi
     .getConverterStatus()
     .catch(() => "none" as const);

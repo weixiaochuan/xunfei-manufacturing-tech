@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { Modal, Input, Alert, Typography, message } from "antd";
 import { Globe } from "lucide-react";
-import { noteApi } from "@/lib/api";
+import { noteApi as localNoteApi } from "@/lib/api";
+import { isAccountDocumentSource, noteApi } from "@/lib/documents/repository";
+import { documentErrorMessage } from "@/lib/documents/documentError";
 import { useAppStore } from "@/store";
 import { useNavigate } from "react-router-dom";
 
@@ -42,7 +44,9 @@ export function ClipUrlModal({ open, folderId, onClose }: Props) {
     }
     setLoading(true);
     try {
-      const note = await noteApi.clipUrl(trimmed, folderId ?? null);
+      const note = isAccountDocumentSource
+        ? await noteApi.create({ title: trimmed, content: `[${trimmed}](${trimmed})`, folder_id: folderId ?? null })
+        : await localNoteApi.clipUrl(trimmed, folderId ?? null);
       useAppStore.getState().bumpNotesRefresh();
       useAppStore.getState().bumpFoldersRefresh();
       message.success(`剪藏成功：${note.title}`);
@@ -50,7 +54,7 @@ export function ClipUrlModal({ open, folderId, onClose }: Props) {
       onClose();
       navigate(`/notes/${note.id}`);
     } catch (e) {
-      message.error(`剪藏失败：${e}`);
+      message.error(`剪藏失败：${documentErrorMessage(e)}`);
       setLoading(false);
     }
   }

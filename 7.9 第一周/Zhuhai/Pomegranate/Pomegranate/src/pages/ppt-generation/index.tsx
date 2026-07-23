@@ -38,7 +38,19 @@ import {
 } from "lucide-react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { aiModelApi, aiWriteApi, configApi, folderApi, noteApi, pptMasterApi, systemApi } from "@/lib/api";
+import { aiAttachmentApi, aiModelApi, aiWriteApi, configApi, pptMasterApi, systemApi } from "@/lib/api";
+import {
+  folderApi,
+  isAccountUploadedNote,
+  noteApi,
+  prepareAccountUploadedMaterial,
+} from "@/lib/documents/repository";
+import { documentErrorMessage } from "@/lib/documents/documentError";
+import {
+  captureDocumentRequest,
+  isCurrentDocumentRequest,
+  subscribeDocumentAccountReset,
+} from "@/lib/documents/documentSession";
 import {
   hasSubstantivePptMaterial,
   mergePptMaterialSources,
@@ -590,6 +602,21 @@ export default function PptGenerationPage() {
     });
   }, [smartForm]);
 
+  useEffect(
+    () =>
+      subscribeDocumentAccountReset(() => {
+        const draft = usePptGenerationDraftStore.getState();
+        const hadAccountMaterial = draft.resolvedMaterialSources.length > 0;
+        draft.clearInternalMaterial();
+        setMaterialCandidates([]);
+        setPickerSelectedIds([]);
+        setMaterialPickerOpen(false);
+        setMaterialLoadError(null);
+        if (hadAccountMaterial) message.info("账号已切换，请重新选择素材");
+      }),
+    [],
+  );
+
   useEffect(() => {
     void (async () => {
       const [pptMasterRoot, pythonPath, projectPath, savedOutputDir] = await Promise.all([
@@ -719,6 +746,33 @@ export default function PptGenerationPage() {
     }
   }
 
+  async function pickComputerMaterial() {
+    const picked = await openDialog({
+      multiple: true,
+      title: "从电脑选择素材文件",
+      filters: [
+        { name: "文档素材", extensions: ["pdf", "xlsx", "xls", "txt", "md", "markdown", "csv", "json"] },
+      ],
+    });
+    if (!picked) return;
+    const paths = Array.isArray(picked) ? picked : [picked];
+    setMaterialLoading(true);
+    try {
+      const previews = await Promise.all(paths.map((path) => aiAttachmentApi.parseAttachment(path)));
+      const content = previews.map((preview) => {
+        const body = preview.kind === "excel" ? preview.markdown : preview.content;
+        return `【来源：${preview.displayName}】\n${body}`;
+      }).join("\n\n");
+      setMaterialInputMode("manual");
+      setManualRawMaterial(content);
+      message.success(`已从电脑读取 ${previews.length} 个素材文件`);
+    } catch (error) {
+      message.error(`读取电脑文件失败：${documentErrorMessage(error)}`);
+    } finally {
+      setMaterialLoading(false);
+    }
+  }
+
   async function handleModelChange(modelId: number) {
     setSelectedModelId(modelId);
     try {
@@ -733,6 +787,7 @@ export default function PptGenerationPage() {
   }
 
   async function loadMaterialCandidates() {
+    const identity = captureDocumentRequest();
     setMaterialLoading(true);
     setMaterialLoadError(null);
     try {
@@ -745,9 +800,11 @@ export default function PptGenerationPage() {
         page += 1;
       }
       const folders = await folderApi.list();
+      if (!isCurrentDocumentRequest(identity)) return;
       setMaterialCandidates(buildMaterialCandidates(notes, folders));
     } catch (error) {
-      const detail = `加载文档和日记失败：${String(error)}`;
+      if (!isCurrentDocumentRequest(identity)) return;
+      const detail = `加载文档和日记失败：${documentErrorMessage(error)}`;
       setMaterialLoadError(detail);
       message.error(detail);
     } finally {
@@ -816,14 +873,22 @@ export default function PptGenerationPage() {
       try {
         note = await noteApi.get(id);
       } catch (error) {
-        message.error(`${candidate.sourceType === "diary" ? "日记" : "文档"}内容读取失败：${String(error)}`);
+        message.error(`${candidate.sourceType === "diary" ? "日记" : "文档"}内容读取失败：${documentErrorMessage(error)}`);
         return null;
       }
-      const content = dirtyTab && draft
+      let content: string;
+      try {
+        content = isAccountUploadedNote(note)
+          ? await prepareAccountUploadedMaterial(note)
+          : dirtyTab && draft
         ? draft.content
         : dailyHasUnsavedChanges && dailyDraft
           ? dailyDraft.content
           : note.content;
+      } catch (error) {
+        message.error(`文件素材读取失败：${documentErrorMessage(error)}`);
+        return null;
+      }
       const plainText = normalizePptMaterialText(content);
       if (!plainText) {
         message.error(`“${candidate.title}”没有可用正文`);
@@ -1667,33 +1732,37 @@ export default function PptGenerationPage() {
               onChange={(value) => handleMaterialModeChange(value as PptMaterialInputMode)}
               options={[
                 { label: "直接输入", value: "manual" },
-                { label: "软件内文档", value: "internal" },
+                { label: "从我的文档选择", value: "internal" },
               ]}
             />
             <div className="mt-2 text-xs text-slate-500">
               {materialInputMode === "manual"
-                ? "粘贴或输入文字材料。"
-                : "从 Pomegranate 的文档和日记中选择内容。"}
+                ? "粘贴文字，或通过 Windows 文件选择框从电脑读取素材。"
+                : "从当前账号的“我的文档”中选择内容。"}
             </div>
           </Form.Item>
 
           {materialInputMode === "manual" ? (
-            <Form.Item
-              label="原始语料"
-              required
-            >
-              <Input.TextArea
-                value={manualRawMaterial}
-                onChange={(event) => setManualRawMaterial(event.target.value)}
-                autoSize={{ minRows: 8, maxRows: 16 }}
-                placeholder="粘贴笔记、文档摘要、项目说明、实验内容等"
-              />
-            </Form.Item>
+            <>
+              <div className="mb-2">
+                <Button icon={<FolderOpen size={15} />} loading={materialLoading} onClick={pickComputerMaterial}>
+                  从电脑选择文件
+                </Button>
+              </div>
+              <Form.Item label="原始语料" required>
+                <Input.TextArea
+                  value={manualRawMaterial}
+                  onChange={(event) => setManualRawMaterial(event.target.value)}
+                  autoSize={{ minRows: 8, maxRows: 16 }}
+                  placeholder="粘贴笔记、文档摘要、项目说明、实验内容等"
+                />
+              </Form.Item>
+            </>
           ) : (
             <div className="mb-6 space-y-3 rounded-md border border-slate-200 p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <div className="font-medium text-slate-900">软件内文档素材</div>
+                  <div className="font-medium text-slate-900">我的文档素材</div>
                   <div className="mt-1 text-xs text-slate-500">
                     已选择 {resolvedMaterialSources.length} 项，共 {mergedMaterialText.length} 字符
                   </div>

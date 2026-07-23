@@ -15,7 +15,9 @@ import {
   LayoutTemplate,
 } from "lucide-react";
 import { Modal, Input, message } from "antd";
-import { noteApi, dailyApi } from "@/lib/api";
+import { dailyApi, isAccountDocumentSource, noteApi } from "@/lib/documents/repository";
+import { documentErrorMessage } from "@/lib/documents/documentError";
+import { noteApi as localNoteApi } from "@/lib/api";
 import { useAppStore } from "@/store";
 
 /**
@@ -97,13 +99,15 @@ export default function QuickCreatePage() {
     }
     setClipping(true);
     try {
-      const note = await noteApi.clipUrl(url);
+      const note = isAccountDocumentSource
+        ? await noteApi.create({ title: url, content: `[${url}](${url})` })
+        : await localNoteApi.clipUrl(url);
       useAppStore.getState().bumpNotesRefresh();
       message.success("已剪藏");
       setClipOpen(false);
       navigate(`/notes/${note.id}`, { replace: true });
     } catch (e) {
-      message.error(`剪藏失败: ${e}`);
+      message.error(`剪藏失败: ${documentErrorMessage(e)}`);
     } finally {
       setClipping(false);
     }
@@ -115,7 +119,7 @@ export default function QuickCreatePage() {
       useAppStore.getState().bumpNotesRefresh();
       navigate(`/notes/${note.id}`, { replace: true });
     } catch (e) {
-      message.error(`创建失败: ${e}`);
+      message.error(`创建失败: ${documentErrorMessage(e)}`);
     }
   }
 
@@ -129,7 +133,7 @@ export default function QuickCreatePage() {
       useAppStore.getState().bumpNotesRefresh();
       navigate(`/notes/${note.id}`, { replace: true });
     } catch (e) {
-      message.error(`打开失败: ${e}`);
+      message.error(`打开失败: ${documentErrorMessage(e)}`);
     }
   }
 

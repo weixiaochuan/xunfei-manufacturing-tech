@@ -16,7 +16,8 @@ import { useEffect, useRef, useState } from "react";
 import { Modal, Button, Input, Space, Alert, Typography, App as AntdApp } from "antd";
 import { Square, Loader2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { asrApi, taskApi, noteApi, aiPlanApi } from "@/lib/api";
+import { asrApi, taskApi, aiPlanApi } from "@/lib/api";
+import { noteApi } from "@/lib/documents/repository";
 import { useAudioLevel } from "@/hooks/useAudioLevel";
 import { useSilenceAutoStop } from "@/hooks/useSilenceAutoStop";
 

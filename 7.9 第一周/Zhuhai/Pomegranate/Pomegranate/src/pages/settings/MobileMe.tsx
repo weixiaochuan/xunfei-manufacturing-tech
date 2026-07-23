@@ -23,10 +23,14 @@ import {
 import {
   systemApi,
   cardApi,
-  trashApi,
   aiModelApi,
   promptApi,
 } from "@/lib/api";
+import {
+  isAccountDocumentSource,
+  noteApi,
+  trashApi,
+} from "@/lib/documents/repository";
 import type { DashboardStats } from "@/types";
 
 /**
@@ -59,8 +63,16 @@ export function MobileMe() {
     let alive = true;
     void (async () => {
       try {
+        const accountNotes = isAccountDocumentSource
+          ? await noteApi.list({ page: 1, page_size: 1 })
+          : null;
         const [s, due, trash, models, prompts] = await Promise.all([
-          systemApi.getDashboardStats(),
+          isAccountDocumentSource
+            ? Promise.resolve({
+                total_notes: accountNotes?.total ?? 0,
+                total_tags: 0,
+              } as DashboardStats)
+            : systemApi.getDashboardStats(),
           cardApi.listDue().catch(() => []),
           trashApi.list(1, 1).catch(() => ({
             items: [],

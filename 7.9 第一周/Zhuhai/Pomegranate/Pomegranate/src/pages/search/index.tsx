@@ -10,9 +10,11 @@ import {
 } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { searchApi, taskApi } from "@/lib/api";
+import { noteApi, isAccountDocumentSource } from "@/lib/documents/repository";
 import { MicButton } from "@/components/MicButton";
 import { useAppStore } from "@/store";
 import { highlightText, highlightSnippet } from "@/lib/highlight";
+import { stripHtml } from "@/lib/utils";
 import type { SearchResult, TaskSearchHit } from "@/types";
 
 const { Text } = Typography;
@@ -63,7 +65,17 @@ function DesktopSearchPage() {
     setLoading(true);
     setSearched(true);
     const [notes, tasks] = await Promise.all([
-      searchApi.search(keyword).catch((e) => {
+      (isAccountDocumentSource
+        ? noteApi.list({ page: 1, page_size: 100, keyword }).then((page) =>
+            page.items.map((note) => ({
+              id: note.id,
+              title: note.title,
+              snippet: stripHtml(note.content).slice(0, 240),
+              updated_at: note.updated_at,
+              folder_id: note.folder_id,
+            })),
+          )
+        : searchApi.search(keyword)).catch((e) => {
         console.error("笔记搜索失败:", e);
         return [] as SearchResult[];
       }),
@@ -461,5 +473,5 @@ import { MobileSearch } from "./MobileSearch";
 
 export default function SearchPage() {
   const isMobile = useIsMobile();
-  return isMobile ? <MobileSearch /> : <DesktopSearchPage />;
+  return isMobile && !isAccountDocumentSource ? <MobileSearch /> : <DesktopSearchPage />;
 }

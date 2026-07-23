@@ -47,7 +47,21 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ColumnsType } from "antd/es/table";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { noteApi, exportApi, folderApi, tagApi, trashApi } from "@/lib/api";
+import { exportApi } from "@/lib/api";
+import {
+  noteApi,
+  folderApi,
+  tagApi,
+  trashApi,
+  isAccountDocumentSource,
+  isAccountUploadedNote,
+  openAccountUploadedNote,
+  beginAccountUploadedEdit,
+  checkAccountUploadedEdit,
+  syncAccountUploadedEdit,
+  discardAccountUploadedEdit,
+} from "@/lib/documents/repository";
+import { useAccountStore } from "@/store/account";
 import { MicButton } from "@/components/MicButton";
 import { useContextMenu } from "@/hooks/useContextMenu";
 import {
@@ -532,6 +546,7 @@ function FolderChangeCell({
 
 /** 桌面版原 NoteListPage（保留全部 1300+ 行实现） */
 function DesktopNoteListPage() {
+  const currentUser = useAccountStore((state) => state.currentUser);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { token } = antdTheme.useToken();
@@ -555,6 +570,100 @@ function DesktopNoteListPage() {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   /** 批量移动 Popover 的开关 */
   const [batchMoveOpen, setBatchMoveOpen] = useState(false);
+
+  const openDocument = useCallback(
+    async (note: Note) => {
+      if (!isAccountUploadedNote(note)) {
+        navigate(`/notes/${note.id}`);
+        return;
+      }
+      try {
+        const result = await openAccountUploadedNote(note);
+        if (result.status === "confirmationRequired") {
+          Modal.confirm({
+            title: "未知文件类型",
+            content: `“${result.fileName}”不是已知的办公文件。确认后只会交给系统默认程序，不会由 Pomegranate 执行。`,
+            okText: "仍然打开",
+            cancelText: "取消",
+            onOk: async () => {
+              await openAccountUploadedNote(note, true);
+            },
+          });
+        }
+      } catch (error) {
+        const detail = error as { message?: string };
+        message.error(detail.message || "无法打开文件");
+      }
+    },
+    [navigate],
+  );
+
+  const editWorkspaces = useRef(new Map<number, string>());
+  useEffect(() => {
+    editWorkspaces.current.clear();
+  }, [currentUser?.platformUserId]);
+
+  const checkAndOfferSync = useCallback(async (workspaceId: string) => {
+    try {
+      const checked = await checkAccountUploadedEdit(workspaceId);
+      if (checked.status !== "modified") {
+        message.info("文件内容没有变化");
+        return;
+      }
+      Modal.confirm({
+        title: "检测到文件已修改",
+        content: "是否保存回文档库？选择暂不保存会保留本地工作副本。",
+        okText: "保存回文档库",
+        cancelText: "暂不保存",
+        onOk: async () => {
+          try {
+            const result = await syncAccountUploadedEdit(workspaceId);
+            if (result.status === "synced") {
+              message.success("文件已保存回文档库");
+              useAppStore.getState().bumpNotesRefresh();
+            }
+          } catch (error) {
+            const detail = error as { code?: string; message?: string };
+            if (detail.code === "fileConflict") {
+              Modal.confirm({
+                title: "此文件已在其他设备更新",
+                content: "无法直接覆盖。可重新下载服务端版本并放弃本地修改，或取消以保留本地副本。",
+                okText: "重新下载服务端版本",
+                cancelText: "保留本地副本",
+                onOk: async () => {
+                  await discardAccountUploadedEdit(workspaceId);
+                  message.success("已重新下载服务端版本");
+                  useAppStore.getState().bumpNotesRefresh();
+                },
+              });
+            } else {
+              message.error(detail.message || "文件同步失败");
+            }
+          }
+        },
+      });
+    } catch (error) {
+      const detail = error as { message?: string };
+      message.error(detail.message || "无法检查文件修改");
+    }
+  }, []);
+
+  const editAndSyncDocument = useCallback(async (note: Note) => {
+    try {
+      const result = await beginAccountUploadedEdit(note);
+      editWorkspaces.current.set(note.id, result.workspaceId);
+      Modal.confirm({
+        title: result.status === "modified" ? "发现尚未同步的本地修改" : "正在外部编辑",
+        content: "请在外部程序中保存文件，然后回到 Pomegranate 点击“检查修改”。",
+        okText: "检查修改",
+        cancelText: "稍后检查",
+        onOk: () => checkAndOfferSync(result.workspaceId),
+      });
+    } catch (error) {
+      const detail = error as { message?: string };
+      message.error(detail.message || "无法准备编辑工作副本");
+    }
+  }, [checkAndOfferSync]);
 
   const folderId = searchParams.get("folder");
 
@@ -653,6 +762,10 @@ function DesktopNoteListPage() {
   );
 
   const handleExport = useCallback(async (record: Note) => {
+    if (isAccountDocumentSource) {
+      message.info("账号文件请直接打开；Markdown 导出将在后续版本提供");
+      return;
+    }
     const parentDir = await openDialog({
       directory: true,
       title: "选择导出目录",
@@ -685,6 +798,10 @@ function DesktopNoteListPage() {
 
   /** 批量导出：循环调单条 export，每篇笔记会在父目录下生成 `{标题}/` 子目录 */
   const handleExportBatch = useCallback(async (ids: number[]) => {
+    if (isAccountDocumentSource) {
+      message.info("账号文档暂不支持批量导出");
+      return;
+    }
     if (ids.length === 0) return;
     const parentDir = await openDialog({
       directory: true,
@@ -727,6 +844,10 @@ function DesktopNoteListPage() {
 
   /** 单条 Word 导出（save dialog 选最终 .docx 路径） */
   const handleExportWordSingle = useCallback(async (record: Note) => {
+    if (isAccountDocumentSource) {
+      message.info("账号文档暂不支持导出为 Word");
+      return;
+    }
     const safeName = record.title.replace(/[/\\:*?"<>|]/g, "_").trim() || "未命名";
     const filePath = await save({
       defaultPath: `${safeName}.docx`,
@@ -762,6 +883,10 @@ function DesktopNoteListPage() {
 
   /** 单条 HTML 导出（save dialog 选最终 .html 路径） */
   const handleExportHtmlSingle = useCallback(async (record: Note) => {
+    if (isAccountDocumentSource) {
+      message.info("账号文档暂不支持导出为 HTML");
+      return;
+    }
     const safeName = record.title.replace(/[/\\:*?"<>|]/g, "_").trim() || "未命名";
     const filePath = await save({
       defaultPath: `${safeName}.html`,
@@ -1012,9 +1137,18 @@ function DesktopNoteListPage() {
         icon: <ExternalLink size={13} />,
         onClick: () => {
           noteCtx.close();
-          navigate(`/notes/${note.id}`);
+          void openDocument(note);
         },
       },
+      ...(isAccountUploadedNote(note) ? [{
+        key: "edit-sync",
+        label: "编辑并同步",
+        icon: <Edit3 size={13} />,
+        onClick: () => {
+          noteCtx.close();
+          void editAndSyncDocument(note);
+        },
+      }] : []),
       {
         key: "rename",
         label: "重命名",
@@ -1058,7 +1192,7 @@ function DesktopNoteListPage() {
         },
       },
     ];
-  }, [noteCtx, navigate, handleTogglePin, handleSoftDelete]);
+  }, [noteCtx, navigate, handleTogglePin, handleSoftDelete, openDocument, editAndSyncDocument]);
 
   const columns: ColumnsType<Note> = useMemo(
     () => [
@@ -1106,7 +1240,7 @@ function DesktopNoteListPage() {
                   </span>
                 </Tooltip>
               )}
-              <a onClick={() => navigate(`/notes/${record.id}`)}>{title}</a>
+              <a onClick={() => void openDocument(record)}>{title}</a>
               <NoteDecorators note={record} warningColor={token.colorWarning} />
             </span>
           );
@@ -1154,17 +1288,27 @@ function DesktopNoteListPage() {
       {
         title: "操作",
         key: "action",
-        width: 120,
+        width: 150,
         render: (_: unknown, record: Note) => (
           <Space size="small">
-            <Tooltip title="编辑">
+            <Tooltip title={isAccountUploadedNote(record) ? "打开查看" : "编辑"}>
               <Button
                 type="link"
                 size="small"
-                icon={<Edit3 size={14} />}
-                onClick={() => navigate(`/notes/${record.id}`)}
+                icon={isAccountUploadedNote(record) ? <ExternalLink size={14} /> : <Edit3 size={14} />}
+                onClick={() => void openDocument(record)}
               />
             </Tooltip>
+            {isAccountUploadedNote(record) && (
+              <Tooltip title="编辑并同步">
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<Edit3 size={14} />}
+                  onClick={() => void editAndSyncDocument(record)}
+                />
+              </Tooltip>
+            )}
             <Dropdown
               trigger={["click"]}
               menu={{
@@ -1200,7 +1344,7 @@ function DesktopNoteListPage() {
         ),
       },
     ],
-    [navigate, token.colorWarning, token.colorTextTertiary, handleDelete, handleExport, handleExportWordSingle, handleExportHtmlSingle, folderMap, folders, loadNotes, data.page, data.page_size],
+    [navigate, token.colorWarning, token.colorTextTertiary, handleDelete, handleExport, handleExportWordSingle, handleExportHtmlSingle, folderMap, folders, loadNotes, data.page, data.page_size, openDocument, editAndSyncDocument],
   );
 
   // 时间线分组（缓存）
@@ -1583,7 +1727,7 @@ function DesktopNoteListPage() {
                               <Card
                                 hoverable
                                 size="small"
-                                onClick={() => navigate(`/notes/${note.id}`)}
+                                onClick={() => void openDocument(note)}
                                 style={{
                                   height: 170,
                                   display: "flex",
@@ -1749,7 +1893,7 @@ function DesktopNoteListPage() {
                       children: (
                         <div
                           className="cursor-pointer group -mt-0.5"
-                          onClick={() => navigate(`/notes/${note.id}`)}
+                          onClick={() => void openDocument(note)}
                         >
                           <div className="flex items-center gap-1.5">
                             <Text
@@ -1841,5 +1985,13 @@ import { MobileNotes } from "./MobileNotes";
 
 export default function NoteListPage() {
   const isMobile = useIsMobile();
-  return isMobile ? <MobileNotes /> : <DesktopNoteListPage />;
+  const currentUser = useAccountStore((state) => state.currentUser);
+  if (isAccountDocumentSource && !currentUser) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <EmptyState description="请先登录" />
+      </div>
+    );
+  }
+  return isMobile && !isAccountDocumentSource ? <MobileNotes /> : <DesktopNoteListPage />;
 }

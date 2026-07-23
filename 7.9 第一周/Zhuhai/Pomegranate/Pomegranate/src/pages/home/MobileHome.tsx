@@ -11,7 +11,8 @@ import {
   Plus,
   Pin,
 } from "lucide-react";
-import { systemApi, noteApi, taskApi, cardApi } from "@/lib/api";
+import { systemApi, taskApi, cardApi } from "@/lib/api";
+import { noteApi } from "@/lib/documents/repository";
 import { useAppStore } from "@/store";
 import type { DashboardStats, DailyWritingStat, Note, Task } from "@/types";
 import { relativeTime } from "@/lib/utils";

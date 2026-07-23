@@ -10,6 +10,7 @@
  * 失败容忍：任意一步失败抛出原始错误，由调用方决定 message.error / 回滚。
  */
 import { aiChatApi } from "@/lib/api";
+import { isAccountDocumentSource } from "@/lib/documents/repository";
 import type { NavigateFunction } from "react-router-dom";
 
 export async function startAiChatWithNotes(
@@ -26,6 +27,12 @@ export async function startAiChatWithNotes(
       : baseTitle;
 
   const conv = await aiChatApi.createConversation(title);
+  if (isAccountDocumentSource) {
+    navigate("/ai", {
+      state: { activeConvId: conv.id, accountDocumentIds: noteIds },
+    });
+    return;
+  }
   await aiChatApi.setAttachedNotes(conv.id, noteIds);
   navigate("/ai", { state: { activeConvId: conv.id } });
 }

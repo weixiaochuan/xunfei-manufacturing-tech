@@ -33,6 +33,7 @@ import { ExitConfirmListener } from "@/components/ui/ExitConfirmListener";
 import { CloseRequestedListener } from "@/components/ui/CloseRequestedListener";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
 import { SyncStatusButton } from "./SyncStatusButton";
+import { AccountStatusButton } from "./AccountStatusButton";
 import { syncV1Api } from "@/lib/api";
 
 const { Header, Sider, Content } = Layout;
@@ -582,6 +583,7 @@ export function AppLayout() {
               </Tooltip>
             </Dropdown>
             <SyncStatusButton />
+            <AccountStatusButton />
             <Button
               type="text"
               icon={<SettingOutlined />}

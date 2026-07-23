@@ -9,7 +9,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Modal, Select, Tooltip, message } from "antd";
 import { FileDiff } from "lucide-react";
 import type { Editor } from "@tiptap/react";
-import { noteApi } from "@/lib/api";
+import { noteApi } from "@/lib/documents/repository";
+import { documentErrorMessage } from "@/lib/documents/documentError";
 import type { Note } from "@/types";
 import { DiffMergeModal, type DiffSide } from "./DiffMergeModal.tsx";
 
@@ -47,7 +48,7 @@ export function CompareNotesButton({ editor, noteId }: Props) {
             .map((n) => ({ value: n.id, label: n.title || `（无标题 #${n.id}）` })),
         );
       } catch (e) {
-        message.error(`加载文档列表失败：${e}`);
+        message.error(`加载文档列表失败：${documentErrorMessage(e)}`);
       } finally {
         setLoadingOpts(false);
       }
@@ -74,7 +75,7 @@ export function CompareNotesButton({ editor, noteId }: Props) {
       setPickerOpen(false);
       setMergeOpen(true);
     } catch (e) {
-      message.error(`打开文档失败：${e}`);
+      message.error(`打开文档失败：${documentErrorMessage(e)}`);
     }
   }
 

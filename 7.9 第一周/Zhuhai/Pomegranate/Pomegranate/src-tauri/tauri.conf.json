@@ -35,6 +35,11 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["pomegranate"]
+      }
+    },
     "updater": {
       "endpoints": [
         "https://gitee.com/kadywen/Intelligent-NoteBook-release/raw/master/update.json"

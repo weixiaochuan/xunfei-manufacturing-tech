@@ -627,6 +627,8 @@ interface TiptapEditorProps {
   ensureNoteId?: () => Promise<number>;
   /** Ctrl/Cmd + 点击 [[标题]] 时触发（编辑器内 wiki 链接跳转） */
   onWikiLinkClick?: (title: string) => void;
+  /** 账号文档尚未提供链接索引时关闭本地 SQLite 驱动的 wiki 建议。 */
+  enableWikiLinks?: boolean;
   /**
    * 选中文本后浮起的「问 AI」按钮回调。
    * 传入选中的纯文本，调用方负责弹抽屉 / 预填问题。
@@ -654,6 +656,7 @@ export function TiptapEditor({
   noteId,
   ensureNoteId,
   onWikiLinkClick,
+  enableWikiLinks = true,
   onAskAi,
   onEditorReady,
   showFooterStats = true,
@@ -1124,10 +1127,14 @@ export function TiptapEditor({
       Toggle,
       ToggleSummary,
       ToggleContent,
-      WikiLinkDecoration.configure({
-        onClick: (title: string) => wikiClickRef.current?.(title),
-      }),
-      WikiLinkSuggestion,
+      ...(enableWikiLinks
+        ? [
+            WikiLinkDecoration.configure({
+              onClick: (title: string) => wikiClickRef.current?.(title),
+            }),
+            WikiLinkSuggestion,
+          ]
+        : []),
       // 标题折叠（H1–H3 左侧 chevron 折叠到下一同级标题；走 noteId 维度持久化）
       HeadingFold.configure({
         getFolded: () => {

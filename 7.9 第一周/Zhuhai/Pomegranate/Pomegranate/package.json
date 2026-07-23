@@ -16,7 +16,8 @@
     "build:mcp": "node scripts/build-mcp.mjs",
     "build:mcp:debug": "node scripts/build-mcp.mjs --debug",
     "build:win7": "node scripts/build-win7.mjs",
-    "build:win7:debug": "node scripts/build-win7.mjs --debug"
+    "build:win7:debug": "node scripts/build-win7.mjs --debug",
+    "test:account-documents": "node --experimental-strip-types --test src/lib/documents/*.test.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^6.1.0",

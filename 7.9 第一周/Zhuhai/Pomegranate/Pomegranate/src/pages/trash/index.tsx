@@ -13,7 +13,7 @@ import {
 } from "antd";
 import { Trash2, RotateCcw, AlertTriangle } from "lucide-react";
 import type { ColumnsType } from "antd/es/table";
-import { trashApi } from "@/lib/api";
+import { trashApi, isAccountDocumentSource } from "@/lib/documents/repository";
 import { useTabsStore } from "@/store/tabs";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { relativeTime } from "@/lib/utils";
@@ -406,5 +406,5 @@ import { MobileTrash } from "./MobileTrash";
 
 export default function TrashPage() {
   const isMobile = useIsMobile();
-  return isMobile ? <MobileTrash /> : <DesktopTrashPage />;
+  return isMobile && !isAccountDocumentSource ? <MobileTrash /> : <DesktopTrashPage />;
 }

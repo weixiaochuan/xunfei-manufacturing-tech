@@ -20,7 +20,8 @@ import dayjs, { type Dayjs } from "dayjs";
 import { Plus, NotebookText, Folder as FolderIcon, File as FileIcon, Link as LinkIcon } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useNavigate } from "react-router-dom";
-import { taskApi, taskCategoryApi, noteApi, configApi } from "@/lib/api";
+import { taskApi, taskCategoryApi, configApi } from "@/lib/api";
+import { noteApi } from "@/lib/documents/repository";
 import { relativeTime } from "@/lib/utils";
 import type {
   Note,

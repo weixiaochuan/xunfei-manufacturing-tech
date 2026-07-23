@@ -1,0 +1,7 @@
+services:
+  casdoor:
+    environment:
+      origin: "http://${LAN_IP}:${CASDOOR_PORT}"
+      originFrontend: "http://${LAN_IP}:${CASDOOR_PORT}"
+    ports: !override
+      - "${LAN_IP}:${CASDOOR_PORT}:8000"

@@ -8,6 +8,8 @@ import {
   ChevronDown,
   LayoutTemplate,
   FolderOpen,
+  Upload,
+  FilePenLine,
 } from "lucide-react";
 
 import { FileTypeIcon } from "./FileTypeIcon";
@@ -21,7 +23,14 @@ import {
   importPdfsFlow,
   importTextFlow,
   importWordFlow,
+  uploadAccountDocument,
 } from "@/lib/noteCreator";
+import {
+  importEditableMarkdownFile,
+  isAccountDocumentSource,
+} from "@/lib/documents/repository";
+import { documentErrorMessage } from "@/lib/documents/documentError";
+import { useAccountStore } from "@/store/account";
 
 interface Props {
   /** 创建/导入时归入的文件夹 id；顶层创建传 null */
@@ -54,6 +63,8 @@ export function NewNoteButton({
   size,
 }: Props) {
   const navigate = useNavigate();
+  const currentUser = useAccountStore((state) => state.currentUser);
+  const [accountAction, setAccountAction] = useState<"upload" | "import" | null>(null);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [importPreview, setImportPreview] = useState<{
     files: ScannedFile[];
@@ -63,8 +74,49 @@ export function NewNoteButton({
 
   // 没有文件夹上下文时（顶部+按钮 / 首页大按钮）套用全局默认；
   // 有 folderId（NotesPanel 文件夹下嵌入）就遵循上下文
-  const handleCreate = () =>
-    createBlankAndOpen(folderId, navigate, { useDefaults: folderId == null });
+  const handleCreate = () => {
+    if (isAccountDocumentSource && !currentUser) {
+      message.info("请先登录");
+      return;
+    }
+    void createBlankAndOpen(folderId, navigate, { useDefaults: folderId == null });
+  };
+
+  async function handleAccountUpload() {
+    if (accountAction) return;
+    if (!currentUser) {
+      message.info("请先登录");
+      return;
+    }
+    setAccountAction("upload");
+    try {
+      await uploadAccountDocument(navigate);
+    } catch (error) {
+      message.error(documentErrorMessage(error, "文件上传失败，请稍后重试"));
+    } finally {
+      setAccountAction(null);
+    }
+  }
+
+  async function handleAccountMarkdownImport() {
+    if (accountAction) return;
+    if (!currentUser) {
+      message.info("请先登录");
+      return;
+    }
+    setAccountAction("import");
+    try {
+      const note = await importEditableMarkdownFile();
+      if (!note) return;
+      useAppStore.getState().bumpNotesRefresh();
+      message.success("Markdown 已导入为可编辑文档");
+      navigate(`/notes/${note.id}`);
+    } catch (error) {
+      message.error(documentErrorMessage(error, "Markdown 导入失败，请稍后重试"));
+    } finally {
+      setAccountAction(null);
+    }
+  }
 
   // 选目录 → 扫描 → 弹 ImportPreviewModal。与 NotesPanel.handleImportMdFolder 同源。
   // Why: 文件夹导入要让用户选副本策略 + 是否保留根目录层级，所以单独走 Modal 流，
@@ -97,7 +149,7 @@ export function NewNoteButton({
     }
   }
 
-  const menuItems: MenuProps["items"] = [
+  const localMenuItems: MenuProps["items"] = [
     {
       key: "template",
       label: "从模板…",
@@ -133,6 +185,34 @@ export function NewNoteButton({
     },
   ];
 
+  const accountMenuItems: MenuProps["items"] = [
+    {
+      key: "upload-file",
+      icon: <Upload size={14} />,
+      disabled: accountAction !== null,
+      label: (
+        <div>
+          <div>上传文件</div>
+          <div style={{ color: "var(--text-tertiary)", fontSize: 12 }}>原样保存到独立文件存储</div>
+        </div>
+      ),
+      onClick: () => void handleAccountUpload(),
+    },
+    {
+      key: "import-editable-markdown",
+      icon: <FilePenLine size={14} />,
+      disabled: accountAction !== null,
+      label: (
+        <div>
+          <div>导入为可编辑 Markdown</div>
+          <div style={{ color: "var(--text-tertiary)", fontSize: 12 }}>转换为内部 Markdown，仅支持 .md/.markdown</div>
+        </div>
+      ),
+      onClick: () => void handleAccountMarkdownImport(),
+    },
+  ];
+  const menuItems = isAccountDocumentSource ? accountMenuItems : localMenuItems;
+
   // 折叠态：只显示单图标按钮（下拉菜单在折叠态占地方也没意义）
   if (collapsed) {
     return (
@@ -141,7 +221,7 @@ export function NewNoteButton({
           type="primary"
           icon={<Plus size={16} />}
           onClick={handleCreate}
-          title="新建文档 (Ctrl+N)"
+          title={isAccountDocumentSource ? "新建 Markdown (Ctrl+N)" : "新建文档 (Ctrl+N)"}
           style={style}
         />
         <TemplatePickerModal
@@ -161,10 +241,10 @@ export function NewNoteButton({
           size={size}
           icon={<Plus size={14} />}
           onClick={handleCreate}
-          title="新建文档 (Ctrl+N)"
+          title={isAccountDocumentSource ? "新建 Markdown (Ctrl+N)" : "新建文档 (Ctrl+N)"}
           style={block ? { flex: 1 } : undefined}
         >
-          {label}
+          {isAccountDocumentSource ? "新建 Markdown" : label}
         </Button>
         <Dropdown
           menu={{ items: menuItems }}
@@ -175,6 +255,7 @@ export function NewNoteButton({
             type="primary"
             size={size}
             icon={<ChevronDown size={14} />}
+            loading={accountAction !== null}
             title="更多创建方式"
           />
         </Dropdown>

@@ -1,0 +1,56 @@
+name: pomegranate-account-local
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT}:5432"
+    volumes:
+      - pomegranate_account_postgres_data:/var/lib/postgresql/data
+      - ./infra/account/postgres/init/001-create-databases.sql:/docker-entrypoint-initdb.d/001-create-databases.sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - account_internal
+
+  casdoor:
+    image: casbin/casdoor:3.119.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RUNNING_IN_DOCKER: "true"
+      driverName: postgres
+      dataSourceName: >-
+        user=${CASDOOR_DB_USER} password=${CASDOOR_DB_PASSWORD}
+        host=${CASDOOR_DB_HOST} port=${CASDOOR_DB_PORT}
+        sslmode=disable dbname=${CASDOOR_DB_NAME}
+      dbName: "${CASDOOR_DB_NAME}"
+      httpport: "8000"
+      runmode: dev
+      origin: "http://localhost:${CASDOOR_PORT}"
+    ports:
+      - "127.0.0.1:${CASDOOR_PORT}:8000"
+    volumes:
+      - ./infra/account/casdoor/app.conf:/conf/app.conf:ro
+    networks:
+      - account_internal
+
+volumes:
+  pomegranate_account_postgres_data:
+
+networks:
+  account_internal:
+    driver: bridge

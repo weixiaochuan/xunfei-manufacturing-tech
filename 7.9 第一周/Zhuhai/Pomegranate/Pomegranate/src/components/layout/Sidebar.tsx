@@ -43,7 +43,8 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FolderOutlined } from "@ant-design/icons";
 import type { DataNode } from "antd/es/tree";
 import { useAppStore } from "@/store";
-import { folderApi, importApi } from "@/lib/api";
+import { importApi } from "@/lib/api";
+import { folderApi, isAccountDocumentSource } from "@/lib/documents/repository";
 import type { Folder, ScannedFile } from "@/types";
 import { NewNoteButton } from "@/components/NewNoteButton";
 import { OpenFileButton } from "@/components/OpenFileButton";
@@ -560,6 +561,10 @@ export function Sidebar() {
   }
 
   async function handleImportMdFolder(folderKey: string) {
+    if (isAccountDocumentSource) {
+      message.info("账号文档暂不支持导入整个文件夹，请使用“打开文件”上传单个文件");
+      return;
+    }
     const folderId = Number(folderKey);
     try {
       const picked = await openDialog({

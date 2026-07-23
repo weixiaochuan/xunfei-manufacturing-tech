@@ -24,7 +24,9 @@ import { ArrowLeft, Save, Trash2, Pin, FolderOpen, Tags, Link2, Share, Maximize2
 import { CloseCircleFilled } from "@ant-design/icons";
 import { useAppStore } from "@/store";
 import { useTabsStore } from "@/store/tabs";
-import { noteApi, tagApi, folderApi, linkApi, exportApi, sourceFileApi, vaultApi, sourceWritebackApi } from "@/lib/api";
+import { linkApi, exportApi, sourceFileApi, vaultApi, sourceWritebackApi } from "@/lib/api";
+import { noteApi, tagApi, folderApi, isAccountDocumentSource } from "@/lib/documents/repository";
+import { useAccountStore } from "@/store/account";
 import { VaultModal } from "@/components/vault/VaultModal";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -612,6 +614,7 @@ function DesktopNoteEditorPage() {
   // 上下文感知的 message / notification（避免静态方法丢主题、偶发不显示）
   const { message, notification } = AntdApp.useApp();
   const { focusMode, setFocusMode } = useAppStore();
+  const currentUser = useAccountStore((state) => state.currentUser);
   const { openTab, updateTabTitle, setTabDirty, setDraft, getDraft, clearDraft } = useTabsStore();
   const [note, setNote] = useState<Note | null>(null);
   const [title, setTitle] = useState("");
@@ -619,6 +622,11 @@ function DesktopNoteEditorPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [accountConflictPaused, setAccountConflictPaused] = useState(false);
+  const latestEditRef = useRef({ title: "", content: "" });
+  latestEditRef.current = { title, content };
+  const accountSaveInFlightRef = useRef(false);
+  const accountSavePendingRef = useRef(false);
   /** 思维导图视图：在编辑器右侧以 flex 分栏方式渲染（不是浮层） */
   const [mindMapOpen, setMindMapOpen] = useState(false);
   /** 思维导图分栏宽度（像素，持久化到 localStorage 跨笔记记忆） */
@@ -717,9 +725,14 @@ function DesktopNoteEditorPage() {
         tagApi.list(),
         folderApi.list(),
         tagApi.getNoteTags(noteId),
-        linkApi.getBacklinks(noteId),
+        isAccountDocumentSource ? Promise.resolve([]) : linkApi.getBacklinks(noteId),
       ]);
       setNote(noteData);
+      if (isAccountDocumentSource && noteData.source_file_type) {
+        message.warning("文件文档请从文档列表使用系统默认程序打开");
+        navigate("/notes");
+        return;
+      }
       setAllTags(tags);
       setNoteTags(existingTags);
       setFolders(folderTree);
@@ -756,6 +769,24 @@ function DesktopNoteEditorPage() {
   useEffect(() => {
     if (id) loadData();
   }, [id, loadData]);
+
+  const editorAccountKey = useRef(currentUser?.platformUserId ?? null);
+  useEffect(() => {
+    const nextKey = currentUser?.platformUserId ?? null;
+    if (editorAccountKey.current === nextKey) return;
+    editorAccountKey.current = nextKey;
+    setNote(null);
+    setTitle("");
+    setContent("");
+    setDirty(false);
+    setSaving(false);
+    setAccountConflictPaused(false);
+    setNoteTags([]);
+    setAllTags([]);
+    setFolders([]);
+    setBacklinks([]);
+    navigate("/notes", { replace: true });
+  }, [currentUser?.platformUserId, navigate]);
 
   // 订阅全局 folders/tags tick：侧边栏/标签页 CRUD 后局部刷新下拉选项，
   // 无需关闭重开 tab。用 ref 跳过首次渲染，避免与 loadData 重复请求。
@@ -798,7 +829,7 @@ function DesktopNoteEditorPage() {
   // 没法跨进程同步，所以走 Tauri 事件桥。
   // 冲突保护：当前 buffer dirty 时不强制覆盖，弹 notification 让用户决定。
   useEffect(() => {
-    if (!noteId) return;
+    if (!noteId || isAccountDocumentSource) return;
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     listen<{ id: number; sourceLabel: string }>("note:updated", async (e) => {
@@ -885,19 +916,43 @@ function DesktopNoteEditorPage() {
       if (!silent) message.warning("标题不能为空");
       return;
     }
+    if (isAccountDocumentSource && accountSaveInFlightRef.current) {
+      accountSavePendingRef.current = true;
+      return;
+    }
+    const savedTitle = title.trim();
+    const savedContent = content;
+    let accountSaveSucceeded = false;
+    if (isAccountDocumentSource) accountSaveInFlightRef.current = true;
     setSaving(true);
     try {
       const updated = await noteApi.update(noteId, {
-        title: title.trim(),
-        content,
+        title: savedTitle,
+        content: savedContent,
         folder_id: note?.folder_id,
       });
       setNote(updated);
-      setDirty(false);
-      setTabDirty(noteId, false);
-      updateTabTitle(noteId, updated.title);
-      // 内容已落库，清掉草稿快照
-      clearDraft(noteId);
+      const changedWhileSaving = isAccountDocumentSource &&
+        (latestEditRef.current.title.trim() !== savedTitle || latestEditRef.current.content !== savedContent);
+      if (changedWhileSaving) {
+        setDirty(true);
+        setTabDirty(noteId, true);
+        updateTabTitle(noteId, latestEditRef.current.title || "未命名");
+        accountSavePendingRef.current = true;
+      } else {
+        setDirty(false);
+        setTabDirty(noteId, false);
+        updateTabTitle(noteId, updated.title);
+        // 内容已落库，清掉草稿快照
+        clearDraft(noteId);
+      }
+
+      if (isAccountDocumentSource) {
+        accountSaveSucceeded = true;
+        setAccountConflictPaused(false);
+        if (!silent) message.success("保存成功");
+        return;
+      }
 
       // 解析 [[]] 链接并同步
       const wikiTitles = extractWikiLinks(content);
@@ -989,8 +1044,51 @@ function DesktopNoteEditorPage() {
         }
       }
     } catch (e) {
-      message.error(String(e));
+      const detail = e as { code?: string; message?: string };
+      if (isAccountDocumentSource && detail.code === "documentConflict") {
+        setAccountConflictPaused(true);
+        notification.warning({
+          key: `account-document-conflict-${noteId}`,
+          message: "文档已在其他位置更新",
+          description: "自动保存已暂停。可以重新加载服务端版本，或先复制当前编辑内容。",
+          duration: 0,
+          btn: (
+            <Space>
+              <Button
+                size="small"
+                onClick={() => {
+                  void navigator.clipboard.writeText(latestEditRef.current.content).then(
+                    () => message.success("当前编辑内容已复制"),
+                    () => message.error("复制失败，请手动全选复制"),
+                  );
+                }}
+              >
+                复制当前内容
+              </Button>
+              <Button
+                size="small"
+                type="primary"
+                onClick={() => {
+                  notification.destroy(`account-document-conflict-${noteId}`);
+                  setAccountConflictPaused(false);
+                  void loadData();
+                }}
+              >
+                重新加载
+              </Button>
+            </Space>
+          ),
+        });
+      } else {
+        message.error(detail.message || String(e));
+      }
     } finally {
+      if (isAccountDocumentSource) {
+        accountSaveInFlightRef.current = false;
+        const shouldContinue = accountSaveSucceeded && accountSavePendingRef.current;
+        accountSavePendingRef.current = false;
+        if (shouldContinue) window.setTimeout(() => saveRef.current(true), 0);
+      }
       setSaving(false);
     }
   }
@@ -1047,6 +1145,7 @@ function DesktopNoteEditorPage() {
   };
   useEffect(() => {
     return () => {
+      if (isAccountDocumentSource) return;
       const s = dbSaveOnUnmountRef.current;
       if (!s.dirty || !s.title.trim()) return;
       noteApi
@@ -1067,7 +1166,7 @@ function DesktopNoteEditorPage() {
   }, [noteId]);
 
   // Ctrl+S / Cmd+S 保存：用 ref 避免 useEffect 每次渲染都 re-subscribe
-  const saveRef = useRef<() => void>(() => {});
+  const saveRef = useRef<(silent?: boolean) => void>(() => {});
   saveRef.current = handleSave;
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1079,6 +1178,13 @@ function DesktopNoteEditorPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // 账号模式沿用现有 saving/dirty UI，但保存目标严格是当前 revision 的服务端文档。
+  useEffect(() => {
+    if (!isAccountDocumentSource || !dirty || accountConflictPaused || !title.trim()) return;
+    const timer = window.setTimeout(() => saveRef.current(true), 800);
+    return () => window.clearTimeout(timer);
+  }, [dirty, title, content, accountConflictPaused]);
 
   async function handleDelete() {
     try {
@@ -1135,6 +1241,10 @@ function DesktopNoteEditorPage() {
 
   async function handleToggleEncrypt() {
     if (!note) return;
+    if (isAccountDocumentSource) {
+      message.info("账号文档暂不使用本机 SQLite 保险库");
+      return;
+    }
     // 先确认 vault 状态
     let vs;
     try {
@@ -1179,7 +1289,11 @@ function DesktopNoteEditorPage() {
   /** Ctrl/Cmd + 点击 [[标题]] 时跳转到对应笔记 */
   async function handleWikiLinkClick(wikiTitle: string) {
     try {
-      const results = await linkApi.searchTargets(wikiTitle, 20);
+      const results: Array<[number, string]> = isAccountDocumentSource
+        ? (await noteApi.list({ page: 1, page_size: 100, keyword: wikiTitle })).items.map(
+            (item) => [item.id, item.title],
+          )
+        : await linkApi.searchTargets(wikiTitle, 20);
       const exactMatches = results.filter(([, name]) => name === wikiTitle);
 
       // 精确命中 1 条：直接跳
@@ -1227,6 +1341,10 @@ function DesktopNoteEditorPage() {
   }
 
   async function handleOpenSourceFile() {
+    if (isAccountDocumentSource) {
+      message.info("账号上传文件请从文档列表使用系统默认程序打开");
+      return;
+    }
     try {
       const abs = await sourceFileApi.getAbsolutePath(noteId);
       if (!abs) {
@@ -1247,6 +1365,10 @@ function DesktopNoteEditorPage() {
   }
 
   async function handleExportNote() {
+    if (isAccountDocumentSource) {
+      message.info("账号 Markdown 导出将在后续版本提供");
+      return;
+    }
     const parentDir = await openDialog({
       directory: true,
       title: "选择导出目录",
@@ -1280,6 +1402,10 @@ function DesktopNoteEditorPage() {
 
   /** T-020: 导出为 Word (.docx) — 用 save dialog 选最终文件路径 */
   async function handleExportWord() {
+    if (isAccountDocumentSource) {
+      message.info("账号文档暂不支持导出为 Word");
+      return;
+    }
     const safeName = title.replace(/[/\\:*?"<>|]/g, "_").trim() || "未命名";
     const filePath = await save({
       defaultPath: `${safeName}.docx`,
@@ -1315,6 +1441,10 @@ function DesktopNoteEditorPage() {
 
   /** T-020: 导出为 HTML — 单文件，图片内嵌 base64，可独立分享 */
   async function handleExportHtml() {
+    if (isAccountDocumentSource) {
+      message.info("账号文档暂不支持导出为 HTML");
+      return;
+    }
     const safeName = title.replace(/[/\\:*?"<>|]/g, "_").trim() || "未命名";
     const filePath = await save({
       defaultPath: `${safeName}.html`,
@@ -1753,6 +1883,7 @@ function DesktopNoteEditorPage() {
             placeholder="开始写点什么..."
             noteId={noteId}
             onWikiLinkClick={handleWikiLinkClick}
+            enableWikiLinks={!isAccountDocumentSource}
             onAskAi={(selected) => {
               // 选段触发 → 选段挂到抽屉的"引用 chip"，输入框留空给用户写问题
               setAiSelection(selected);
@@ -2033,5 +2164,9 @@ import { MobileNoteEditor } from "./MobileNoteEditor";
 
 export default function NoteEditorPage() {
   const isMobile = useIsMobile();
-  return isMobile ? <MobileNoteEditor /> : <DesktopNoteEditorPage />;
+  const currentUser = useAccountStore((state) => state.currentUser);
+  if (isAccountDocumentSource && !currentUser) {
+    return <div className="flex h-full items-center justify-center">请先登录</div>;
+  }
+  return isMobile && !isAccountDocumentSource ? <MobileNoteEditor /> : <DesktopNoteEditorPage />;
 }

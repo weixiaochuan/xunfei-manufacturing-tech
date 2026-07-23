@@ -12,7 +12,8 @@ import {
   Check,
 } from "lucide-react";
 import { message } from "antd";
-import { configApi, dailyApi, noteApi } from "@/lib/api";
+import { configApi } from "@/lib/api";
+import { dailyApi, noteApi } from "@/lib/documents/repository";
 import { useAppStore } from "@/store";
 
 /**

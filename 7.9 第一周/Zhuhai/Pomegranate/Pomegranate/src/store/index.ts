@@ -2,7 +2,8 @@ import { create } from "zustand";
 import { Store } from "@tauri-apps/plugin-store";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { emit } from "@tauri-apps/api/event";
-import { taskApi, systemApi, folderApi, configApi } from "@/lib/api";
+import { taskApi, systemApi, configApi } from "@/lib/api";
+import { folderApi } from "@/lib/documents/repository";
 
 /**
  * 读取配置项；不存在时返回 null（避开 configApi.get 的 NotFound Err 抛出）。

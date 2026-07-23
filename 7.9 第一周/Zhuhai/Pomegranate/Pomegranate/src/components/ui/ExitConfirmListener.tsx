@@ -3,7 +3,8 @@ import { Modal, Button, App as AntdApp, List } from "antd";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { exit } from "@tauri-apps/plugin-process";
 import { useTabsStore, type NoteTab } from "@/store/tabs";
-import { noteApi, syncV1Api } from "@/lib/api";
+import { syncV1Api } from "@/lib/api";
+import { noteApi } from "@/lib/documents/repository";
 
 /**
  * 退出前对所有启用的同步后端做一次 push。

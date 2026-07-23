@@ -34,7 +34,8 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import type { Update } from "@tauri-apps/plugin-updater";
 import type { AiModel, AiModelInput, ImportResult, ImportProgress, ImportConflictPolicy, ScannedFile, ExportResult, ExportProgress, NoteTemplate, NoteTemplateInput } from "@/types";
-import { systemApi, updaterApi, aiModelApi, importApi, exportApi, folderApi, templateApi, pdfApi, sourceFileApi, autostartApi, configApi } from "@/lib/api";
+import { systemApi, updaterApi, aiModelApi, importApi, exportApi, templateApi, pdfApi, sourceFileApi, autostartApi, configApi } from "@/lib/api";
+import { folderApi } from "@/lib/documents/repository";
 import {
   useAppStore,
   EDITOR_FONT_LABELS,

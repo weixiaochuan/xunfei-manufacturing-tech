@@ -48,3 +48,42 @@ bili_*.json
 
 # Local-only ppt-master native debug loop artifacts (payload snapshots/results may contain user material)
 analysis/ppt_native_loop/
+
+# Local account infrastructure secrets
+/.env.account
+!/.env.account.example
+/.env.account.lan
+/.account-lan/
+
+# Account Server local secrets
+/services/account-server/.env
+/services/account-server/.data/
+
+# Local environment files (safe templates remain trackable)
+/.env
+/.env.*
+!/.env*.example
+/services/account-server/.env.*
+!/services/account-server/.env.example
+
+# Local account data, workspaces, backups, logs and build artifacts
+user-files/
+backups/
+manifests/
+account-document-workspaces/
+logs/
+build/
+target/
+
+# Root-level installers and manual acceptance-test files
+/*.exe
+/*.msi
+/*.msix
+/*.appx
+/*.docx
+/*.pptx
+/*.pdf
+/*.txt
+/*.png
+/*.jpg
+/*.jpeg

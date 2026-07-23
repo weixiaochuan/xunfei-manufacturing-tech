@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button, Modal, message, theme as antdTheme } from "antd";
 import { Calendar, ChevronLeft, ChevronRight, Copy, Trash2 } from "lucide-react";
-import { dailyApi, trashApi } from "@/lib/api";
+import { dailyApi, trashApi } from "@/lib/documents/repository";
 import { useAppStore } from "@/store";
 import { useContextMenu } from "@/hooks/useContextMenu";
 import {

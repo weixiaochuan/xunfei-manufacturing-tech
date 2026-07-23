@@ -38,7 +38,15 @@ import { CloseCircleFilled } from "@ant-design/icons";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useNavigate, useLocation } from "react-router-dom";
-import { aiChatApi, aiModelApi, noteApi, aiAttachmentApi } from "@/lib/api";
+import { aiChatApi, aiModelApi, aiAttachmentApi } from "@/lib/api";
+import {
+  isAccountDocumentSource,
+  isAccountUploadedNote,
+  noteApi,
+  prepareAccountUploadedMaterial,
+} from "@/lib/documents/repository";
+import { documentErrorMessage } from "@/lib/documents/documentError";
+import { subscribeDocumentAccountReset } from "@/lib/documents/documentSession";
 import type {
   AiConversation,
   AiMessage,
@@ -179,6 +187,14 @@ function DesktopAiChatPage() {
   // 路线 A 会话附件：当前输入框「待发送」的附件列表（Excel/Text/PDF 混合），发送后清空
   const [pendingAttachments, setPendingAttachments] = useState<AttachmentPreview[]>([]);
   const [attachingFile, setAttachingFile] = useState(false);
+
+  useEffect(
+    () => subscribeDocumentAccountReset(() => {
+      setAttachedNotes([]);
+      setAttachOpen(false);
+    }),
+    [],
+  );
 
   // ─── 消息气泡右键菜单 ────────────────────────
   const msgCtx = useContextMenu<AiMessage>();
@@ -321,7 +337,11 @@ function DesktopAiChatPage() {
   // 拿到一次后清掉 state，避免用户后续再切回 AI 页又被自动跳走
   useEffect(() => {
     const state = location.state as
-      | { activeConvId?: number; pendingPrompt?: string }
+      | {
+          activeConvId?: number;
+          pendingPrompt?: string;
+          accountDocumentIds?: number[];
+        }
       | null;
     const incomingId = state?.activeConvId;
     if (incomingId) {
@@ -333,6 +353,18 @@ function DesktopAiChatPage() {
           convId: incomingId,
           prompt: state.pendingPrompt,
         };
+      }
+      if (
+        isAccountDocumentSource &&
+        Array.isArray(state?.accountDocumentIds) &&
+        state.accountDocumentIds.length > 0
+      ) {
+        const accountDocumentIds = state.accountDocumentIds;
+        void Promise.all(accountDocumentIds.map((id) => noteApi.get(id)))
+          .then(setAttachedNotes)
+          .catch((error) => {
+            message.error(`读取附加文档失败：${documentErrorMessage(error)}`);
+          });
       }
       navigate(location.pathname, { replace: true, state: null });
     }
@@ -350,6 +382,7 @@ function DesktopAiChatPage() {
   // 切换对话时同步「附加笔记」chips：从对话的 attached_note_ids 拉对应笔记对象
   // conversations 列表更新时也跟随（用户在 Modal 里改完会通过 loadConversations 触发重拉）
   useEffect(() => {
+    if (isAccountDocumentSource) return;
     const conv = conversations.find((c) => c.id === activeConvId);
     const ids = conv?.attached_note_ids ?? [];
     if (ids.length === 0) {
@@ -407,6 +440,10 @@ function DesktopAiChatPage() {
   async function handleRemoveAttached(noteId: number) {
     if (!activeConvId) return;
     const newIds = attachedNotes.filter((n) => n.id !== noteId).map((n) => n.id);
+    if (isAccountDocumentSource) {
+      setAttachedNotes((current) => current.filter((note) => note.id !== noteId));
+      return;
+    }
     try {
       await aiChatApi.setAttachedNotes(activeConvId, newIds);
       // 重新拉对话列表让 useEffect 重计算 chips
@@ -420,6 +457,13 @@ function DesktopAiChatPage() {
   async function handleAttachConfirm(ids: number[]) {
     if (!activeConvId) return;
     try {
+      if (isAccountDocumentSource) {
+        const selected = await Promise.all(ids.map((id) => noteApi.get(id)));
+        setAttachedNotes(selected);
+        setAttachOpen(false);
+        message.success(ids.length === 0 ? "已清空附加文档" : `已附加 ${ids.length} 篇文档`);
+        return;
+      }
       await aiChatApi.setAttachedNotes(activeConvId, ids);
       await loadConversations();
       setAttachOpen(false);
@@ -436,17 +480,26 @@ function DesktopAiChatPage() {
     if (!activeConvId) return;
     setArchiving(true);
     try {
-      const note = await aiChatApi.archiveToNote(
-        activeConvId,
-        archiveTitle.trim() || undefined,
-      );
+      const requestedTitle = archiveTitle.trim() || undefined;
+      const note = isAccountDocumentSource
+        ? await noteApi.create({
+            title: requestedTitle || "AI 对话归档",
+            content: messages
+              .map((item) => {
+                const role = item.role === "user" ? "用户" : "AI";
+                return `## ${role}\n\n${item.content}`;
+              })
+              .join("\n\n---\n\n"),
+            folder_id: null,
+          })
+        : await aiChatApi.archiveToNote(activeConvId, requestedTitle);
       message.success("已归档为笔记");
       setArchiveOpen(false);
       setArchiveTitle("");
       // 顺手跳到新建的笔记编辑器，方便用户立刻整理
       navigate(`/notes/${note.id}`);
     } catch (e) {
-      message.error(`归档失败: ${e}`);
+      message.error(`归档失败：${documentErrorMessage(e)}`);
     } finally {
       setArchiving(false);
     }
@@ -550,6 +603,26 @@ function DesktopAiChatPage() {
     const attachmentsPayload: MessageAttachment[] = pendingAttachments.map(
       previewToMessageAttachment,
     );
+
+    if (isAccountDocumentSource) {
+      try {
+        for (const note of attachedNotes) {
+          const content = isAccountUploadedNote(note)
+            ? await prepareAccountUploadedMaterial(note)
+            : note.content;
+          attachmentsPayload.push({
+            kind: "text",
+            filePath: "",
+            displayName: note.title || "未命名文档",
+            content,
+            truncated: false,
+          });
+        }
+      } catch (error) {
+        message.error(`读取附加文档失败：${documentErrorMessage(error)}`);
+        return;
+      }
+    }
 
     try {
       // use_rag 永远传 false：智能模式下由 LLM 自己调 search_notes，
@@ -1277,7 +1350,7 @@ function AttachNotesModal({
     noteApi
       .list({ page: 1, page_size: 500 })
       .then((res) => setAllNotes(res.items))
-      .catch((e) => message.error(`加载笔记失败: ${e}`))
+      .catch((e) => message.error(`加载文档失败: ${documentErrorMessage(e)}`))
       .finally(() => setLoading(false));
   }, [open, currentIds]);
 

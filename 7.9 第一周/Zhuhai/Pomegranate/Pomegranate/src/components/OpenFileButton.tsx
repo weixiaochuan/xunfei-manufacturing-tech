@@ -16,6 +16,7 @@ import {
   importTextFlow,
   importWordFlow,
 } from "@/lib/noteCreator";
+import { isAccountDocumentSource } from "@/lib/documents/repository";
 
 interface Props {
   /** 侧边栏折叠态 */
@@ -53,6 +54,10 @@ export function OpenFileButton({
 
   /** 预览打开：读文件内容 → 弹预览 Modal → 确认后导入 */
   async function handlePreviewOpen() {
+    if (isAccountDocumentSource) {
+      await importTextFlow(null, navigate);
+      return;
+    }
     try {
       const picked = await openDialog({
         multiple: false,
@@ -106,6 +111,10 @@ export function OpenFileButton({
 
   /** 直接导入（当前行为，跳过预览） */
   async function handleDirectOpen() {
+    if (isAccountDocumentSource) {
+      await importTextFlow(null, navigate);
+      return;
+    }
     try {
       const picked = await openDialog({
         multiple: false,
@@ -126,6 +135,10 @@ export function OpenFileButton({
 
   /** 导入 Markdown 文件夹 */
   async function handleImportMdFolder() {
+    if (isAccountDocumentSource) {
+      message.info("账号文档暂不支持导入整个文件夹，请选择单个文件上传");
+      return;
+    }
     try {
       const picked = await openDialog({
         directory: true,

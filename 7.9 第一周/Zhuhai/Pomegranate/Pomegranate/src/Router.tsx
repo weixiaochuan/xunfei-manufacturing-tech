@@ -1,6 +1,7 @@
-import { createHashRouter, RouterProvider } from "react-router-dom";
+import { createHashRouter, Navigate, RouterProvider } from "react-router-dom";
 import { Suspense, lazy } from "react";
 import { Spin } from "antd";
+import { Fragment, type ReactNode } from "react";
 import { LayoutSwitch } from "@/components/layout/LayoutSwitch";
 import { RouteErrorFallback } from "@/components/ui/ErrorBoundary";
 // 首屏常用页面 — 同步加载，不拆 chunk
@@ -13,6 +14,8 @@ import TrashPage from "@/pages/trash";
 import DailyPage from "@/pages/daily";
 import SettingsPage from "@/pages/settings";
 import AboutPage from "@/pages/about";
+import { useAccountStore } from "@/store/account";
+import { isAccountDocumentSource } from "@/lib/documents/documentSource";
 // 非首屏页面 — React.lazy 动态加载，减少主 bundle 体积
 const GraphPage = lazy(() => import("@/pages/graph"));
 const AiChatPage = lazy(() => import("@/pages/ai"));
@@ -46,6 +49,22 @@ function LazyPage({ children }: { children: React.ReactNode }) {
       {children}
     </Suspense>
   );
+}
+
+function DocumentAccountScope({ children }: { children: ReactNode }) {
+  const currentUser = useAccountStore((state) => state.currentUser);
+  if (isAccountDocumentSource && !currentUser) {
+    return <div className="flex h-full items-center justify-center">请先登录</div>;
+  }
+  const accountKey = isAccountDocumentSource ? currentUser?.platformUserId ?? "signed-out" : "local";
+  return <Fragment key={accountKey}>{children}</Fragment>;
+}
+
+function DocumentGraphScope({ children }: { children: ReactNode }) {
+  if (isAccountDocumentSource) {
+    return <div className="flex h-full items-center justify-center">账号文档知识图谱尚未接入</div>;
+  }
+  return children;
 }
 
 // 路由级 errorElement：路由内任何同步渲染异常（如 TipTap 在老 WebView 上
@@ -94,14 +113,14 @@ const router = createHashRouter([
     errorElement: <RouteErrorFallback />,
     children: [
       { index: true, element: <HomePage /> },
-      { path: "notes", element: <NoteListPage /> },
-      { path: "notes/:id", element: <NoteEditorPage /> },
+      { path: "notes", element: <DocumentAccountScope><NoteListPage /></DocumentAccountScope> },
+      { path: "notes/:id", element: <DocumentAccountScope><NoteEditorPage /></DocumentAccountScope> },
       { path: "search", element: <SearchPage /> },
-      { path: "tags", element: <TagsPage /> },
-      { path: "trash", element: <TrashPage /> },
-      { path: "hidden", element: <LazyPage><HiddenPage /></LazyPage> },
-      { path: "daily", element: <DailyPage /> },
-      { path: "graph", element: <LazyPage><GraphPage /></LazyPage> },
+      { path: "tags", element: <DocumentAccountScope><TagsPage /></DocumentAccountScope> },
+      { path: "trash", element: <DocumentAccountScope><TrashPage /></DocumentAccountScope> },
+      { path: "hidden", element: <DocumentAccountScope><LazyPage><HiddenPage /></LazyPage></DocumentAccountScope> },
+      { path: "daily", element: <DocumentAccountScope><DailyPage /></DocumentAccountScope> },
+      { path: "graph", element: <DocumentGraphScope><LazyPage><GraphPage /></LazyPage></DocumentGraphScope> },
       { path: "ai", element: <LazyPage><AiChatPage /></LazyPage> },
       { path: "prompts", element: <LazyPage><PromptsPage /></LazyPage> },
       { path: "plugins", element: <LazyPage><PluginsPage /></LazyPage> },
@@ -114,6 +133,7 @@ const router = createHashRouter([
       { path: "about", element: <AboutPage /> },
       { path: "quick-create", element: <LazyPage><QuickCreatePage /></LazyPage> },
       { path: "feature-toggle", element: <LazyPage><FeatureTogglePage /></LazyPage> },
+      { path: "account/files", element: <Navigate to="/notes" replace /> },
     ],
   },
 ]);

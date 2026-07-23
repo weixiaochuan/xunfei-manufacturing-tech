@@ -19,7 +19,7 @@ import {
   ExternalLink,
   Trash2,
 } from "lucide-react";
-import { folderApi, hiddenApi, noteApi, trashApi } from "@/lib/api";
+import { folderApi, hiddenApi, noteApi, trashApi } from "@/lib/documents/repository";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { relativeTime } from "@/lib/utils";
 import type { Folder, Note, PageResult } from "@/types";

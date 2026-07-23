@@ -1,3 +1,10 @@
+#[cfg(desktop)]
+mod account;
+mod account_network;
+#[cfg(desktop)]
+mod account_documents;
+#[cfg(desktop)]
+mod account_document_migration;
 mod commands;
 mod database;
 mod error;
@@ -29,6 +36,8 @@ use tauri::{Emitter, Manager, WindowEvent};
 const IDENTIFIER: &str = "edu.bit.inb";
 /// .md 文件投递文件名（默认实例的轮询 watcher 监听此文件）
 const DELIVER_FILE: &str = "deliver-md.txt";
+#[cfg(desktop)]
+const ACCOUNT_DELIVER_FILE: &str = "deliver-account-uri.txt";
 /// 「允许多开实例」flag 文件名。
 /// 存在 = 允许多开；缺失 = 不允许（默认）。
 /// 故意用文件存在与否而不是文件内容：避免在 Tauri Builder 启动前还得读 SQLite / JSON
@@ -298,6 +307,17 @@ fn deliver_md_to_default(app_data_dir: &Path, md_paths: &[String]) -> std::io::R
     Ok(())
 }
 
+#[cfg(desktop)]
+fn account_callback_from_args<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
+    args.into_iter()
+        .find(|argument| account::is_account_callback_uri(argument))
+}
+
+#[cfg(desktop)]
+fn deliver_account_callback_to_default(app_data_dir: &Path, uri: &str) -> std::io::Result<()> {
+    std::fs::write(app_data_dir.join(ACCOUNT_DELIVER_FILE), uri.as_bytes())
+}
+
 /// 仅写一个空行到投递文件，触发已运行实例的 watcher 唤起主窗。
 /// 用于"不允许多开"模式下，第二个进程退出前把焦点让给已运行的实例。
 /// 仅桌面端
@@ -387,6 +407,28 @@ fn start_md_deliver_watcher(handle: tauri::AppHandle, app_data_dir: PathBuf) {
     });
 }
 
+/// 已运行的默认实例接收由 Windows 自定义协议启动的短时账号回调。
+/// 文件只作为现有单实例机制的瞬时 IPC，读取后立即删除；不会写日志或持久化登录状态。
+#[cfg(desktop)]
+fn start_account_deliver_watcher(handle: tauri::AppHandle, app_data_dir: PathBuf) {
+    tauri::async_runtime::spawn(async move {
+        let path = app_data_dir.join(ACCOUNT_DELIVER_FILE);
+        let _ = std::fs::remove_file(&path);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let Ok(uri) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let _ = std::fs::remove_file(&path);
+            if account::is_account_callback_uri(&uri) {
+                account::handle_deep_link(handle.clone(), uri);
+            } else {
+                log::warn!("收到无效的账号协议回调");
+            }
+        }
+    });
+}
+
 /// T-013 完整版：检测到迁移 marker 时，开 splash 窗口跑迁移
 ///
 /// 流程：
@@ -470,6 +512,11 @@ pub fn run() {
         let _ = std::fs::create_dir_all(&app_data_dir);
         let default_lock = app_data_dir.join(format!("{}default.lock", lock_prefix));
         if is_default_lock_busy(&default_lock) {
+            if let Some(uri) = account_callback_from_args(std::env::args().skip(1)) {
+                let _ = deliver_account_callback_to_default(&app_data_dir, &uri);
+                let _ = ping_default_to_focus(&app_data_dir);
+                return;
+            }
             let md_paths = extract_md_paths_from_args(std::env::args().skip(1));
             if !md_paths.is_empty() {
                 let _ = deliver_md_to_default(&app_data_dir, &md_paths);
@@ -523,6 +570,7 @@ pub fn run() {
     #[cfg(desktop)]
     {
         builder = builder
+            .plugin(tauri_plugin_deep_link::init())
             // 开机启动：传 `--start-minimized` 给系统注册项，启动时由下方 setup 判断是否隐藏窗口
             .plugin(tauri_plugin_autostart::init(
                 tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -545,6 +593,29 @@ pub fn run() {
             #[cfg(desktop)]
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
+            }
+
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+
+                app.manage(account::AccountState::default());
+                app.manage(account_documents::AccountDocumentState::default());
+                #[cfg(all(debug_assertions, windows))]
+                app.deep_link().register_all()?;
+
+                let callback_handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        account::handle_deep_link(callback_handle.clone(), url.to_string());
+                    }
+                });
+
+                if let Some(urls) = app.deep_link().get_current()? {
+                    for url in urls {
+                        account::handle_deep_link(app.handle().clone(), url.to_string());
+                    }
+                }
             }
 
             // framework 默认 app_data_dir：单实例锁 + 指针文件 + 迁移 marker 永远在这里。
@@ -654,10 +725,7 @@ pub fn run() {
                 {
                     match services::pdf::init_pdfium() {
                         Ok(()) => log::info!("PDFium 绑定成功"),
-                        Err(e) => log::warn!(
-                            "PDFium 绑定失败（fallback 不可用）: {}",
-                            e
-                        ),
+                        Err(e) => log::warn!("PDFium 绑定失败（fallback 不可用）: {}", e),
                     }
                 }
             }
@@ -752,6 +820,10 @@ pub fn run() {
             #[cfg(desktop)]
             if instance_id.is_none() {
                 start_md_deliver_watcher(app.handle().clone(), framework_app_data_dir.clone());
+                start_account_deliver_watcher(
+                    app.handle().clone(),
+                    framework_app_data_dir.clone(),
+                );
 
                 // 全局快捷键：仅默认实例注册，避免多开实例互抢系统级热键。
                 // 单条注册失败只 log warn，不阻断启动；用户可在设置页改键/禁用
@@ -844,6 +916,64 @@ pub fn run() {
         })
         // ─── Command 注册 ───────────────────────────
         .invoke_handler(tauri::generate_handler![
+            #[cfg(desktop)]
+            account::begin_account_login,
+            #[cfg(desktop)]
+            account::restore_account_session,
+            #[cfg(desktop)]
+            account::logout_account,
+            #[cfg(desktop)]
+            account::take_pending_account_login_result,
+            #[cfg(desktop)]
+            account::account_list_files,
+            #[cfg(desktop)]
+            account::account_pick_and_upload_file,
+            #[cfg(desktop)]
+            account::account_download_file,
+            #[cfg(desktop)]
+            account::account_delete_file,
+            #[cfg(desktop)]
+            account_documents::account_list_documents,
+            #[cfg(desktop)]
+            account_documents::account_create_markdown_document,
+            #[cfg(desktop)]
+            account_documents::account_import_markdown_file,
+            #[cfg(desktop)]
+            account_documents::account_update_markdown_document,
+            #[cfg(desktop)]
+            account_documents::account_delete_document,
+            #[cfg(desktop)]
+            account_documents::account_restore_document,
+            #[cfg(desktop)]
+            account_documents::account_list_document_folders,
+            #[cfg(desktop)]
+            account_documents::account_create_document_folder,
+            #[cfg(desktop)]
+            account_documents::account_update_document_folder,
+            #[cfg(desktop)]
+            account_documents::account_delete_document_folder,
+            #[cfg(desktop)]
+            account_documents::account_list_document_tags,
+            #[cfg(desktop)]
+            account_documents::account_create_document_tag,
+            #[cfg(desktop)]
+            account_documents::account_update_document_tag,
+            #[cfg(desktop)]
+            account_documents::account_delete_document_tag,
+            #[cfg(desktop)]
+            account_documents::account_open_uploaded_document,
+            #[cfg(desktop)]
+            account_documents::account_begin_uploaded_document_edit,
+            #[cfg(desktop)]
+            account_documents::account_check_uploaded_document_edit,
+            #[cfg(desktop)]
+            account_documents::account_sync_uploaded_document_edit,
+            #[cfg(desktop)]
+            account_documents::account_discard_uploaded_document_edit,
+            #[cfg(desktop)]
+            account_documents::account_prepare_uploaded_document_material,
+            #[cfg(desktop)]
+            account_document_migration::account_import_local_markdown_documents,
             // MCP 内置 server（kb-core 12 工具）
             commands::mcp::mcp_internal_list_tools,
             commands::mcp::mcp_internal_call_tool,

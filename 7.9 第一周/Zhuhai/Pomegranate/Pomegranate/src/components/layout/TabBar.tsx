@@ -4,7 +4,7 @@ import { theme as antdTheme, Dropdown, Tooltip, Modal, Button, App as AntdApp, t
 import { X, ListTree } from "lucide-react";
 import { useTabsStore, type NoteTab } from "@/store/tabs";
 import { FileTypeIcon } from "@/components/FileTypeIcon";
-import { noteApi } from "@/lib/api";
+import { noteApi } from "@/lib/documents/repository";
 
 export function TabBar() {
   const { tabs, activeId, closeTab, closeOtherTabs, closeTabsToRight, getDraft, clearDraft } =

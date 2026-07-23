@@ -15,7 +15,7 @@ import {
   Edit3,
   Trash2,
 } from "lucide-react";
-import { tagApi } from "@/lib/api";
+import { tagApi } from "@/lib/documents/repository";
 import { useAppStore } from "@/store";
 import { TagColorPicker, TAG_COLORS } from "@/components/TagColorPicker";
 import { MicButton } from "@/components/MicButton";

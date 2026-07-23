@@ -20,7 +20,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { CloseCircleFilled } from "@ant-design/icons";
-import { dailyApi, noteApi } from "@/lib/api";
+import { dailyApi, noteApi, isAccountDocumentSource } from "@/lib/documents/repository";
 import { MicButton } from "@/components/MicButton";
 import { TiptapEditor } from "@/components/editor";
 import { useAutoSave } from "@/hooks/useAutoSave";
@@ -502,5 +502,5 @@ import { MobileDaily } from "./MobileDaily";
 
 export default function DailyPage() {
   const isMobile = useIsMobile();
-  return isMobile ? <MobileDaily /> : <DesktopDailyPage />;
+  return isMobile && !isAccountDocumentSource ? <MobileDaily /> : <DesktopDailyPage />;
 }

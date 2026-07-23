@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { searchApi, taskApi } from "@/lib/api";
+import { taskApi } from "@/lib/api";
+import { searchInternalDocuments } from "@/lib/documents/repository";
+import { captureDocumentRequest, isCurrentDocumentRequest } from "@/lib/documents/documentSession";
 import type { SearchResult, TaskSearchHit } from "@/types";
 
 interface Options {
@@ -46,11 +48,13 @@ export function useSearchSuggestions(keyword: string, opts?: Options): Result {
     }
 
     timerRef.current = setTimeout(async () => {
+      const identity = captureDocumentRequest();
       setLoading(true);
       const [n, t] = await Promise.all([
-        searchApi.search(kw).catch(() => [] as SearchResult[]),
+        searchInternalDocuments(kw).catch(() => [] as SearchResult[]),
         taskApi.search(kw, taskLimit).catch(() => [] as TaskSearchHit[]),
       ]);
+      if (!isCurrentDocumentRequest(identity)) return;
       setNotes(n);
       setTasks(t);
       setLoading(false);

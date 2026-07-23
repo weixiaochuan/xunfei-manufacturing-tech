@@ -38,7 +38,8 @@ import type { DataNode } from "antd/es/tree";
 import { useAppStore } from "@/store";
 import { MicButton } from "@/components/MicButton";
 import { useTabsStore } from "@/store/tabs";
-import { folderApi, importApi, noteApi, trashApi } from "@/lib/api";
+import { importApi } from "@/lib/api";
+import { folderApi, noteApi, trashApi, isAccountDocumentSource } from "@/lib/documents/repository";
 import type { Folder, Note, ScannedFile } from "@/types";
 import { parseEmojiPrefix } from "@/lib/treeIcons";
 import { NewNoteButton } from "@/components/NewNoteButton";
@@ -1105,6 +1106,11 @@ export function NotesPanel() {
         icon: <LayoutTemplate size={14} />,
         label: "从模板新建…",
         onClick: () => {
+          if (isAccountDocumentSource) {
+            message.info("账号文档暂不支持从本地模板新建");
+            close();
+            return;
+          }
           setTemplatePickerFolder(folderId);
           close();
         },
@@ -1176,6 +1182,10 @@ export function NotesPanel() {
   // 这里只保留侧边栏独有的"扫描文件夹递归导入"流程（带 ImportPreviewModal 选副本策略 + 保留层级）。
 
   async function handleImportMdFolder(folderKey: string) {
+    if (isAccountDocumentSource) {
+      message.info("账号文档暂不支持导入整个文件夹，请使用“打开文件”上传单个文件");
+      return;
+    }
     const folderId = Number(folderKey);
     try {
       const picked = await openDialog({
@@ -1245,6 +1255,10 @@ export function NotesPanel() {
    * 享受去重/副本/source_file 追踪）；否则回退到前端 File.text() + noteApi.create。
    */
   async function handleOsFilesDropped(files: File[]) {
+    if (isAccountDocumentSource) {
+      message.info("账号文档请使用“打开文件”上传，以便执行服务端校验");
+      return;
+    }
     const texts = files.filter(isDroppedTextFile);
     const skipped = files.length - texts.length;
     if (texts.length === 0) {

@@ -118,6 +118,70 @@ import type {
   PptMasterGenerateResult,
 } from "@/types";
 
+export interface DesktopAccountUser {
+  platformUserId: string;
+  accountNumber: string;
+  username: string;
+  displayName: string | null;
+  email: string | null;
+}
+
+export type AccountLoginResult =
+  | { status: "success"; user: DesktopAccountUser }
+  | { status: "signedOut" }
+  | { status: "unavailable"; message: string }
+  | { status: "error"; message: string };
+
+/** 账号文件接口允许进入 React 的全部字段；刻意不包含 owner、存储键或本地路径。 */
+export interface AccountUserFile {
+  id: string;
+  originalName: string;
+  mimeType: string | null;
+  sizeBytes: number;
+  sha256: string;
+  createdAt: string;
+}
+
+export interface AccountUserFileList {
+  files: AccountUserFile[];
+  limit: number;
+  offset: number;
+}
+
+export type AccountFilePickerResult =
+  | { status: "success"; file: AccountUserFile }
+  | { status: "cancelled" };
+
+export type AccountFileDownloadResult =
+  | { status: "success"; fileName: string }
+  | { status: "cancelled" };
+
+export interface AccountFileCommandError {
+  code: string;
+  message: string;
+}
+
+/** 桌面账号桥接：浏览器登录由 Rust 打开，ticket 也只由 Rust 交换。 */
+export const accountApi = {
+  beginLogin: () => invoke<void>("begin_account_login"),
+  restoreSession: () => invoke<AccountLoginResult>("restore_account_session"),
+  logout: () => invoke<AccountLoginResult>("logout_account"),
+  takePendingResult: () =>
+    invoke<AccountLoginResult | null>("take_pending_account_login_result"),
+};
+
+/** 文件请求全部由 Rust 代理，浏览器层既不持有 session，也不直连 Account Server。 */
+export const accountFilesApi = {
+  list: (limit = 50, offset = 0) =>
+    invoke<AccountUserFileList>("account_list_files", { limit, offset }),
+  pickAndUpload: () =>
+    invoke<AccountFilePickerResult>("account_pick_and_upload_file"),
+  download: (fileId: string) =>
+    invoke<AccountFileDownloadResult>("account_download_file", { fileId }),
+  remove: (fileId: string) =>
+    invoke<void>("account_delete_file", { fileId }),
+};
+
 /** 系统相关 API */
 export const systemApi = {
   greet: (name: string) => invoke<string>("greet", { name }),

@@ -36,13 +36,11 @@ import {
 } from "lucide-react";
 import { Tooltip as AntTooltip } from "antd";
 import {
-  noteApi,
-  dailyApi,
   systemApi,
   taskApi,
-  trashApi,
   aiChatApi,
 } from "@/lib/api";
+import { noteApi, dailyApi, trashApi, isAccountDocumentSource } from "@/lib/documents/repository";
 import { useContextMenu } from "@/hooks/useContextMenu";
 import {
   ContextMenuOverlay,
@@ -190,15 +188,21 @@ function DesktopHomePage() {
     try {
       const [notesResult, dashStats, trendData, allTodos, chats] =
         await Promise.all([
-          noteApi.list({ page: 1, page_size: 8 }),
-          systemApi.getDashboardStats(),
-          systemApi.getWritingTrend(14),
+          noteApi.list({ page: 1, page_size: isAccountDocumentSource ? 100 : 8 }),
+          isAccountDocumentSource
+            ? Promise.resolve({ total_notes: 0, total_folders: 0, total_tags: 0, total_links: 0, today_updated: 0, total_words: 0 })
+            : systemApi.getDashboardStats(),
+          isAccountDocumentSource ? Promise.resolve([]) : systemApi.getWritingTrend(14),
           taskApi.list({ status: 0 }).catch(() => [] as Task[]),
           aiChatApi.listConversations().catch(() => [] as AiConversation[]),
         ]);
-      setRecentNotes(notesResult.items.filter((n) => !n.is_pinned));
-      setPinnedNotes(notesResult.items.filter((n) => n.is_pinned));
-      setStats(dashStats);
+      setRecentNotes(notesResult.items.filter((n) => !n.is_pinned).slice(0, 8));
+      setPinnedNotes(notesResult.items.filter((n) => n.is_pinned).slice(0, 8));
+      setStats(isAccountDocumentSource ? {
+        ...dashStats,
+        total_notes: notesResult.total,
+        total_words: notesResult.items.reduce((sum, note) => sum + note.word_count, 0),
+      } : dashStats);
       setTrend(trendData);
       // 三段筛：逾期+今日 给 todayTasks；明天到 7 天后 给 upcomingTasks
       const todayEnd = new Date();
@@ -1477,5 +1481,5 @@ import { MobileHome } from "./MobileHome";
  */
 export default function HomePage() {
   const isMobile = useIsMobile();
-  return isMobile ? <MobileHome /> : <DesktopHomePage />;
+  return isMobile && !isAccountDocumentSource ? <MobileHome /> : <DesktopHomePage />;
 }

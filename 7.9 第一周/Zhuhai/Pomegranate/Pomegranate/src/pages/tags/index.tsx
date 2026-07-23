@@ -13,7 +13,7 @@ import {
 } from "antd";
 import { Tags, NotebookText, Edit3, Trash2 } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { tagApi } from "@/lib/api";
+import { tagApi, isAccountDocumentSource } from "@/lib/documents/repository";
 import { stripHtml, relativeTime } from "@/lib/utils";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { TagColorPicker } from "@/components/TagColorPicker";
@@ -309,5 +309,5 @@ import { MobileTags } from "./MobileTags";
 
 export default function TagsPage() {
   const isMobile = useIsMobile();
-  return isMobile ? <MobileTags /> : <DesktopTagsPage />;
+  return isMobile && !isAccountDocumentSource ? <MobileTags /> : <DesktopTagsPage />;
 }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { theme as antdTheme, message } from "antd";
 import { EyeOff, Folder as FolderIcon, FolderX, Layers, Check } from "lucide-react";
-import { folderApi, hiddenApi } from "@/lib/api";
+import { folderApi, hiddenApi } from "@/lib/documents/repository";
 import type { Folder } from "@/types";
 
 /**

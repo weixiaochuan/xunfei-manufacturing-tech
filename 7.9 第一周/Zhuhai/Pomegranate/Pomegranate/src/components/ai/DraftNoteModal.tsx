@@ -18,7 +18,9 @@ import {
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
-import { aiPlanApi, folderApi, noteApi } from "@/lib/api";
+import { aiPlanApi } from "@/lib/api";
+import { folderApi, isAccountDocumentSource, noteApi } from "@/lib/documents/repository";
+import { documentErrorMessage } from "@/lib/documents/documentError";
 import type { TargetLength } from "@/types";
 import { MicButton } from "@/components/MicButton";
 
@@ -106,7 +108,9 @@ export function DraftNoteModal({ open, onClose, onSaved }: DraftNoteModalProps) 
     }
     setSaving(true);
     try {
-      const folderId = await folderApi.ensurePath(draft.folderPath.trim());
+      const folderId = isAccountDocumentSource
+        ? null
+        : await folderApi.ensurePath(draft.folderPath.trim());
       const note = await noteApi.create({
         title: draft.title.trim(),
         content: draft.content,
@@ -119,7 +123,7 @@ export function DraftNoteModal({ open, onClose, onSaved }: DraftNoteModalProps) 
       // 跳到编辑器继续打磨
       navigate(`/notes/${note.id}`);
     } catch (e) {
-      message.error(`保存失败：${e}`);
+      message.error(`保存失败：${documentErrorMessage(e)}`);
     } finally {
       setSaving(false);
     }
