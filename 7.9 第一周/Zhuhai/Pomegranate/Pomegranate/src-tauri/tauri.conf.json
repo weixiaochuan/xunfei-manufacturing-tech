@@ -52,7 +52,10 @@
     "targets": ["nsis"],
     "createUpdaterArtifacts": "v1Compatible",
     "externalBin": ["binaries/kb-mcp"],
-    "resources": ["resources/course-graph/process_graph.db"],
+    "resources": [
+      "resources/course-graph/process_graph.db",
+      "resources/learning-assistant/knowledge-points/*.xlsx"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

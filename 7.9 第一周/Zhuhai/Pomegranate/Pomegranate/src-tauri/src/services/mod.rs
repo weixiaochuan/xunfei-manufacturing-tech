@@ -31,8 +31,11 @@ pub mod image_download;
 pub mod import;
 pub mod import_attachments;
 pub mod import_video_attachments;
+pub mod learning_assistant;
+pub mod learning_kb;
 pub mod links;
 pub mod markdown;
+pub mod local_learning_plan;
 // 外部 MCP server 子进程管理仅桌面端：rmcp transport-child-process 在桌面端 dependencies
 // 移动端 fork/spawn 受限，砍掉外部 MCP，仅保留 in-memory 内置 server（kb-core）
 #[cfg(desktop)]

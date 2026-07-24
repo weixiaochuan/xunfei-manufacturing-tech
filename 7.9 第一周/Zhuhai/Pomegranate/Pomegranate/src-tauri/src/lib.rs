@@ -1161,6 +1161,11 @@ pub fn run() {
             commands::course_graph::course_graph_node_detail,
             commands::course_graph::course_graph_knowledge,
             commands::course_graph::course_graph_related,
+            commands::learning_assistant::learning_assistant_check,
+            commands::learning_assistant::learning_assistant_understand,
+            commands::learning_assistant::learning_assistant_generate_plan,
+            commands::learning_kb::learning_kb_inventory,
+            commands::learning_kb::learning_kb_search,
             // AI Provider 注册表
             commands::ai_provider::list_ai_providers,
             commands::ai_provider::get_active_provider,

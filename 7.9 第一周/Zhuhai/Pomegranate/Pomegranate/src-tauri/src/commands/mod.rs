@@ -13,6 +13,8 @@ pub mod folders;
 pub mod hidden_pin;
 pub mod image;
 pub mod import;
+pub mod learning_assistant;
+pub mod learning_kb;
 pub mod links;
 pub mod mcp;
 pub mod notes;

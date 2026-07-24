@@ -59,6 +59,7 @@
     ],
     "resources": [
       "resources/course-graph/process_graph.db",
+      "resources/learning-assistant/knowledge-points/*.xlsx",
       "binaries/bcryptprimitives.dll",
       "binaries/api-ms-win-core-synch-l1-2-0.dll",
       "binaries/api-ms-win-core-winrt-l1-1-0.dll"
