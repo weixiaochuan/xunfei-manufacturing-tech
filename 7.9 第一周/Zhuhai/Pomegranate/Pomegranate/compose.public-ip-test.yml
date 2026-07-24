@@ -1,0 +1,22 @@
+services:
+  casdoor:
+    environment:
+      origin: "${CASDOOR_PUBLIC_URL}"
+      originFrontend: "${CASDOOR_PUBLIC_URL}"
+
+  account-migrate:
+    environment:
+      ALLOW_INSECURE_PUBLIC_IP_TEST: "${ALLOW_INSECURE_PUBLIC_IP_TEST}"
+
+  account-server:
+    environment:
+      ALLOW_INSECURE_PUBLIC_IP_TEST: "${ALLOW_INSECURE_PUBLIC_IP_TEST}"
+
+  caddy:
+    ports: !override
+      - "8000:8000"
+      - "8080:8080"
+    volumes: !override
+      - ./infra/cloud/caddy/Caddyfile.public-ip-test:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config

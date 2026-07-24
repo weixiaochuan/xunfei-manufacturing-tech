@@ -14,7 +14,7 @@
     "storage:migrate": "tsc && node dist/scripts/migrate-file-storage.js",
     "storage:verify": "tsc && node dist/scripts/migrate-file-storage.js --verify",
     "start": "node dist/src/index.js",
-    "test": "tsc && node --test dist/test/auth.test.js dist/test/documents.test.js dist/test/id-token.test.js dist/test/platform-users.test.js dist/test/sessions.test.js dist/test/storage.test.js dist/test/user-files.test.js",
+    "test": "tsc && node --test dist/test/auth.test.js dist/test/config.test.js dist/test/documents.test.js dist/test/id-token.test.js dist/test/platform-users.test.js dist/test/sessions.test.js dist/test/storage.test.js dist/test/user-files.test.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
