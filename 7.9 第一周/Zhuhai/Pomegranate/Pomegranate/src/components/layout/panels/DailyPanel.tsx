@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button, Modal, message, theme as antdTheme } from "antd";
 import { Calendar, ChevronLeft, ChevronRight, Copy, Trash2 } from "lucide-react";
 import { dailyApi, trashApi } from "@/lib/documents/repository";
+import { documentErrorMessage } from "@/lib/documents/documentError";
 import { useAppStore } from "@/store";
 import { useContextMenu } from "@/hooks/useContextMenu";
 import {
@@ -52,6 +53,15 @@ function weekdayOf(d: string): string {
   return WEEKDAYS[new Date(d + "T00:00:00").getDay()];
 }
 
+function isSignedOutError(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "signedOut"
+  );
+}
+
 export function DailyPanel() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -86,7 +96,9 @@ export function DailyPanel() {
         const list = await dailyApi.listDates(viewMonth.year, viewMonth.month);
         if (!cancelled) setDates(list);
       } catch (e) {
-        if (!cancelled) message.error(String(e));
+        if (!cancelled && !isSignedOutError(e)) {
+          message.error(documentErrorMessage(e));
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
