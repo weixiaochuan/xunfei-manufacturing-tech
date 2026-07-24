@@ -52,6 +52,7 @@ interface PptGenerationDraftState {
   materialAnalysisProgress: PptMaterialAnalysisProgress | null;
   materialAnalysisError: string | null;
   chunkAnalysisRevision: number | null;
+  materialAnalysisCacheKey: string | null;
   materialAnalysisRunId: number;
 
   understandingDraft: PptUnderstandingDraft | null;
@@ -85,6 +86,7 @@ interface PptGenerationDraftState {
     mode: Exclude<PptMaterialProcessingMode, null>,
     materialRevision: number,
     preserveArtifacts?: boolean,
+    cacheKey?: string | null,
   ) => number;
   setMaterialChunkPlan: (
     plan: PptMaterialChunkPlan,
@@ -161,6 +163,7 @@ function materialChangedPatch(state: PptGenerationDraftState) {
     materialAnalysisProgress: null,
     materialAnalysisError: null,
     chunkAnalysisRevision: null,
+    materialAnalysisCacheKey: null,
     materialAnalysisRunId: state.materialAnalysisRunId + 1,
     activeStep: 0,
     generationError: null,
@@ -195,6 +198,7 @@ export const usePptGenerationDraftStore = create<PptGenerationDraftState>((set, 
   materialAnalysisProgress: null,
   materialAnalysisError: null,
   chunkAnalysisRevision: null,
+  materialAnalysisCacheKey: null,
   materialAnalysisRunId: 0,
 
   understandingDraft: null,
@@ -286,12 +290,20 @@ export const usePptGenerationDraftStore = create<PptGenerationDraftState>((set, 
         ...materialChangedPatch(state),
       };
     }),
-  beginMaterialAnalysis: (materialProcessingMode, materialAnalysisRevision, preserveArtifacts = false) => {
+  beginMaterialAnalysis: (
+    materialProcessingMode,
+    materialAnalysisRevision,
+    preserveArtifacts = false,
+    materialAnalysisCacheKey = null,
+  ) => {
     let nextRunId = get().materialAnalysisRunId;
     set((state) => {
       if (state.materialRevision !== materialAnalysisRevision) return state;
       nextRunId = state.materialAnalysisRunId + 1;
-      const canPreserve = preserveArtifacts && state.chunkAnalysisRevision === materialAnalysisRevision;
+      const canPreserve =
+        preserveArtifacts &&
+        state.chunkAnalysisRevision === materialAnalysisRevision &&
+        state.materialAnalysisCacheKey === materialAnalysisCacheKey;
       const materialAnalysisStatus = materialProcessingMode === "direct" ? "analyzing" : "planning";
       return {
         materialProcessingMode,
@@ -308,6 +320,7 @@ export const usePptGenerationDraftStore = create<PptGenerationDraftState>((set, 
         materialAnalysisError: null,
         failedChunkIndexes: [],
         chunkAnalysisRevision: materialAnalysisRevision,
+        materialAnalysisCacheKey,
         materialAnalysisRunId: nextRunId,
         ...(canPreserve
           ? {}
@@ -467,6 +480,7 @@ export const usePptGenerationDraftStore = create<PptGenerationDraftState>((set, 
       materialAnalysisProgress: null,
       materialAnalysisError: null,
       chunkAnalysisRevision: null,
+      materialAnalysisCacheKey: null,
       materialAnalysisRunId: state.materialAnalysisRunId + 1,
       understandingDraft: null,
       understandingDraftDirty: false,

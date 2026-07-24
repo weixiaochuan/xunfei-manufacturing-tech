@@ -836,14 +836,14 @@ export const aiWriteApi = {
   suggestPrompt: (selectedText: string, context?: string) =>
     invoke<string>("ai_suggest_prompt", { selectedText, context }),
   /** PPT 生成页：非流式理解语料，返回可确认的 PPT 需求分析 */
-  understandPpt: (input: { prompt: string; modelId?: number | null }) =>
-    invoke<string>("ai_ppt_understand", { input }),
+  understandPpt: ({ prompt, modelId }: { prompt: string; modelId?: number | null }) =>
+    invoke<string>("ai_ppt_understand", { input: { prompt, modelId, requestKind: "direct" } }),
   /** PPT 长素材：读取单个部分并返回六维理解草稿。 */
-  understandPptChunk: (input: { prompt: string; modelId: number }) =>
-    invoke<string>("ai_ppt_understand", { input }),
+  understandPptChunk: ({ prompt, modelId }: { prompt: string; modelId: number }) =>
+    invoke<string>("ai_ppt_understand", { input: { prompt, modelId, requestKind: "chunk" } }),
   /** PPT 长素材：把全部六维草稿合并为一次最终理解。 */
-  mergePptUnderstanding: (input: { prompt: string; modelId: number }) =>
-    invoke<string>("ai_ppt_understand", { input }),
+  mergePptUnderstanding: ({ prompt, modelId }: { prompt: string; modelId: number }) =>
+    invoke<string>("ai_ppt_understand", { input: { prompt, modelId, requestKind: "merge" } }),
 };
 
 /**

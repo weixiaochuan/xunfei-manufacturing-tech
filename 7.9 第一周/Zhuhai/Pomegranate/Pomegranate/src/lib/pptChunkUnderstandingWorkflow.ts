@@ -11,11 +11,18 @@ export interface PptChunkUnderstandingWorkflowInput {
   cachedDrafts: PptChunkUnderstandingDraft[];
   isCancelled: () => boolean;
   analyzeChunk: (chunk: PptMaterialChunk) => Promise<PptChunkUnderstandingDraft>;
-  mergeDrafts: (drafts: PptChunkUnderstandingDraft[]) => Promise<PptUnderstandingDraft>;
+  mergeDrafts: (
+    drafts: PptChunkUnderstandingDraft[],
+  ) => Promise<PptUnderstandingDraft | PptChunkUnderstandingMergeResult>;
   onChunkStarted?: (chunk: PptMaterialChunk) => void;
   onChunkSucceeded?: (draft: PptChunkUnderstandingDraft) => void;
   onChunkFailed?: (chunk: PptMaterialChunk, error: unknown) => void;
   onMergeStarted?: () => void;
+}
+
+export interface PptChunkUnderstandingMergeResult {
+  finalDraft: PptUnderstandingDraft;
+  requestCount: number;
 }
 
 export interface PptChunkUnderstandingWorkflowResult {
@@ -23,8 +30,12 @@ export interface PptChunkUnderstandingWorkflowResult {
   failedChunkIndexes: number[];
   cancelled: boolean;
   analysisRequestCount: number;
-  mergeRequestCount: 0 | 1;
+  mergeRequestCount: number;
   finalDraft: PptUnderstandingDraft | null;
+}
+
+function isMergeResult(value: PptUnderstandingDraft | PptChunkUnderstandingMergeResult): value is PptChunkUnderstandingMergeResult {
+  return "finalDraft" in value && "requestCount" in value;
 }
 
 /** 最多并发两个部分；全部成功后只执行一次最终合并，因此总请求严格为 N + 1。 */
@@ -82,13 +93,14 @@ export async function executePptChunkUnderstandingWorkflow(
   }
 
   input.onMergeStarted?.();
-  const finalDraft = await input.mergeDrafts(drafts);
+  const mergeResult = await input.mergeDrafts(drafts);
+  const finalDraft = isMergeResult(mergeResult) ? mergeResult.finalDraft : mergeResult;
   return {
     drafts,
     failedChunkIndexes: [],
     cancelled: false,
     analysisRequestCount,
-    mergeRequestCount: 1,
+    mergeRequestCount: isMergeResult(mergeResult) ? mergeResult.requestCount : 1,
     finalDraft,
   };
 }

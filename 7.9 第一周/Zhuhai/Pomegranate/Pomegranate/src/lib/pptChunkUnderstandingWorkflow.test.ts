@@ -121,6 +121,22 @@ assert(retriedIndexes.join(",") === "2", "重试只能请求失败部分，不�
 assert(retried.analysisRequestCount === 1, "重试只能增加一次分段请求");
 assert(retryMergeCalls === 1 && retried.mergeRequestCount === 1, "补齐失败部分后必须只合并一次");
 
+const hierarchicalMergeCount = await executePptChunkUnderstandingWorkflow({
+  chunks,
+  cachedDrafts: chunks.map(draftFor),
+  isCancelled: () => false,
+  analyzeChunk: async (chunk) => draftFor(chunk),
+  mergeDrafts: async () => ({ finalDraft, requestCount: 3 }),
+});
+assert(
+  hierarchicalMergeCount.analysisRequestCount === 0,
+  "已有全部分段草稿时不得重复请求分段理解",
+);
+assert(
+  hierarchicalMergeCount.mergeRequestCount === 3,
+  "分层合并时必须返回真实合并请求次数",
+);
+
 let cancelledCalls = 0;
 const cancelledBeforeStart = await executePptChunkUnderstandingWorkflow({
   chunks,

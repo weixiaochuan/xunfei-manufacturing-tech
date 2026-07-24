@@ -16,6 +16,7 @@ use crate::state::AppState;
 pub struct AiPptUnderstandInput {
     pub prompt: String,
     pub model_id: Option<i64>,
+    pub request_kind: Option<String>,
 }
 
 // ─── AI 模型 Commands ────────────────────────
@@ -316,8 +317,13 @@ pub async fn ai_ppt_understand(
         return Err("AI 理解 Prompt 不能为空".to_string());
     }
 
+    let request_id = match input.request_kind.as_deref() {
+        Some("chunk") => "ppt_generation_understand_chunk",
+        Some("merge") => "ppt_generation_understand_merge",
+        _ => "ppt_generation_understand_direct",
+    };
     let input = PluginAiChatInput {
-        request_id: "ppt_generation_understand".to_string(),
+        request_id: request_id.to_string(),
         model_id: input.model_id,
         messages: vec![PluginAiMessage {
             role: "user".to_string(),

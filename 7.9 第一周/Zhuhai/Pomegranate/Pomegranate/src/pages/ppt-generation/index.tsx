@@ -62,7 +62,6 @@ import {
 } from "@/lib/pptContextBudget";
 import {
   buildPptChunkUnderstandingPrompt,
-  buildPptUnderstandingMergePrompt,
   parsePptChunkUnderstandingResponse,
   parsePptUnderstandingMergeResponse,
   type PptChunkUnderstandingContext,
@@ -76,6 +75,10 @@ import {
   PPT_UNDERSTANDING_FIELD_DESCRIPTIONS,
 } from "@/lib/pptUnderstandingUi";
 import { preparePptUnderstandingDraftForDisplay } from "@/lib/pptUnderstandingFormatting";
+import {
+  buildPptMaterialAnalysisCacheKey,
+  mergePptUnderstandingDraftsHierarchically,
+} from "@/lib/pptUnderstandingRuntime";
 import {
   planPptMaterialChunks,
   resolvePptMaterialRequestPlan,
@@ -1082,21 +1085,24 @@ export default function PptGenerationPage() {
           return parsePptChunkUnderstandingResponse(raw, chunk);
         },
         mergeDrafts: async (drafts) => {
-          const prompt = buildPptUnderstandingMergePrompt({
-            ...context,
-            chunks: plan.chunks.map((chunk) => ({
-              chunkId: chunk.id,
-              chunkIndex: chunk.index,
-              sourceTitles: chunk.sourceTitles,
-              headingContext: chunk.headingContext,
-              draft: drafts.find((draft) => draft.chunkId === chunk.id)!,
-            })),
+          const merged = await mergePptUnderstandingDraftsHierarchically({
+            context,
+            chunks: plan.chunks,
+            drafts,
+            modelMaxContextTokens: selectedModel?.max_context ?? null,
+            reservedOutputTokens,
+            mergeDrafts: async (prompt) => {
+              const raw = await aiWriteApi.mergePptUnderstanding({
+                prompt,
+                modelId: selectedModelId!,
+              });
+              return parsePptUnderstandingMergeResponse(raw);
+            },
           });
-          const raw = await aiWriteApi.mergePptUnderstanding({
-            prompt,
-            modelId: selectedModelId!,
-          });
-          return parsePptUnderstandingMergeResponse(raw);
+          return {
+            finalDraft: merged.finalDraft,
+            requestCount: merged.mergeRequestCount,
+          };
         },
         onChunkStarted: (chunk) => {
           setMaterialAnalysisStage(
@@ -1259,10 +1265,23 @@ export default function PptGenerationPage() {
     }
 
     const existing = usePptGenerationDraftStore.getState();
+    const analysisCacheKey = buildPptMaterialAnalysisCacheKey({
+      rawMaterial: finalValues.sourceMaterial,
+      modelId: selectedModelId,
+      modelMaxContextTokens: selectedModel?.max_context ?? null,
+      reservedOutputTokens,
+      promptContext: chunkUnderstandingContext(finalValues),
+    });
     const canReusePlan =
       existing.chunkAnalysisRevision === requestedMaterialRevision &&
-      existing.materialChunkPlan !== null;
-    const runId = beginMaterialAnalysis("chunked", requestedMaterialRevision, canReusePlan);
+      existing.materialChunkPlan !== null &&
+      existing.materialAnalysisCacheKey === analysisCacheKey;
+    const runId = beginMaterialAnalysis(
+      "chunked",
+      requestedMaterialRevision,
+      canReusePlan,
+      analysisCacheKey,
+    );
     let plan: PptMaterialChunkPlan;
     try {
       plan = canReusePlan
