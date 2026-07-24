@@ -1151,6 +1151,16 @@ pub fn run() {
             commands::links::search_link_targets,
             commands::links::find_note_id_by_title_loose,
             commands::links::get_graph_data,
+            // 课程知识图谱模块：机械制造工艺图谱，只读内置 SQLite 资源
+            commands::course_graph::course_graph_get_config,
+            commands::course_graph::course_graph_health,
+            commands::course_graph::course_graph_stats,
+            commands::course_graph::course_graph_chapters,
+            commands::course_graph::course_graph_expand,
+            commands::course_graph::course_graph_search,
+            commands::course_graph::course_graph_node_detail,
+            commands::course_graph::course_graph_knowledge,
+            commands::course_graph::course_graph_related,
             // AI Provider 注册表
             commands::ai_provider::list_ai_providers,
             commands::ai_provider::get_active_provider,

@@ -18,6 +18,7 @@ import { useAccountStore } from "@/store/account";
 import { isAccountDocumentSource } from "@/lib/documents/documentSource";
 // 非首屏页面 — React.lazy 动态加载，减少主 bundle 体积
 const GraphPage = lazy(() => import("@/pages/graph"));
+const CourseGraphPage = lazy(() => import("@/pages/course-graph"));
 const AiChatPage = lazy(() => import("@/pages/ai"));
 const MobileAiChat = lazy(() => import("@/pages/ai/MobileAiChat").then(m => ({ default: m.MobileAiChat })));
 const MobileTaskDetail = lazy(() => import("@/pages/tasks/MobileTaskDetail").then(m => ({ default: m.MobileTaskDetail })));
@@ -121,6 +122,7 @@ const router = createHashRouter([
       { path: "hidden", element: <DocumentAccountScope><LazyPage><HiddenPage /></LazyPage></DocumentAccountScope> },
       { path: "daily", element: <DocumentAccountScope><DailyPage /></DocumentAccountScope> },
       { path: "graph", element: <DocumentGraphScope><LazyPage><GraphPage /></LazyPage></DocumentGraphScope> },
+      { path: "course-graph", element: <LazyPage><CourseGraphPage /></LazyPage> },
       { path: "ai", element: <LazyPage><AiChatPage /></LazyPage> },
       { path: "prompts", element: <LazyPage><PromptsPage /></LazyPage> },
       { path: "plugins", element: <LazyPage><PluginsPage /></LazyPage> },

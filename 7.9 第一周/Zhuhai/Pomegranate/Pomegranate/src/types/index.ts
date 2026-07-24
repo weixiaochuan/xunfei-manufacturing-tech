@@ -2067,3 +2067,38 @@ export interface ProjectSessionMessage {
   content: string;
   createdAt: string;
 }
+
+export interface CourseGraphStats {
+  version: string;
+  sourceZip: string;
+  generatedAt: string;
+  chapters: number;
+  sections: number;
+  knowledges: number;
+  concepts: number;
+  nodes: number;
+  edges: number;
+  sourceRelationships: number;
+  skippedInvalidRelationships: number;
+}
+
+export interface CourseGraphConfig {
+  mode: string;
+  databaseName: string;
+  databasePath?: string | null;
+  resourceReady: boolean;
+  readonly: boolean;
+  requiresExternalService: boolean;
+  serviceDirHint?: string | null;
+}
+
+export interface CourseGraphHealth {
+  reachable: boolean;
+  status: string;
+  mode: string;
+  databaseName: string;
+  databasePath?: string | null;
+  version?: string | null;
+  stats?: CourseGraphStats | null;
+  error?: string | null;
+}

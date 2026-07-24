@@ -67,6 +67,7 @@
     "@tiptap/suggestion": "3.20.4",
     "@types/qrcode": "^1.5.6",
     "antd": "^6.3.1",
+    "cytoscape": "3.33.2",
     "dayjs": "^1.11.20",
     "html5-qrcode": "^2.3.8",
     "katex": "^0.16.45",

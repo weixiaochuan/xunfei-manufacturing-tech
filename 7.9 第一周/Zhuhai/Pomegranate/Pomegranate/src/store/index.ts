@@ -41,6 +41,7 @@ export type ActiveView =
   | "tasks"
   | "cards"
   | "graph"
+  | "course-graph"
   | "ai"
   | "prompts"
   | "plugins"
@@ -416,6 +417,7 @@ export const OPTIONAL_VIEWS: readonly ActiveView[] = [
   "cards",
   "tags",
   "graph",
+  "course-graph",
   "ai",
   "prompts",
   "plugins",

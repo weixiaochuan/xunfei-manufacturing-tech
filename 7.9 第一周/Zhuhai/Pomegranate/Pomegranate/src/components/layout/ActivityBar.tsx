@@ -12,6 +12,7 @@ import {
   CheckSquare,
   Layers,
   GitBranch,
+  Network,
   Bot,
   Sparkles,
   Plug,
@@ -76,6 +77,7 @@ const MAIN_GROUPS: ActivityItem[][] = [
     { view: "search", route: "/search", label: "搜索", icon: <Search size={18} />, core: true },
     { view: "tags", route: "/tags", label: "标签", icon: <Tags size={18} /> },
     { view: "graph", route: "/graph", label: "知识图谱", icon: <GitBranch size={18} /> },
+    { view: "course-graph", route: "/course-graph", label: "课程知识图谱", icon: <Network size={18} /> },
   ],
   // AI 辅助
   [
@@ -102,6 +104,7 @@ const ROUTE_TO_VIEW: Array<[string, ActiveView]> = [
   ["/cards", "cards"],
   ["/ppt-generation", "ppt-generation"],
   ["/graph", "graph"],
+  ["/course-graph", "course-graph"],
   ["/ai", "ai"],
   ["/prompts", "prompts"],
   ["/plugins", "plugins"],

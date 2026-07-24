@@ -6,6 +6,7 @@ pub mod claude_agent;
 pub mod attachment;
 pub mod config;
 pub mod converter;
+pub mod course_graph;
 pub mod crypto;
 pub mod daily;
 pub mod data_dir;

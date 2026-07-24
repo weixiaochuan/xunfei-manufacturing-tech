@@ -23,6 +23,9 @@ import type {
   SearchResult,
   NoteLink,
   GraphData,
+  CourseGraphConfig,
+  CourseGraphHealth,
+  CourseGraphStats,
   AiModel,
   AiModelInput,
   AiModelTestResult,
@@ -495,6 +498,24 @@ export const linkApi = {
   findIdByTitle: (title: string) =>
     invoke<number | null>("find_note_id_by_title_loose", { title }),
   getGraphData: () => invoke<GraphData>("get_graph_data"),
+};
+
+/** 课程知识图谱 API（机械制造工艺图谱，只读内置资源） */
+export const courseGraphApi = {
+  getConfig: (): Promise<CourseGraphConfig> => invoke("course_graph_get_config"),
+  health: (): Promise<CourseGraphHealth> => invoke("course_graph_health"),
+  stats: (): Promise<CourseGraphStats> => invoke("course_graph_stats"),
+  chapters: (): Promise<unknown> => invoke("course_graph_chapters"),
+  expand: (elementId: string): Promise<unknown> =>
+    invoke("course_graph_expand", { elementId }),
+  search: (query: string, limit = 20): Promise<unknown> =>
+    invoke("course_graph_search", { query, limit }),
+  nodeDetail: (nodeId: string): Promise<unknown> =>
+    invoke("course_graph_node_detail", { nodeId }),
+  knowledge: (knowledgeId: string): Promise<unknown> =>
+    invoke("course_graph_knowledge", { knowledgeId }),
+  related: (nodeId: string): Promise<unknown> =>
+    invoke("course_graph_related", { nodeId }),
 };
 
 /** 标签 API */

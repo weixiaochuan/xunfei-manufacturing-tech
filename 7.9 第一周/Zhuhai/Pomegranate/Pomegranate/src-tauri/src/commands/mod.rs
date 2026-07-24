@@ -5,6 +5,7 @@ pub mod attachment;
 pub mod cards;
 pub mod claude_agent;
 pub mod config;
+pub mod course_graph;
 pub mod daily;
 pub mod data_dir;
 pub mod export;
