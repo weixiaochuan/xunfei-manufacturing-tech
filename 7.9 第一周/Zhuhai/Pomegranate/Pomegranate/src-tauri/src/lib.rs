@@ -1,10 +1,12 @@
 #[cfg(desktop)]
 mod account;
-mod account_network;
+#[cfg(desktop)]
+mod account_document_migration;
 #[cfg(desktop)]
 mod account_documents;
 #[cfg(desktop)]
-mod account_document_migration;
+mod account_learning;
+mod account_network;
 mod commands;
 mod database;
 mod error;
@@ -931,6 +933,22 @@ pub fn run() {
             account::account_download_file,
             #[cfg(desktop)]
             account::account_delete_file,
+            #[cfg(desktop)]
+            account_learning::account_learning_projects_list,
+            #[cfg(desktop)]
+            account_learning::account_learning_project_create,
+            #[cfg(desktop)]
+            account_learning::account_learning_project_get,
+            #[cfg(desktop)]
+            account_learning::account_learning_project_update,
+            #[cfg(desktop)]
+            account_learning::account_learning_project_rename,
+            #[cfg(desktop)]
+            account_learning::account_learning_project_open,
+            #[cfg(desktop)]
+            account_learning::account_learning_project_delete,
+            #[cfg(desktop)]
+            account_learning::account_learning_project_duplicate,
             #[cfg(desktop)]
             account_documents::account_list_documents,
             #[cfg(desktop)]
