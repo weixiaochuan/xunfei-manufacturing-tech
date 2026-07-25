@@ -1,0 +1,61 @@
+name: pomegranate-casdoor-test
+
+services:
+  postgres-test:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${CASDOOR_TEST_POSTGRES_ADMIN_USER}"
+      POSTGRES_PASSWORD: "${CASDOOR_TEST_POSTGRES_ADMIN_PASSWORD}"
+      POSTGRES_DB: postgres
+      CASDOOR_TEST_DB_NAME: "${CASDOOR_TEST_DB_NAME}"
+      CASDOOR_TEST_DB_USER: "${CASDOOR_TEST_DB_USER}"
+      CASDOOR_TEST_DB_PASSWORD: "${CASDOOR_TEST_DB_PASSWORD}"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+      - ./infra/casdoor-test/postgres/001-init-casdoor-test.sh:/docker-entrypoint-initdb.d/001-init-casdoor-test.sh:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    networks:
+      - casdoor_test_backend
+
+  casdoor-test:
+    image: casbin/casdoor:3.119.0
+    restart: unless-stopped
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    environment:
+      RUNNING_IN_DOCKER: "true"
+      driverName: postgres
+      dataSourceName: >-
+        user=${CASDOOR_TEST_DB_USER} password=${CASDOOR_TEST_DB_PASSWORD}
+        host=${CASDOOR_TEST_DB_HOST} port=${CASDOOR_TEST_DB_PORT}
+        sslmode=disable dbname=${CASDOOR_TEST_DB_NAME}
+      dbName: "${CASDOOR_TEST_DB_NAME}"
+      httpport: "8000"
+      runmode: prod
+      origin: "${CASDOOR_TEST_PUBLIC_URL}"
+      originFrontend: "${CASDOOR_TEST_PUBLIC_URL}"
+    ports:
+      - "127.0.0.1:${CASDOOR_TEST_HOST_PORT}:8000"
+    volumes:
+      - ./infra/casdoor-test/casdoor/app.conf:/conf/app.conf:ro
+    networks:
+      - casdoor_test_backend
+
+volumes:
+  postgres_test_data:
+    name: pomegranate_casdoor_test_postgres_data
+
+networks:
+  casdoor_test_backend:
+    name: pomegranate_casdoor_test_backend
+    driver: bridge
+    internal: true
