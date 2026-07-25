@@ -117,6 +117,12 @@ class MemoryLearningProjectRepository implements LearningProjectRepository {
     record.deletedAt = record.updatedAt;
     return { status: "deleted" as const };
   }
+
+  async duplicate(ownerUserId: string, sourceProjectId: string, input: LearningProjectCreateRecord) {
+    const source = this.records.get(sourceProjectId);
+    if (!source || source.ownerUserId !== ownerUserId || source.deletedAt !== null) return null;
+    return this.create(ownerUserId, input);
+  }
 }
 
 function sessions(): SessionService {

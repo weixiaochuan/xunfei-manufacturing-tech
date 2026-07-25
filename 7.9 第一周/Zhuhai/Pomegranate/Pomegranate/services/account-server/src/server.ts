@@ -33,12 +33,20 @@ import {
   createPostgresDocumentLibraryService,
   type DocumentLibraryService,
 } from "./document-library.js";
-import { registerLearningProjectRoutes } from "./learning-routes.js";
+import {
+  registerLearningProjectDocumentRoutes,
+  registerLearningProjectRoutes,
+} from "./learning-routes.js";
 import {
   createLearningProjectService,
   createPostgresLearningProjectRepository,
   type LearningProjectService,
 } from "./learning-projects.js";
+import {
+  createLearningProjectDocumentService,
+  createPostgresLearningProjectDocumentRepository,
+  type LearningProjectDocumentService,
+} from "./learning-project-documents.js";
 
 const SERVICE_NAME = "pomegranate-account-server";
 
@@ -55,6 +63,7 @@ export interface ServerDependencies {
   documentService?: DocumentService;
   documentLibraryService?: DocumentLibraryService;
   learningProjectService?: LearningProjectService;
+  learningProjectDocumentService?: LearningProjectDocumentService;
   logger?: boolean;
 }
 
@@ -129,6 +138,8 @@ export function buildServer(dependencies: ServerDependencies) {
     createPostgresDocumentLibraryService(dependencies.pool);
   const learningProjectService = dependencies.learningProjectService ??
     createLearningProjectService(createPostgresLearningProjectRepository(dependencies.pool));
+  const learningProjectDocumentService = dependencies.learningProjectDocumentService ??
+    createLearningProjectDocumentService(createPostgresLearningProjectDocumentRepository(dependencies.pool));
 
   registerFileRoutes(
     server,
@@ -139,6 +150,7 @@ export function buildServer(dependencies: ServerDependencies) {
   );
   registerDocumentRoutes(server, sessionService, documentService, documentLibraryService, userFileService);
   registerLearningProjectRoutes(server, sessionService, learningProjectService);
+  registerLearningProjectDocumentRoutes(server, sessionService, learningProjectDocumentService);
 
   return server;
 }

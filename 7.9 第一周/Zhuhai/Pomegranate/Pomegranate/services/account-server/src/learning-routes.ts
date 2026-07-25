@@ -5,9 +5,18 @@ import {
   LearningProjectValidationError,
   type LearningProjectService,
 } from "./learning-projects.js";
+import {
+  LearningProjectDocumentValidationError,
+  type LearningProjectDocumentService,
+  type LearningProjectDocumentWriteResult,
+} from "./learning-project-documents.js";
 
 interface ProjectParams {
   projectId: string;
+}
+
+interface ProjectDocumentParams extends ProjectParams {
+  documentId: string;
 }
 
 interface ListQuery {
@@ -51,10 +60,29 @@ async function authenticate(
 }
 
 function validationError(reply: FastifyReply, error: unknown) {
-  if (error instanceof LearningProjectValidationError) {
+  if (
+    error instanceof LearningProjectValidationError ||
+    error instanceof LearningProjectDocumentValidationError
+  ) {
     return sendError(reply, 400, error.message);
   }
   return null;
+}
+
+function sendDocumentWriteResult(
+  reply: FastifyReply,
+  result: LearningProjectDocumentWriteResult,
+  successStatus = 200,
+) {
+  if (result.status === "conflict") return sendError(reply, 409, "learning_project_conflict");
+  if (result.status === "exists") return sendError(reply, 409, "learning_project_document_exists");
+  if (result.status === "not_found") return sendError(reply, 404, "learning_project_document_not_found");
+  if (result.status === "invalid_order") return sendError(reply, 400, "invalid_learning_project_document_order");
+  return reply.code(successStatus).send({
+    status: "ok",
+    projectRevision: result.projectRevision,
+    document: result.document,
+  });
 }
 
 export function registerLearningProjectRoutes(
@@ -188,6 +216,104 @@ export function registerLearningProjectRoutes(
       if (response) return response;
       server.log.warn("learning project duplicate failed");
       return sendError(reply, 503, "learning_project_duplicate_unavailable");
+    }
+  });
+}
+
+export function registerLearningProjectDocumentRoutes(
+  server: FastifyInstance,
+  sessions: SessionService,
+  projectDocuments: LearningProjectDocumentService,
+): void {
+  server.get<{ Params: ProjectParams }>("/learning/projects/:projectId/documents", async (request, reply) => {
+    const user = await authenticate(server, request.headers.authorization, sessions, reply);
+    if (!user) return reply;
+    if (!isUuid(request.params.projectId)) return sendError(reply, 404, "learning_project_not_found");
+    try {
+      const result = await projectDocuments.listProjectDocuments(user.platformUserId, request.params.projectId);
+      if (result.status === "not_found") return sendError(reply, 404, "learning_project_not_found");
+      return reply.code(200).send({
+        status: "ok",
+        projectRevision: result.projectRevision,
+        documents: result.documents,
+      });
+    } catch (error) {
+      const response = validationError(reply, error);
+      if (response) return response;
+      server.log.warn("learning project document list failed");
+      return sendError(reply, 503, "learning_project_documents_unavailable");
+    }
+  });
+
+  server.post<{ Params: ProjectParams }>("/learning/projects/:projectId/documents", async (request, reply) => {
+    const user = await authenticate(server, request.headers.authorization, sessions, reply);
+    if (!user) return reply;
+    if (!isUuid(request.params.projectId)) return sendError(reply, 404, "learning_project_not_found");
+    try {
+      const result = await projectDocuments.addProjectDocument(user.platformUserId, request.params.projectId, request.body);
+      return sendDocumentWriteResult(reply, result, 201);
+    } catch (error) {
+      const response = validationError(reply, error);
+      if (response) return response;
+      server.log.warn("learning project document add failed");
+      return sendError(reply, 503, "learning_project_document_add_unavailable");
+    }
+  });
+
+  server.patch<{ Params: ProjectDocumentParams }>("/learning/projects/:projectId/documents/:documentId", async (request, reply) => {
+    const user = await authenticate(server, request.headers.authorization, sessions, reply);
+    if (!user) return reply;
+    if (!isUuid(request.params.projectId)) return sendError(reply, 404, "learning_project_not_found");
+    if (!isUuid(request.params.documentId)) return sendError(reply, 404, "learning_project_document_not_found");
+    try {
+      const result = await projectDocuments.updateProjectDocument(
+        user.platformUserId,
+        request.params.projectId,
+        request.params.documentId,
+        request.body,
+      );
+      return sendDocumentWriteResult(reply, result);
+    } catch (error) {
+      const response = validationError(reply, error);
+      if (response) return response;
+      server.log.warn("learning project document update failed");
+      return sendError(reply, 503, "learning_project_document_update_unavailable");
+    }
+  });
+
+  server.delete<{ Params: ProjectDocumentParams }>("/learning/projects/:projectId/documents/:documentId", async (request, reply) => {
+    const user = await authenticate(server, request.headers.authorization, sessions, reply);
+    if (!user) return reply;
+    if (!isUuid(request.params.projectId)) return sendError(reply, 404, "learning_project_not_found");
+    if (!isUuid(request.params.documentId)) return sendError(reply, 404, "learning_project_document_not_found");
+    try {
+      const result = await projectDocuments.removeProjectDocument(
+        user.platformUserId,
+        request.params.projectId,
+        request.params.documentId,
+        request.body,
+      );
+      return sendDocumentWriteResult(reply, result);
+    } catch (error) {
+      const response = validationError(reply, error);
+      if (response) return response;
+      server.log.warn("learning project document remove failed");
+      return sendError(reply, 503, "learning_project_document_remove_unavailable");
+    }
+  });
+
+  server.put<{ Params: ProjectParams }>("/learning/projects/:projectId/documents/order", async (request, reply) => {
+    const user = await authenticate(server, request.headers.authorization, sessions, reply);
+    if (!user) return reply;
+    if (!isUuid(request.params.projectId)) return sendError(reply, 404, "learning_project_not_found");
+    try {
+      const result = await projectDocuments.reorderProjectDocuments(user.platformUserId, request.params.projectId, request.body);
+      return sendDocumentWriteResult(reply, result);
+    } catch (error) {
+      const response = validationError(reply, error);
+      if (response) return response;
+      server.log.warn("learning project document reorder failed");
+      return sendError(reply, 503, "learning_project_document_reorder_unavailable");
     }
   });
 }

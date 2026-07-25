@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
+import { copyProjectDocumentRelationsInTransaction } from "./learning-project-documents.js";
 
 type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -113,6 +114,7 @@ export interface LearningProjectRepository {
   update(ownerUserId: string, projectId: string, expectedRevision: number, patch: LearningProjectPatchRecord): Promise<RepositoryUpdateResult>;
   open(ownerUserId: string, projectId: string): Promise<LearningProjectRecord | null>;
   delete(ownerUserId: string, projectId: string, expectedRevision: number): Promise<RepositoryDeleteResult>;
+  duplicate(ownerUserId: string, sourceProjectId: string, input: LearningProjectCreateRecord): Promise<LearningProjectRecord | null>;
 }
 
 interface LearningProjectRow {
@@ -403,6 +405,21 @@ const PROJECT_SELECT = `
     data_schema_version, revision, last_opened_at, created_at, updated_at, deleted_at
   FROM learning_projects`;
 
+async function transaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export function createPostgresLearningProjectRepository(pool: Pool): LearningProjectRepository {
   return {
     async create(ownerUserId, input) {
@@ -538,6 +555,50 @@ export function createPostgresLearningProjectRepository(pool: Pool): LearningPro
       );
       return result.rowCount === 1 ? { status: "deleted" } : { status: "conflict" };
     },
+
+    async duplicate(ownerUserId, sourceProjectId, input) {
+      return transaction(pool, async (client) => {
+        const source = await client.query<LearningProjectRow>(
+          `${PROJECT_SELECT}
+           WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL
+           FOR SHARE`,
+          [sourceProjectId, ownerUserId],
+        );
+        if (!source.rows[0]) return null;
+        const result = await client.query<LearningProjectRow>(
+          `WITH inserted AS (
+             INSERT INTO learning_projects (
+               id, owner_user_id, name, learning_type, course_name, goal_summary,
+               learning_goal, understanding, current_plan, progress, plan_adjustments,
+               data_schema_version, revision
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 1)
+             RETURNING id, owner_user_id, name, learning_type, course_name, goal_summary,
+               learning_goal, understanding, current_plan, progress, plan_adjustments,
+               data_schema_version, revision, last_opened_at, created_at, updated_at, deleted_at
+           )
+           SELECT id, owner_user_id, name, learning_type, course_name, goal_summary,
+             learning_goal, understanding, current_plan, progress, plan_adjustments,
+             data_schema_version, revision, last_opened_at, created_at, updated_at, deleted_at
+           FROM inserted`,
+          [
+            input.id,
+            ownerUserId,
+            input.name,
+            input.learningType,
+            input.courseName,
+            input.goalSummary,
+            input.learningGoal,
+            input.understanding,
+            input.currentPlan,
+            input.progress,
+            input.planAdjustments,
+            input.dataSchemaVersion,
+          ],
+        );
+        await copyProjectDocumentRelationsInTransaction(client, ownerUserId, sourceProjectId, input.id);
+        return mapRecord(result.rows[0]!);
+      });
+    },
   };
 }
 
@@ -580,7 +641,7 @@ export function createLearningProjectService(repository: LearningProjectReposito
     async duplicate(ownerUserId, projectId, input) {
       const source = await repository.findActive(ownerUserId, projectId);
       if (!source) return null;
-      const record = await repository.create(ownerUserId, {
+      const record = await repository.duplicate(ownerUserId, projectId, {
         id: randomUUID(),
         name: duplicateName(input, source.name),
         learningType: source.learningType,
@@ -593,7 +654,7 @@ export function createLearningProjectService(repository: LearningProjectReposito
         planAdjustments: structuredClone(source.planAdjustments),
         dataSchemaVersion: source.dataSchemaVersion,
       });
-      return project(record);
+      return record ? project(record) : null;
     },
   };
 }
