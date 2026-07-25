@@ -104,6 +104,8 @@ const IMPORTANCE = new Set<LearningProjectDocumentImportance>([
   "important",
   "core",
 ]);
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
+const MAX_REORDER_DOCUMENTS = POSTGRES_INTEGER_MAX + 1;
 
 function iso(value: Date | string): string {
   return new Date(value).toISOString();
@@ -158,7 +160,12 @@ function validImportance(value: unknown): LearningProjectDocumentImportance {
 
 function validSortOrder(value: unknown): number | null {
   if (value === undefined || value === null) return null;
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > POSTGRES_INTEGER_MAX
+  ) {
     throw new LearningProjectDocumentValidationError("invalid_learning_project_document_sort_order");
   }
   return value;
@@ -200,6 +207,9 @@ function deleteInput(rawInput: unknown): number {
 function reorderInput(rawInput: unknown): ReorderProjectDocumentsRecord {
   const input = bodyObject(rawInput);
   if (!Array.isArray(input.documentIds)) {
+    throw new LearningProjectDocumentValidationError("invalid_learning_project_document_order");
+  }
+  if (input.documentIds.length > MAX_REORDER_DOCUMENTS) {
     throw new LearningProjectDocumentValidationError("invalid_learning_project_document_order");
   }
   const seen = new Set<string>();
@@ -346,7 +356,11 @@ async function nextSortOrder(client: PoolClient, ownerUserId: string, projectId:
      WHERE owner_user_id = $1 AND project_id = $2`,
     [ownerUserId, projectId],
   );
-  return Number(result.rows[0]?.next_sort_order ?? 0);
+  const sortOrder = Number(result.rows[0]?.next_sort_order ?? 0);
+  if (!Number.isSafeInteger(sortOrder) || sortOrder < 0 || sortOrder > POSTGRES_INTEGER_MAX) {
+    throw new LearningProjectDocumentValidationError("invalid_learning_project_document_sort_order");
+  }
+  return sortOrder;
 }
 
 async function currentRelationIds(client: PoolClient, ownerUserId: string, projectId: string): Promise<string[]> {

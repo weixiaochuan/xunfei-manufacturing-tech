@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import type { AccountServerConfig } from "../src/config.js";
 import {
   createLearningProjectDocumentService,
+  createPostgresLearningProjectDocumentRepository,
   type AddProjectDocumentRecord,
+  LearningProjectDocumentValidationError,
   type LearningProjectDocumentImportance,
   type LearningProjectDocumentRepository,
   type LearningProjectDocumentRole,
@@ -27,6 +29,7 @@ import type { SessionService, SessionUser } from "../src/sessions.js";
 
 const TOKEN_A = "a".repeat(43);
 const TOKEN_B = "b".repeat(43);
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
 const USER_A: SessionUser = {
   platformUserId: "11111111-1111-4111-8111-111111111111",
   accountNumber: "POME-000001",
@@ -498,11 +501,33 @@ test("metadata updates validate enums and increment revision", async (t) => {
   assert.equal(updated.json().document.importance, "core");
   assert.equal(updated.json().document.sortOrder, 4);
 
+  const zero = await f.server.inject({
+    method: "PATCH",
+    url: `/learning/projects/${project.id}/documents/${document.id}`,
+    headers: auth(),
+    payload: { expectedRevision: 3, sortOrder: 0 },
+  });
+  assert.equal(zero.statusCode, 200);
+  assert.equal(zero.json().projectRevision, 4);
+  assert.equal(zero.json().document.sortOrder, 0);
+
+  const integerMax = await f.server.inject({
+    method: "PATCH",
+    url: `/learning/projects/${project.id}/documents/${document.id}`,
+    headers: auth(),
+    payload: { expectedRevision: 4, sortOrder: POSTGRES_INTEGER_MAX },
+  });
+  assert.equal(integerMax.statusCode, 200);
+  assert.equal(integerMax.json().projectRevision, 5);
+  assert.equal(integerMax.json().document.sortOrder, POSTGRES_INTEGER_MAX);
+
   for (const payload of [
-    { expectedRevision: 3, role: "bad" },
-    { expectedRevision: 3, importance: "bad" },
-    { expectedRevision: 3, sortOrder: -1 },
-    { expectedRevision: 3 },
+    { expectedRevision: 5, role: "bad" },
+    { expectedRevision: 5, importance: "bad" },
+    { expectedRevision: 5, sortOrder: -1 },
+    { expectedRevision: 5, sortOrder: 1.5 },
+    { expectedRevision: 5, sortOrder: POSTGRES_INTEGER_MAX + 1 },
+    { expectedRevision: 5 },
   ]) {
     const response = await f.server.inject({
       method: "PATCH",
@@ -511,8 +536,92 @@ test("metadata updates validate enums and increment revision", async (t) => {
       payload,
     });
     assert.equal(response.statusCode, 400);
-    assert.equal(f.repository.projects.get(project.id)?.revision, 3);
+    assert.equal(f.repository.projects.get(project.id)?.revision, 5);
   }
+});
+
+test("sort order validation follows PostgreSQL integer bounds before SQL", async (t) => {
+  const f = fixture(); t.after(f.close);
+  const project = f.repository.createProject();
+  const first = f.repository.createDocument(USER_A.platformUserId, "lower");
+  const second = f.repository.createDocument(USER_A.platformUserId, "upper");
+
+  const lower = await addDocument(f.server, project.id, first.id, 1, { sortOrder: 0 });
+  assert.equal(lower.document.sortOrder, 0);
+  const upper = await addDocument(f.server, project.id, second.id, 2, {
+    sortOrder: POSTGRES_INTEGER_MAX,
+  });
+  assert.equal(upper.document.sortOrder, POSTGRES_INTEGER_MAX);
+
+  const service = createLearningProjectDocumentService(f.repository);
+  for (const sortOrder of [POSTGRES_INTEGER_MAX + 1, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(
+      () => service.addProjectDocument(USER_A.platformUserId, project.id, {
+        expectedRevision: 3,
+        documentId: randomUUID(),
+        sortOrder,
+      }),
+      (error) =>
+        error instanceof LearningProjectDocumentValidationError &&
+        error.message === "invalid_learning_project_document_sort_order",
+    );
+    assert.throws(
+      () => service.updateProjectDocument(USER_A.platformUserId, project.id, first.id, {
+        expectedRevision: 3,
+        sortOrder,
+      }),
+      (error) =>
+        error instanceof LearningProjectDocumentValidationError &&
+        error.message === "invalid_learning_project_document_sort_order",
+    );
+  }
+  assert.equal(f.repository.projects.get(project.id)?.revision, 3);
+});
+
+test("auto append rejects sort order overflow before insert and revision bump", async () => {
+  const queries: string[] = [];
+  let released = false;
+  const client = {
+    query: async (sql: string) => {
+      const text = String(sql);
+      queries.push(text);
+      if (text === "BEGIN" || text === "ROLLBACK" || text === "COMMIT") return { rows: [], rowCount: null };
+      if (text.includes("FROM learning_projects") && text.includes("FOR UPDATE")) {
+        return { rows: [{ revision: 1 }], rowCount: 1 };
+      }
+      if (text.includes("FROM learning_project_documents") && text.includes("document_id = $3")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (text.includes("FROM documents")) return { rows: [{}], rowCount: 1 };
+      if (text.includes("MAX(sort_order)")) {
+        return { rows: [{ next_sort_order: POSTGRES_INTEGER_MAX + 1 }], rowCount: 1 };
+      }
+      throw new Error(`unexpected query: ${text}`);
+    },
+    release: () => {
+      released = true;
+    },
+  } as unknown as PoolClient;
+  const pool = { connect: async () => client } as unknown as Pool;
+  const repository = createPostgresLearningProjectDocumentRepository(pool);
+
+  await assert.rejects(
+    () => repository.add(USER_A.platformUserId, randomUUID(), {
+      expectedRevision: 1,
+      documentId: randomUUID(),
+      role: "material",
+      importance: "normal",
+      sortOrder: null,
+    }),
+    (error) =>
+      error instanceof LearningProjectDocumentValidationError &&
+      error.message === "invalid_learning_project_document_sort_order",
+  );
+
+  assert.equal(released, true);
+  assert.equal(queries.includes("ROLLBACK"), true);
+  assert.equal(queries.some((query) => query.includes("UPDATE learning_projects")), false);
+  assert.equal(queries.some((query) => query.includes("INSERT INTO learning_project_documents")), false);
 });
 
 test("complete reorder validates exact document set and increments revision once", async (t) => {
