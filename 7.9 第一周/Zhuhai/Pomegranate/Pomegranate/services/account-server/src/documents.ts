@@ -18,6 +18,7 @@ export interface PublicDocument {
   title: string;
   markdownContent: string | null;
   file: PublicDocumentFile | null;
+  folderId: string | null;
   sourceLocalDocumentId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -55,10 +56,14 @@ export interface DeletedDocument {
   storageKey: string | null;
 }
 
+export interface CreateUploadedFileOptions {
+  folderId?: string | null;
+}
+
 export interface DocumentRepository {
   list(ownerUserId: string, kind: DocumentKind | null, limit: number, offset: number): Promise<PublicDocument[]>;
   createMarkdown(ownerUserId: string, title: string, markdownContent: string): Promise<PublicDocument>;
-  createUploadedFile(ownerUserId: string, file: PublicUserFile): Promise<PublicDocument>;
+  createUploadedFile(ownerUserId: string, file: PublicUserFile, options?: CreateUploadedFileOptions): Promise<PublicDocument>;
   updateMarkdown(
     documentId: string,
     ownerUserId: string,
@@ -82,6 +87,7 @@ interface DocumentRow {
   title: string;
   markdown_content: string | null;
   source_local_document_id: string | null;
+  folder_id: string | null;
   created_at: Date | string;
   updated_at: Date | string;
   deleted_at: Date | string | null;
@@ -103,6 +109,7 @@ const DOCUMENT_SELECT = `
     d.title,
     d.markdown_content,
     d.source_local_document_id,
+    d.folder_id,
     d.legacy_metadata,
     d.created_at,
     d.updated_at,
@@ -156,6 +163,7 @@ function mapDocument(row: DocumentRow): PublicDocument {
     title: row.title,
     markdownContent: row.markdown_content,
     file,
+    folderId: row.folder_id,
     sourceLocalDocumentId: row.source_local_document_id,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
@@ -248,16 +256,39 @@ export function createPostgresDocumentRepository(pool: Pool): DocumentRepository
       return findDocument(pool, id);
     },
 
-    async createUploadedFile(ownerUserId, file) {
+    async createUploadedFile(ownerUserId, file, options) {
       const id = randomUUID();
-      await pool.query(
-        `INSERT INTO documents (
-           id, owner_user_id, document_kind, title, markdown_content, user_file_id,
-           created_at, updated_at
-         ) VALUES ($1, $2, 'uploaded_file', $3, NULL, $4, $5, $5)`,
-        [id, ownerUserId, file.originalName, file.id, file.createdAt],
-      );
-      return findDocument(pool, id);
+      const folderId = options?.folderId ?? null;
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        if (folderId !== null) {
+          const folder = await client.query<{ id: string }>(
+            `SELECT id
+             FROM document_folders
+             WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL`,
+            [folderId, ownerUserId],
+          );
+          if (folder.rowCount !== 1) {
+            throw new Error("invalid_uploaded_file_folder");
+          }
+        }
+        await client.query(
+          `INSERT INTO documents (
+             id, owner_user_id, document_kind, title, markdown_content, user_file_id,
+             folder_id, created_at, updated_at
+           ) VALUES ($1, $2, 'uploaded_file', $3, NULL, $4, $5, $6, $6)`,
+          [id, ownerUserId, file.originalName, file.id, folderId, file.createdAt],
+        );
+        const document = await findDocument(client, id);
+        await client.query("COMMIT");
+        return document;
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
     },
 
     async updateMarkdown(documentId, ownerUserId, updates) {
@@ -443,8 +474,8 @@ export function createDocumentService(repository: DocumentRepository): DocumentS
       }
       return repository.updateMarkdown(documentId, ownerUserId, validated);
     },
-    createUploadedFile(ownerUserId, file) {
-      return repository.createUploadedFile(ownerUserId, file);
+    createUploadedFile(ownerUserId, file, options) {
+      return repository.createUploadedFile(ownerUserId, file, options);
     },
     deleteOwned(documentId, ownerUserId) {
       return repository.deleteOwned(documentId, ownerUserId);

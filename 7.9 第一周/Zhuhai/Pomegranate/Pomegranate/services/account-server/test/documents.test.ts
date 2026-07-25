@@ -76,19 +76,21 @@ class MemoryDocuments implements DocumentRepository {
     const now = new Date().toISOString();
     const document: PublicDocument = {
       id: randomUUID(), kind: "markdown", title, markdownContent, file: null,
+      folderId: null,
       sourceLocalDocumentId: null, createdAt: now, updatedAt: now, deletedAt: null,
     };
     this.records.set(document.id, { ownerUserId, public: document, legacyMetadata: null });
     return document;
   }
 
-  async createUploadedFile(ownerUserId: string, file: StoredUserFile) {
+  async createUploadedFile(ownerUserId: string, file: StoredUserFile, options?: { folderId?: string | null }) {
     if ([...this.records.values()].some((record) => record.public.file?.id === file.id)) {
       throw new Error("duplicate_file_document");
     }
     const document: PublicDocument = {
       id: randomUUID(), kind: "uploaded_file", title: file.originalName,
       markdownContent: null, file, sourceLocalDocumentId: null,
+      folderId: options?.folderId ?? null,
       createdAt: file.createdAt, updatedAt: file.createdAt, deletedAt: null,
     };
     this.records.set(document.id, { ownerUserId, public: document, legacyMetadata: null });
@@ -125,6 +127,7 @@ class MemoryDocuments implements DocumentRepository {
       const document: PublicDocument = {
         id: randomUUID(), kind: "markdown", title: item.title,
         markdownContent: item.markdownContent, file: null,
+        folderId: null,
         sourceLocalDocumentId: item.sourceLocalDocumentId,
         createdAt: item.createdAt, updatedAt: item.updatedAt, deletedAt: item.deletedAt ?? null,
       };

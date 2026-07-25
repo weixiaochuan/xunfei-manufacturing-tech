@@ -1,5 +1,9 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { InvalidSessionError, requirePlatformUser } from "./authentication.js";
+import {
+  LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND,
+  type DocumentLibraryService,
+} from "./document-library.js";
 import type { SessionService } from "./sessions.js";
 import type { DocumentService } from "./documents.js";
 import { isAllowedUploadFilename } from "./file-types.js";
@@ -67,6 +71,7 @@ export function registerFileRoutes(
   sessionService: SessionService,
   userFiles: UserFileService,
   documents: DocumentService,
+  documentLibrary: DocumentLibraryService,
   maxBytes: number,
 ): void {
   server.post("/files", async (request, reply) => {
@@ -74,14 +79,28 @@ export function registerFileRoutes(
     if (!user) return reply;
 
     let storedFile;
+    let documentId: string | null = null;
+    let responseFolderId: string | null = null;
+    let responseFolderKind: typeof LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND | null = null;
     try {
       if (!request.isMultipart()) {
         return sendError(reply, 400, "multipart_required");
       }
       let upload: { filename: string; mimetype: string; chunks: Buffer[] } | null = null;
+      let folderKind: typeof LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND | null = null;
       for await (const part of request.parts({
-        limits: { fileSize: maxBytes + 1, files: 2, fields: 1, parts: 2 },
+        limits: { fileSize: maxBytes + 1, files: 2, fields: 2, parts: 3 },
       })) {
+        if (part.type === "field") {
+          if (part.fieldname !== "folderKind" || folderKind !== null || typeof part.value !== "string") {
+            return sendError(reply, 400, "invalid_file_field");
+          }
+          if (part.value !== LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND) {
+            return sendError(reply, 400, "invalid_folder_kind");
+          }
+          folderKind = LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND;
+          continue;
+        }
         if (part.type !== "file" || part.fieldname !== "file" || upload) {
           if (part.type === "file") part.file.resume();
           return sendError(reply, 400, "invalid_file_field");
@@ -103,6 +122,9 @@ export function registerFileRoutes(
       if (!upload) {
         return sendError(reply, 400, "invalid_file_field");
       }
+      const targetFolder = folderKind === null
+        ? null
+        : await documentLibrary.getOrCreateLearningAssistantUploadFolder(user.platformUserId);
       storedFile = await userFiles.upload({
         ownerUserId: user.platformUserId,
         originalName: upload.filename,
@@ -110,7 +132,12 @@ export function registerFileRoutes(
         content: upload.chunks,
       });
       try {
-        await documents.createUploadedFile(user.platformUserId, storedFile);
+        const document = await documents.createUploadedFile(user.platformUserId, storedFile, {
+          folderId: targetFolder?.id ?? null,
+        });
+        documentId = document.id;
+        responseFolderId = document.folderId;
+        responseFolderKind = targetFolder?.folderKind ?? null;
       } catch (error) {
         await userFiles.rollbackUpload(storedFile.id, user.platformUserId).catch(() => undefined);
         throw error;
@@ -123,7 +150,13 @@ export function registerFileRoutes(
       return sendError(reply, 503, "file_upload_unavailable");
     }
 
-    return reply.code(201).send({ status: "ok", file: storedFile });
+    return reply.code(201).send({
+      status: "ok",
+      file: storedFile,
+      documentId,
+      folderId: responseFolderId,
+      folderKind: responseFolderKind,
+    });
   });
 
   server.get<{ Querystring: ListQuery }>("/files", async (request, reply) => {

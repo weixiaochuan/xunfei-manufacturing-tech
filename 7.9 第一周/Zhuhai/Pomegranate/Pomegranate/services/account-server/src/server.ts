@@ -146,6 +146,7 @@ export function buildServer(dependencies: ServerDependencies) {
     sessionService,
     userFileService,
     documentService,
+    documentLibraryService,
     dependencies.config.userFiles.maxBytes,
   );
   registerDocumentRoutes(server, sessionService, documentService, documentLibraryService, userFileService);

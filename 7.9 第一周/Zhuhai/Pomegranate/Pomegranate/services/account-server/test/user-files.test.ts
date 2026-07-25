@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,12 @@ import type { AccountServerConfig } from "../src/config.js";
 import type { OidcClient } from "../src/oidc.js";
 import { buildServer } from "../src/server.js";
 import type { DocumentService, PublicDocument } from "../src/documents.js";
+import {
+  LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND,
+  LEARNING_ASSISTANT_UPLOAD_FOLDER_NAME,
+  type DocumentLibraryService,
+  type PublicDocumentFolder,
+} from "../src/document-library.js";
 import type { SessionService, SessionUser } from "../src/sessions.js";
 import { LocalFilesystemStorage } from "../src/storage/local-filesystem-storage.js";
 import {
@@ -134,6 +140,36 @@ function multipartTwoFiles() {
   };
 }
 
+type TestMultipartPart =
+  | { type: "field"; name: string; value: string }
+  | { type: "file"; name: string; filename: string; content: Buffer; contentType?: string };
+
+function multipartParts(parts: TestMultipartPart[], boundary = `----pomegranate-${randomUUID()}`) {
+  const buffers: Buffer[] = [];
+  for (const part of parts) {
+    if (part.type === "field") {
+      buffers.push(Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${part.name}"\r\n\r\n${part.value}\r\n`,
+      ));
+      continue;
+    }
+    buffers.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${part.name}"; filename="${part.filename}"\r\n` +
+        `Content-Type: ${part.contentType ?? "text/plain"}\r\n\r\n`,
+    ));
+    buffers.push(part.content);
+    buffers.push(Buffer.from("\r\n"));
+  }
+  buffers.push(Buffer.from(`--${boundary}--\r\n`));
+  return { payload: Buffer.concat(buffers), headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
+}
+
+function multipartWithFolderKind(filename: string, content: Buffer, order: "folder-first" | "file-first" = "folder-first") {
+  const file = { type: "file" as const, name: "file", filename, content };
+  const folder = { type: "field" as const, name: "folderKind", value: LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND };
+  return multipartParts(order === "folder-first" ? [folder, file] : [file, folder]);
+}
+
 function replacementMultipart(filename: string, content: Buffer, expectedSha256: string) {
   const boundary = "----pomegranate-replacement";
   const payload = Buffer.concat([
@@ -145,6 +181,83 @@ function replacementMultipart(filename: string, content: Buffer, expectedSha256:
   return { payload, headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
 }
 
+interface MemoryFolder extends PublicDocumentFolder {
+  ownerUserId: string;
+  deleted: boolean;
+}
+
+function createMemoryDocumentLibrary() {
+  const folders = new Map<string, MemoryFolder>();
+  let deleteNextResolvedLearningFolder = false;
+  const toPublic = (folder: MemoryFolder): PublicDocumentFolder => ({
+    id: folder.id,
+    name: folder.name,
+    parentId: folder.parentId,
+    folderKind: folder.folderKind,
+    createdAt: folder.createdAt,
+    updatedAt: folder.updatedAt,
+  });
+  const createFolder = (
+    ownerUserId: string,
+    name: string,
+    folderKind: PublicDocumentFolder["folderKind"],
+  ) => {
+    const now = new Date().toISOString();
+    const folder: MemoryFolder = {
+      id: randomUUID(),
+      name,
+      parentId: null,
+      folderKind,
+      createdAt: now,
+      updatedAt: now,
+      ownerUserId,
+      deleted: false,
+    };
+    folders.set(folder.id, folder);
+    return folder;
+  };
+  const service = {
+    async getOrCreateLearningAssistantUploadFolder(ownerUserId: string) {
+      const existing = [...folders.values()].find((folder) =>
+        folder.ownerUserId === ownerUserId &&
+        folder.folderKind === LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND &&
+        !folder.deleted);
+      const folder = existing ??
+        createFolder(ownerUserId, LEARNING_ASSISTANT_UPLOAD_FOLDER_NAME, LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND);
+      const result = toPublic(folder);
+      if (deleteNextResolvedLearningFolder) {
+        folder.deleted = true;
+        folder.updatedAt = new Date().toISOString();
+        deleteNextResolvedLearningFolder = false;
+      }
+      return result;
+    },
+  } as DocumentLibraryService;
+  return {
+    service,
+    folders,
+    createOrdinarySameNameFolder(ownerUserId: string) {
+      return createFolder(ownerUserId, LEARNING_ASSISTANT_UPLOAD_FOLDER_NAME, null);
+    },
+    softDeleteFolder(folderId: string) {
+      const folder = folders.get(folderId);
+      if (folder) {
+        folder.deleted = true;
+        folder.updatedAt = new Date().toISOString();
+      }
+    },
+    deleteNextLearningFolderAfterResolve() {
+      deleteNextResolvedLearningFolder = true;
+    },
+    activeLearningFolders(ownerUserId: string) {
+      return [...folders.values()].filter((folder) =>
+        folder.ownerUserId === ownerUserId &&
+        folder.folderKind === LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND &&
+        !folder.deleted);
+    },
+  };
+}
+
 async function fixture(maxBytes = 1_024, failDocumentCreate = false) {
   const root = await mkdtemp(join(tmpdir(), "pomegranate-files-test-"));
   const repository = new MemoryRepository();
@@ -152,17 +265,25 @@ async function fixture(maxBytes = 1_024, failDocumentCreate = false) {
   await storage.initialize();
   const service = createUserFileService(repository, storage, maxBytes);
   const linkedFiles = new Map<string, PublicDocument>();
+  const documentLibrary = createMemoryDocumentLibrary();
   const documents: DocumentService = {
     list: async () => [...linkedFiles.values()],
     createMarkdown: async () => { throw new Error("unused"); },
-    async createUploadedFile(_ownerUserId, file) {
+    async createUploadedFile(ownerUserId, file, options) {
       if (failDocumentCreate) throw new Error("document INSERT failed with private details");
+      if (options?.folderId) {
+        const folder = documentLibrary.folders.get(options.folderId);
+        if (!folder || folder.ownerUserId !== ownerUserId || folder.deleted) {
+          throw new Error("invalid_uploaded_file_folder");
+        }
+      }
       const document: PublicDocument = {
         id: `00000000-0000-4000-8000-${file.id.replaceAll("-", "").slice(0, 12)}`,
         kind: "uploaded_file",
         title: file.originalName,
         markdownContent: null,
         file,
+        folderId: options?.folderId ?? null,
         sourceLocalDocumentId: null,
         createdAt: file.createdAt,
         updatedAt: file.createdAt,
@@ -191,9 +312,18 @@ async function fixture(maxBytes = 1_024, failDocumentCreate = false) {
     sessionService: sessions(),
     userFileService: service,
     documentService: documents,
+    documentLibraryService: documentLibrary.service,
     logger: false,
   });
-  return { root, repository, service, linkedFiles, server, close: async () => { await server.close(); await rm(root, { recursive: true, force: true }); } };
+  return {
+    root,
+    repository,
+    service,
+    linkedFiles,
+    documentLibrary,
+    server,
+    close: async () => { await server.close(); await rm(root, { recursive: true, force: true }); },
+  };
 }
 
 test("upload requires an active session, including unknown, expired, or revoked tokens", async (t) => {
@@ -248,9 +378,140 @@ test("upload writes exact content and safe metadata with SHA-256", async (t) => 
   assert.equal(result.file.mimeType, "text/plain");
   assert.equal("storageKey" in result.file, false);
   assert.equal("ownerUserId" in result.file, false);
+  assert.equal(typeof result.documentId, "string");
+  assert.equal(result.folderId, null);
+  assert.equal(result.folderKind, null);
+  const linked = f.linkedFiles.get(result.file.id);
+  assert.equal(linked?.id, result.documentId);
+  assert.equal(linked?.folderId, null);
   const record = [...f.repository.records.values()][0];
   assert.ok(record);
   assert.deepEqual(await readFile(join(f.root, record.storageKey)), content);
+});
+
+test("folderKind uploads create uploaded_file documents in the current account learning folder", async (t) => {
+  const f = await fixture(); t.after(f.close);
+
+  const firstBody = multipartWithFolderKind("learning-a.txt", Buffer.from("A"), "folder-first");
+  const first = await f.server.inject({
+    method: "POST",
+    url: "/files",
+    payload: firstBody.payload,
+    headers: { ...firstBody.headers, authorization: `Bearer ${TOKEN_A}` },
+  });
+  assert.equal(first.statusCode, 201);
+  const firstResult = first.json();
+  assert.equal(firstResult.folderKind, LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND);
+  assert.equal(typeof firstResult.folderId, "string");
+  assert.equal(f.linkedFiles.get(firstResult.file.id)?.folderId, firstResult.folderId);
+  assert.equal(firstResult.documentId, f.linkedFiles.get(firstResult.file.id)?.id);
+  assert.doesNotMatch(JSON.stringify(firstResult), new RegExp(USER_A.platformUserId));
+  assert.doesNotMatch(JSON.stringify(firstResult), /ownerUserId|storageKey|path|token|authorization/i);
+
+  const secondBody = multipartWithFolderKind("learning-b.txt", Buffer.from("B"), "file-first");
+  const second = await f.server.inject({
+    method: "POST",
+    url: "/files",
+    payload: secondBody.payload,
+    headers: { ...secondBody.headers, authorization: `Bearer ${TOKEN_A}` },
+  });
+  assert.equal(second.statusCode, 201);
+  assert.equal(second.json().folderId, firstResult.folderId);
+  assert.equal(f.documentLibrary.activeLearningFolders(USER_A.platformUserId).length, 1);
+
+  const otherAccount = await f.server.inject({
+    method: "POST",
+    url: "/files",
+    payload: firstBody.payload,
+    headers: { ...firstBody.headers, authorization: `Bearer ${TOKEN_B}` },
+  });
+  assert.equal(otherAccount.statusCode, 201);
+  assert.notEqual(otherAccount.json().folderId, firstResult.folderId);
+  assert.equal(f.documentLibrary.activeLearningFolders(USER_B.platformUserId).length, 1);
+});
+
+test("folderKind uploads ignore ordinary same-name folders and recreate deleted learning folders", async (t) => {
+  const f = await fixture(); t.after(f.close);
+  const ordinary = f.documentLibrary.createOrdinarySameNameFolder(USER_A.platformUserId);
+
+  const firstBody = multipartWithFolderKind("first.txt", Buffer.from("first"));
+  const first = await f.server.inject({
+    method: "POST",
+    url: "/files",
+    payload: firstBody.payload,
+    headers: { ...firstBody.headers, authorization: `Bearer ${TOKEN_A}` },
+  });
+  assert.equal(first.statusCode, 201);
+  const firstFolderId = first.json().folderId;
+  assert.notEqual(firstFolderId, ordinary.id);
+  assert.equal(f.documentLibrary.activeLearningFolders(USER_A.platformUserId).length, 1);
+
+  f.documentLibrary.softDeleteFolder(firstFolderId);
+  const secondBody = multipartWithFolderKind("second.txt", Buffer.from("second"));
+  const second = await f.server.inject({
+    method: "POST",
+    url: "/files",
+    payload: secondBody.payload,
+    headers: { ...secondBody.headers, authorization: `Bearer ${TOKEN_A}` },
+  });
+  assert.equal(second.statusCode, 201);
+  assert.notEqual(second.json().folderId, firstFolderId);
+  assert.notEqual(second.json().folderId, ordinary.id);
+  assert.equal(f.documentLibrary.activeLearningFolders(USER_A.platformUserId).length, 1);
+  assert.equal(f.linkedFiles.get(second.json().file.id)?.folderId, second.json().folderId);
+});
+
+test("invalid upload fields and folderKind injection are rejected before storage", async (t) => {
+  const f = await fixture(); t.after(f.close);
+  const file = { type: "file" as const, name: "file", filename: "safe.txt", content: Buffer.from("not stored") };
+  const cases = [
+    {
+      body: multipartParts([{ type: "field", name: "folderKind", value: "input" }, file]),
+      error: "invalid_folder_kind",
+    },
+    {
+      body: multipartParts([{ type: "field", name: "folderKind", value: LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND }, { type: "field", name: "folderKind", value: LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND }, file]),
+      error: "invalid_file_field",
+    },
+    {
+      body: multipartParts([{ type: "field", name: "ownerId", value: USER_B.platformUserId }, file]),
+      error: "invalid_file_field",
+    },
+    {
+      body: multipartParts([{ type: "field", name: "ownerUserId", value: USER_B.platformUserId }, file]),
+      error: "invalid_file_field",
+    },
+    {
+      body: multipartParts([file, { type: "field", name: "folderId", value: randomUUID() }]),
+      error: "invalid_file_field",
+    },
+    {
+      body: multipartParts([{ type: "field", name: "path", value: "C:\\private\\notes.txt" }, file]),
+      error: "invalid_file_field",
+    },
+    {
+      body: multipartParts([{ type: "field", name: "sourcePath", value: "C:\\private\\notes.txt" }, file]),
+      error: "invalid_file_field",
+    },
+    {
+      body: multipartParts([{ type: "file", name: "folderKind", filename: "folderKind.txt", content: Buffer.from(LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND) }, file]),
+      error: "invalid_file_field",
+    },
+  ];
+  for (const item of cases) {
+    const response = await f.server.inject({
+      method: "POST",
+      url: "/files",
+      payload: item.body.payload,
+      headers: { ...item.body.headers, authorization: `Bearer ${TOKEN_A}` },
+    });
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.json().error, item.error);
+  }
+  assert.equal(f.repository.records.size, 0);
+  assert.equal(f.linkedFiles.size, 0);
+  assert.equal(f.documentLibrary.folders.size, 0);
+  assert.deepEqual(await readdir(f.root), []);
 });
 
 test("empty files are accepted with size zero and the correct digest", async (t) => {
@@ -408,12 +669,30 @@ test("database failure cleans the completed file and returns no sensitive detail
 
 test("document catalog failure rolls back user_files metadata and disk content", async (t) => {
   const f = await fixture(1_024, true); t.after(f.close);
-  const body = multipart("rollback.txt", Buffer.from("temporary"));
+  const body = multipartWithFolderKind("rollback.txt", Buffer.from("temporary"));
   const response = await f.server.inject({ method: "POST", url: "/files", payload: body.payload, headers: { ...body.headers, authorization: `Bearer ${TOKEN_A}` } });
   assert.equal(response.statusCode, 503);
   assert.equal(f.repository.records.size, 0);
+  assert.equal(f.documentLibrary.activeLearningFolders(USER_A.platformUserId).length, 1);
   assert.deepEqual(await readdir(f.root), []);
   assert.doesNotMatch(response.body, /INSERT|private|temporary|stack/i);
+});
+
+test("folder removal after folderKind resolution rolls back uploaded bytes instead of falling back to root", async (t) => {
+  const f = await fixture(); t.after(f.close);
+  f.documentLibrary.deleteNextLearningFolderAfterResolve();
+  const body = multipartWithFolderKind("race.txt", Buffer.from("race"));
+  const response = await f.server.inject({
+    method: "POST",
+    url: "/files",
+    payload: body.payload,
+    headers: { ...body.headers, authorization: `Bearer ${TOKEN_A}` },
+  });
+  assert.equal(response.statusCode, 503);
+  assert.equal(f.repository.records.size, 0);
+  assert.equal(f.linkedFiles.size, 0);
+  assert.equal(f.documentLibrary.activeLearningFolders(USER_A.platformUserId).length, 0);
+  assert.deepEqual(await readdir(f.root), []);
 });
 
 test("disk write failure creates no metadata record", async (t) => {
