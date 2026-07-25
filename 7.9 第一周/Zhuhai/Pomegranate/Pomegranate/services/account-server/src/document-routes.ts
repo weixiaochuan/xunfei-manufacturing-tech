@@ -219,6 +219,12 @@ export function registerDocumentRoutes(
     catch (error) { if (error instanceof DocumentLibraryValidationError) return sendError(reply, 400, error.message); server.log.warn("文档文件夹创建失败"); return sendError(reply, 503, "document_folder_create_unavailable"); }
   });
 
+  server.post("/document-folders/learning-assistant-upload", async (request, reply) => {
+    const user = await authenticate(server, request.headers.authorization, sessions, reply); if (!user) return reply;
+    try { return reply.code(200).send({ status: "ok", folder: await library.getOrCreateLearningAssistantUploadFolder(user.platformUserId) }); }
+    catch { server.log.warn("learning assistant upload folder lookup failed"); return sendError(reply, 503, "learning_assistant_upload_folder_unavailable"); }
+  });
+
   server.patch<{ Params: FolderParams; Body: NamedBody }>("/document-folders/:folderId", async (request, reply) => {
     const user = await authenticate(server, request.headers.authorization, sessions, reply); if (!user) return reply;
     if (!isUuid(request.params.folderId)) return sendError(reply, 404, "document_folder_not_found");

@@ -2,10 +2,16 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import type { DocumentKind, PublicDocumentFile } from "./documents.js";
 
+export const LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND = "learning_assistant_upload";
+export const LEARNING_ASSISTANT_UPLOAD_FOLDER_NAME = "助学模块上传";
+
+export type DocumentFolderKind = typeof LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND;
+
 export interface PublicDocumentFolder {
   id: string;
   name: string;
   parentId: string | null;
+  folderKind: DocumentFolderKind | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -74,6 +80,7 @@ export interface DocumentLibraryService {
   list(ownerUserId: string, filters: DocumentFilters): Promise<CatalogDocument[]>;
   listFolders(ownerUserId: string): Promise<PublicDocumentFolder[]>;
   createFolder(ownerUserId: string, name: unknown, parentId: unknown): Promise<PublicDocumentFolder>;
+  getOrCreateLearningAssistantUploadFolder(ownerUserId: string): Promise<PublicDocumentFolder>;
   updateFolder(ownerUserId: string, folderId: string, name: unknown, parentId: unknown): Promise<PublicDocumentFolder | null>;
   deleteFolder(ownerUserId: string, folderId: string): Promise<boolean>;
   listTags(ownerUserId: string): Promise<PublicDocumentTag[]>;
@@ -97,6 +104,7 @@ interface DocumentRow {
   folder_id: string | null;
   folder_name: string | null;
   folder_parent_id: string | null;
+  folder_kind: DocumentFolderKind | null;
   folder_created_at: Date | string | null;
   folder_updated_at: Date | string | null;
   tags: Array<{ id: string; name: string; createdAt: string; updatedAt: string }> | null;
@@ -121,6 +129,7 @@ interface FolderRow {
   id: string;
   name: string;
   parent_id: string | null;
+  folder_kind: DocumentFolderKind | null;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -142,6 +151,7 @@ const DOCUMENT_SELECT = `
     d.is_hidden, d.sort_order, d.word_count, d.content_sha256, d.revision,
     d.created_at, d.updated_at, d.deleted_at,
     folder.name AS folder_name, folder.parent_id AS folder_parent_id,
+    folder.folder_kind,
     folder.created_at AS folder_created_at, folder.updated_at AS folder_updated_at,
     COALESCE(tag_data.tags, '[]'::json) AS tags,
     uf.id AS file_id, uf.original_name, uf.mime_type, uf.size_bytes, uf.sha256
@@ -172,7 +182,7 @@ function dateOnly(value: Date | string | null): string | null {
 }
 
 function mapFolder(row: FolderRow): PublicDocumentFolder {
-  return { id: row.id, name: row.name, parentId: row.parent_id, createdAt: iso(row.created_at), updatedAt: iso(row.updated_at) };
+  return { id: row.id, name: row.name, parentId: row.parent_id, folderKind: row.folder_kind, createdAt: iso(row.created_at), updatedAt: iso(row.updated_at) };
 }
 
 function mapTag(row: TagRow): PublicDocumentTag {
@@ -201,7 +211,7 @@ function mapDocument(row: DocumentRow): CatalogDocument {
     file,
     sourceLocalDocumentId: row.source_local_document_id,
     folder: row.folder_id && row.folder_name && row.folder_created_at && row.folder_updated_at
-      ? { id: row.folder_id, name: row.folder_name, parentId: row.folder_parent_id, createdAt: iso(row.folder_created_at), updatedAt: iso(row.folder_updated_at) }
+      ? { id: row.folder_id, name: row.folder_name, parentId: row.folder_parent_id, folderKind: row.folder_kind, createdAt: iso(row.folder_created_at), updatedAt: iso(row.folder_updated_at) }
       : null,
     tags: (row.tags ?? []).map((tag) => ({ ...tag, createdAt: iso(tag.createdAt), updatedAt: iso(tag.updatedAt) })),
     diaryDate: dateOnly(row.diary_date),
@@ -379,7 +389,7 @@ export function createPostgresDocumentLibraryService(pool: Pool): DocumentLibrar
     },
 
     async listFolders(ownerUserId) {
-      const result = await pool.query<FolderRow>("SELECT id, name, parent_id, created_at, updated_at FROM document_folders WHERE owner_user_id = $1 AND deleted_at IS NULL ORDER BY lower(name), id", [ownerUserId]);
+      const result = await pool.query<FolderRow>("SELECT id, name, parent_id, folder_kind, created_at, updated_at FROM document_folders WHERE owner_user_id = $1 AND deleted_at IS NULL ORDER BY lower(name), id", [ownerUserId]);
       return result.rows.map(mapFolder);
     },
 
@@ -388,7 +398,27 @@ export function createPostgresDocumentLibraryService(pool: Pool): DocumentLibrar
       const parentId = validUuidOrNull(rawParentId, "invalid_parent_folder");
       return transaction(pool, async (client) => {
         await assertFolder(client, ownerUserId, parentId);
-        const result = await client.query<FolderRow>("INSERT INTO document_folders (id, owner_user_id, name, parent_id) VALUES ($1, $2, $3, $4) RETURNING id, name, parent_id, created_at, updated_at", [randomUUID(), ownerUserId, name, parentId]);
+        const result = await client.query<FolderRow>("INSERT INTO document_folders (id, owner_user_id, name, parent_id) VALUES ($1, $2, $3, $4) RETURNING id, name, parent_id, folder_kind, created_at, updated_at", [randomUUID(), ownerUserId, name, parentId]);
+        return mapFolder(result.rows[0]!);
+      });
+    },
+
+    async getOrCreateLearningAssistantUploadFolder(ownerUserId) {
+      return transaction(pool, async (client) => {
+        const result = await client.query<FolderRow>(
+          `INSERT INTO document_folders (id, owner_user_id, name, parent_id, folder_kind)
+           VALUES ($1, $2, $3, NULL, $4)
+           ON CONFLICT (owner_user_id, folder_kind)
+             WHERE folder_kind = 'learning_assistant_upload' AND deleted_at IS NULL
+           DO UPDATE SET
+             name = EXCLUDED.name,
+             updated_at = CASE
+               WHEN document_folders.name IS DISTINCT FROM EXCLUDED.name THEN CURRENT_TIMESTAMP
+               ELSE document_folders.updated_at
+             END
+           RETURNING id, name, parent_id, folder_kind, created_at, updated_at`,
+          [randomUUID(), ownerUserId, LEARNING_ASSISTANT_UPLOAD_FOLDER_NAME, LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND],
+        );
         return mapFolder(result.rows[0]!);
       });
     },
@@ -398,13 +428,16 @@ export function createPostgresDocumentLibraryService(pool: Pool): DocumentLibrar
       const parentId = rawParentId === undefined ? undefined : validUuidOrNull(rawParentId, "invalid_parent_folder");
       if (name === undefined && parentId === undefined) throw new DocumentLibraryValidationError("empty_update");
       return transaction(pool, async (client) => {
-        const current = await client.query<FolderRow>("SELECT id, name, parent_id, created_at, updated_at FROM document_folders WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL FOR UPDATE", [folderId, ownerUserId]);
+        const current = await client.query<FolderRow>("SELECT id, name, parent_id, folder_kind, created_at, updated_at FROM document_folders WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL FOR UPDATE", [folderId, ownerUserId]);
         if (!current.rows[0]) return null;
+        if (current.rows[0].folder_kind === LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND && name !== undefined && name !== current.rows[0].name) {
+          throw new DocumentLibraryValidationError("learning_assistant_upload_folder_name_locked");
+        }
         const nextParent = parentId === undefined ? current.rows[0].parent_id : parentId;
         if (nextParent === folderId) throw new DocumentLibraryValidationError("folder_cycle");
         await assertFolder(client, ownerUserId, nextParent);
         try {
-          const result = await client.query<FolderRow>("UPDATE document_folders SET name = $3, parent_id = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL RETURNING id, name, parent_id, created_at, updated_at", [folderId, ownerUserId, name ?? current.rows[0].name, nextParent]);
+          const result = await client.query<FolderRow>("UPDATE document_folders SET name = $3, parent_id = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL RETURNING id, name, parent_id, folder_kind, created_at, updated_at", [folderId, ownerUserId, name ?? current.rows[0].name, nextParent]);
           return mapFolder(result.rows[0]!);
         } catch (error) {
           if (error instanceof Error && /document_folder_cycle/.test(error.message)) throw new DocumentLibraryValidationError("folder_cycle");

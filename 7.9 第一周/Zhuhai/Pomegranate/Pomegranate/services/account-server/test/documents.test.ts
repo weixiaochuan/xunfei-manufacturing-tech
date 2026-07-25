@@ -20,6 +20,8 @@ import type { SessionService, SessionUser } from "../src/sessions.js";
 import { LocalFilesystemStorage } from "../src/storage/local-filesystem-storage.js";
 import {
   DocumentLibraryValidationError,
+  LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND,
+  LEARNING_ASSISTANT_UPLOAD_FOLDER_NAME,
   type CatalogDocument,
   type DocumentFilters,
   type DocumentLibraryService,
@@ -179,8 +181,30 @@ class MemoryLibrary implements DocumentLibraryService {
     if (typeof rawName !== "string" || !rawName.trim()) throw new Error("invalid_folder_name");
     const parentId = rawParentId === null || rawParentId === undefined ? null : String(rawParentId);
     if (parentId && this.folders.get(parentId)?.ownerUserId !== ownerUserId) throw new DocumentLibraryValidationError("invalid_folder");
-    const now = new Date().toISOString(); const folder = { id: randomUUID(), name: rawName.trim(), parentId, createdAt: now, updatedAt: now, ownerUserId };
+    const now = new Date().toISOString(); const folder: PublicDocumentFolder & { ownerUserId: string } = { id: randomUUID(), name: rawName.trim(), parentId, folderKind: null, createdAt: now, updatedAt: now, ownerUserId };
     this.folders.set(folder.id, folder); const { ownerUserId: _, ...result } = folder; return result;
+  }
+  async getOrCreateLearningAssistantUploadFolder(ownerUserId: string) {
+    const existing = [...this.folders.values()].find((folder) =>
+      folder.ownerUserId === ownerUserId && folder.folderKind === LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND);
+    if (existing) {
+      existing.name = LEARNING_ASSISTANT_UPLOAD_FOLDER_NAME;
+      const { ownerUserId: _, ...result } = existing;
+      return result;
+    }
+    const now = new Date().toISOString();
+    const folder: PublicDocumentFolder & { ownerUserId: string } = {
+      id: randomUUID(),
+      name: LEARNING_ASSISTANT_UPLOAD_FOLDER_NAME,
+      parentId: null,
+      folderKind: LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND,
+      createdAt: now,
+      updatedAt: now,
+      ownerUserId,
+    };
+    this.folders.set(folder.id, folder);
+    const { ownerUserId: _, ...result } = folder;
+    return result;
   }
   async updateFolder(ownerUserId: string, folderId: string, rawName: unknown, rawParentId: unknown) {
     const folder = this.folders.get(folderId); if (!folder || folder.ownerUserId !== ownerUserId) return null;
@@ -188,7 +212,14 @@ class MemoryLibrary implements DocumentLibraryService {
     if (parentId === folderId) throw new DocumentLibraryValidationError("folder_cycle");
     let cursor = parentId;
     while (cursor) { const parent = this.folders.get(cursor); if (!parent || parent.ownerUserId !== ownerUserId) throw new DocumentLibraryValidationError("invalid_folder"); if (parent.parentId === folderId) throw new DocumentLibraryValidationError("folder_cycle"); cursor = parent.parentId; }
-    if (rawName !== undefined) { if (typeof rawName !== "string" || !rawName.trim()) throw new Error("invalid_folder_name"); folder.name = rawName.trim(); }
+    if (rawName !== undefined) {
+      if (typeof rawName !== "string" || !rawName.trim()) throw new Error("invalid_folder_name");
+      const name = rawName.trim();
+      if (folder.folderKind === LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND && name !== folder.name) {
+        throw new DocumentLibraryValidationError("learning_assistant_upload_folder_name_locked");
+      }
+      folder.name = name;
+    }
     folder.parentId = parentId; folder.updatedAt = new Date().toISOString(); const { ownerUserId: _, ...result } = folder; return result;
   }
   async deleteFolder(ownerUserId: string, folderId: string) {
@@ -367,6 +398,78 @@ test("folder CRUD is owner scoped, prevents cycles, and safely unclassifies docu
   assert.equal((await f.server.inject({ method: "DELETE", url: `/document-folders/${childId}`, headers: auth() })).statusCode, 200);
   const listed = await f.server.inject({ method: "GET", url: "/documents", headers: auth() });
   assert.equal(listed.json().documents[0].folder, null);
+});
+
+test("learning assistant upload folder is account scoped, idempotent, and name locked", async (t) => {
+  const f = await fixture(); t.after(f.close);
+
+  const unauthenticated = await f.server.inject({ method: "POST", url: "/document-folders/learning-assistant-upload" });
+  assert.equal(unauthenticated.statusCode, 401);
+
+  const sameName = await f.server.inject({ method: "POST", url: "/document-folders", headers: auth(), payload: { name: LEARNING_ASSISTANT_UPLOAD_FOLDER_NAME } });
+  assert.equal(sameName.statusCode, 201);
+  assert.equal(sameName.json().folder.folderKind, null);
+
+  const created = await f.server.inject({ method: "POST", url: "/document-folders/learning-assistant-upload", headers: auth(), payload: { ownerUserId: USER_B.platformUserId } });
+  assert.equal(created.statusCode, 200);
+  const folder = created.json().folder;
+  assert.equal(folder.name, LEARNING_ASSISTANT_UPLOAD_FOLDER_NAME);
+  assert.equal(folder.parentId, null);
+  assert.equal(folder.folderKind, LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND);
+  assert.notEqual(folder.id, sameName.json().folder.id);
+
+  const repeated = await Promise.all(Array.from({ length: 5 }, () =>
+    f.server.inject({ method: "POST", url: "/document-folders/learning-assistant-upload", headers: auth() })));
+  assert.deepEqual(repeated.map((response) => response.statusCode), [200, 200, 200, 200, 200]);
+  assert.deepEqual(new Set(repeated.map((response) => response.json().folder.id)), new Set([folder.id]));
+
+  const otherAccount = await f.server.inject({ method: "POST", url: "/document-folders/learning-assistant-upload", headers: auth(TOKEN_B) });
+  assert.equal(otherAccount.statusCode, 200);
+  assert.notEqual(otherAccount.json().folder.id, folder.id);
+
+  const foldersA = await f.server.inject({ method: "GET", url: "/document-folders", headers: auth() });
+  const learningFoldersA = foldersA.json().folders.filter((item: PublicDocumentFolder) => item.folderKind === LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND);
+  assert.equal(learningFoldersA.length, 1);
+  assert.equal(foldersA.json().folders.filter((item: PublicDocumentFolder) => item.name === LEARNING_ASSISTANT_UPLOAD_FOLDER_NAME).length, 2);
+
+  const foldersB = await f.server.inject({ method: "GET", url: "/document-folders", headers: auth(TOKEN_B) });
+  assert.equal(foldersB.json().folders.length, 1);
+  assert.equal(foldersB.json().folders[0].folderKind, LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND);
+
+  const forgedOwner = await f.server.inject({ method: "POST", url: "/document-folders/learning-assistant-upload", headers: auth(TOKEN_B), payload: { ownerUserId: USER_A.platformUserId } });
+  assert.equal(forgedOwner.statusCode, 200);
+  assert.equal(forgedOwner.json().folder.id, otherAccount.json().folder.id);
+
+  const crossAccountDocument = await f.server.inject({ method: "POST", url: "/documents/markdown", headers: auth(), payload: { title: "越权", markdownContent: "x", folderId: otherAccount.json().folder.id } });
+  assert.equal(crossAccountDocument.statusCode, 400);
+  assert.equal(crossAccountDocument.json().error, "invalid_folder");
+
+  const renameLearningFolder = await f.server.inject({ method: "PATCH", url: `/document-folders/${folder.id}`, headers: auth(), payload: { name: "其他名称" } });
+  assert.equal(renameLearningFolder.statusCode, 400);
+  assert.equal(renameLearningFolder.json().error, "learning_assistant_upload_folder_name_locked");
+
+  const input = await f.server.inject({ method: "POST", url: "/document-folders", headers: auth(), payload: { name: "input" } });
+  const output = await f.server.inject({ method: "POST", url: "/document-folders", headers: auth(), payload: { name: "output" } });
+  assert.equal(input.json().folder.folderKind, null);
+  assert.equal(output.json().folder.folderKind, null);
+
+  const renamedInput = await f.server.inject({ method: "PATCH", url: `/document-folders/${input.json().folder.id}`, headers: auth(), payload: { name: "input-renamed" } });
+  assert.equal(renamedInput.statusCode, 200);
+  assert.equal(renamedInput.json().folder.name, "input-renamed");
+
+  const movedLearningFolder = await f.server.inject({ method: "PATCH", url: `/document-folders/${folder.id}`, headers: auth(), payload: { parentId: input.json().folder.id } });
+  assert.equal(movedLearningFolder.statusCode, 200);
+  assert.equal(movedLearningFolder.json().folder.parentId, input.json().folder.id);
+  assert.equal(movedLearningFolder.json().folder.name, LEARNING_ASSISTANT_UPLOAD_FOLDER_NAME);
+
+  assert.equal((await f.server.inject({ method: "DELETE", url: `/document-folders/${output.json().folder.id}`, headers: auth() })).statusCode, 200);
+  assert.equal((await f.server.inject({ method: "DELETE", url: `/document-folders/${folder.id}`, headers: auth() })).statusCode, 200);
+
+  const recreated = await f.server.inject({ method: "POST", url: "/document-folders/learning-assistant-upload", headers: auth() });
+  assert.equal(recreated.statusCode, 200);
+  assert.notEqual(recreated.json().folder.id, folder.id);
+  assert.equal(recreated.json().folder.parentId, null);
+  assert.equal(recreated.json().folder.folderKind, LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND);
 });
 
 test("tags, metadata filters, revision conflicts, trash, and restore behave safely", async (t) => {
