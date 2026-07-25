@@ -16,6 +16,8 @@ use crate::account::{
 
 const JS_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
 const MAX_LIST_LIMIT: u32 = 100;
+const MAX_REORDER_DOCUMENT_IDS: usize = 500;
+const POSTGRES_INTEGER_MAX: u64 = i32::MAX as u64;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -144,6 +146,67 @@ pub struct LearningProjectDeleteData {
     pub project_id: String,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LearningProjectDocumentRole {
+    Material,
+    Syllabus,
+    Note,
+    Exercise,
+    Reference,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LearningProjectDocumentImportance {
+    Normal,
+    Important,
+    Core,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LearningProjectDocumentStatus {
+    Available,
+    Deleted,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningProjectDocument {
+    pub document_id: String,
+    pub title: String,
+    pub document_type: String,
+    pub role: LearningProjectDocumentRole,
+    pub importance: LearningProjectDocumentImportance,
+    pub sort_order: u32,
+    pub created_at: String,
+    pub updated_at: String,
+    pub deleted_at: Option<String>,
+    pub status: LearningProjectDocumentStatus,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningProjectDocumentsListData {
+    pub project_revision: u64,
+    pub documents: Vec<LearningProjectDocument>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningProjectDocumentData {
+    pub project_revision: u64,
+    pub document: LearningProjectDocument,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningProjectDocumentsRevisionData {
+    pub project_revision: u64,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum LearningProjectListSort {
@@ -224,6 +287,50 @@ pub struct LearningProjectRevisionInput {
 pub struct LearningProjectDuplicateInput {
     pub project_id: String,
     pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LearningProjectDocumentsListInput {
+    pub project_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LearningProjectDocumentAddInput {
+    pub project_id: String,
+    pub expected_revision: u64,
+    pub document_id: String,
+    pub role: Option<LearningProjectDocumentRole>,
+    pub importance: Option<LearningProjectDocumentImportance>,
+    pub sort_order: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LearningProjectDocumentUpdateInput {
+    pub project_id: String,
+    pub document_id: String,
+    pub expected_revision: u64,
+    pub role: Option<LearningProjectDocumentRole>,
+    pub importance: Option<LearningProjectDocumentImportance>,
+    pub sort_order: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LearningProjectDocumentRevisionInput {
+    pub project_id: String,
+    pub document_id: String,
+    pub expected_revision: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LearningProjectDocumentsReorderInput {
+    pub project_id: String,
+    pub expected_revision: u64,
+    pub document_ids: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -343,6 +450,21 @@ fn map_server_error(
 ) -> AccountLearningError {
     match status {
         StatusCode::UNAUTHORIZED => AccountLearningError::new("signedOut", "Please sign in first"),
+        StatusCode::NOT_FOUND
+            if matches!(
+                error_code,
+                Some(
+                    "learning_project_document_not_found"
+                        | "document_not_found"
+                        | "document_unavailable"
+                )
+            ) =>
+        {
+            AccountLearningError::new(
+                "learningProjectDocumentNotFound",
+                "Learning project document was not found",
+            )
+        }
         StatusCode::NOT_FOUND => {
             AccountLearningError::new("learningProjectNotFound", "Learning project was not found")
         }
@@ -350,6 +472,12 @@ fn map_server_error(
             AccountLearningError::new(
                 "learningProjectConflict",
                 "Learning project was updated on another device",
+            )
+        }
+        StatusCode::CONFLICT if error_code == Some("learning_project_document_exists") => {
+            AccountLearningError::new(
+                "learningProjectDocumentExists",
+                "Learning project already includes this document",
             )
         }
         StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
@@ -365,6 +493,17 @@ fn uuid_path_segment(value: &str) -> Result<String, AccountLearningError> {
         .map(|uuid| uuid.to_string())
         .map_err(|_| {
             AccountLearningError::new("learningProjectNotFound", "Learning project was not found")
+        })
+}
+
+fn document_uuid_path_segment(value: &str) -> Result<String, AccountLearningError> {
+    Uuid::parse_str(value)
+        .map(|uuid| uuid.to_string())
+        .map_err(|_| {
+            AccountLearningError::new(
+                "learningProjectDocumentNotFound",
+                "Learning project document was not found",
+            )
         })
 }
 
@@ -390,6 +529,23 @@ fn ensure_input_revision(value: u64) -> Result<u64, AccountLearningError> {
         ));
     }
     Ok(value)
+}
+
+fn ensure_postgres_sort_order(value: u64) -> Result<u32, AccountLearningError> {
+    if value > POSTGRES_INTEGER_MAX {
+        return Err(AccountLearningError::invalid_response());
+    }
+    Ok(value as u32)
+}
+
+fn ensure_input_sort_order(value: i64) -> Result<u32, AccountLearningError> {
+    if value < 0 || value as u64 > POSTGRES_INTEGER_MAX {
+        return Err(AccountLearningError::new(
+            "validation",
+            "Learning project document sort order is invalid",
+        ));
+    }
+    Ok(value as u32)
 }
 
 fn ensure_list_limit(value: Option<u32>) -> Result<u32, AccountLearningError> {
@@ -499,6 +655,44 @@ struct RawStatusResponse {
     status: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawLearningProjectDocument {
+    document_id: String,
+    title: String,
+    document_type: String,
+    role: LearningProjectDocumentRole,
+    importance: LearningProjectDocumentImportance,
+    sort_order: u64,
+    created_at: String,
+    updated_at: String,
+    deleted_at: Option<String>,
+    status: LearningProjectDocumentStatus,
+}
+
+#[derive(Deserialize)]
+struct RawProjectDocumentsListResponse {
+    status: String,
+    #[serde(rename = "projectRevision")]
+    project_revision: u64,
+    documents: Vec<RawLearningProjectDocument>,
+}
+
+#[derive(Deserialize)]
+struct RawProjectDocumentResponse {
+    status: String,
+    #[serde(rename = "projectRevision")]
+    project_revision: u64,
+    document: RawLearningProjectDocument,
+}
+
+#[derive(Deserialize)]
+struct RawProjectRevisionResponse {
+    status: String,
+    #[serde(rename = "projectRevision")]
+    project_revision: u64,
+}
+
 fn validate_project_summary(
     raw: RawProjectSummary,
 ) -> Result<LearningProjectSummary, AccountLearningError> {
@@ -546,6 +740,29 @@ fn validate_project_detail(
     })
 }
 
+fn validate_project_document(
+    raw: RawLearningProjectDocument,
+) -> Result<LearningProjectDocument, AccountLearningError> {
+    if matches!(raw.status, LearningProjectDocumentStatus::Available) && raw.deleted_at.is_some() {
+        return Err(AccountLearningError::invalid_response());
+    }
+    if matches!(raw.status, LearningProjectDocumentStatus::Deleted) && raw.deleted_at.is_none() {
+        return Err(AccountLearningError::invalid_response());
+    }
+    Ok(LearningProjectDocument {
+        document_id: document_uuid_path_segment(&raw.document_id)?,
+        title: safe_string(raw.title)?,
+        document_type: safe_string(raw.document_type)?,
+        role: raw.role,
+        importance: raw.importance,
+        sort_order: ensure_postgres_sort_order(raw.sort_order)?,
+        created_at: safe_string(raw.created_at)?,
+        updated_at: safe_string(raw.updated_at)?,
+        deleted_at: raw.deleted_at.map(safe_string).transpose()?,
+        status: raw.status,
+    })
+}
+
 fn parse_project_response(raw: Value) -> Result<LearningProjectDetail, AccountLearningError> {
     let response: RawProjectResponse =
         serde_json::from_value(raw).map_err(|_| AccountLearningError::invalid_response())?;
@@ -553,6 +770,52 @@ fn parse_project_response(raw: Value) -> Result<LearningProjectDetail, AccountLe
         return Err(AccountLearningError::invalid_response());
     }
     validate_project_detail(response.project)
+}
+
+fn parse_project_documents_list_response(
+    raw: Value,
+) -> Result<LearningProjectDocumentsListData, AccountLearningError> {
+    let response: RawProjectDocumentsListResponse =
+        serde_json::from_value(raw).map_err(|_| AccountLearningError::invalid_response())?;
+    if response.status != "ok" {
+        return Err(AccountLearningError::invalid_response());
+    }
+    let documents = response
+        .documents
+        .into_iter()
+        .map(validate_project_document)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(LearningProjectDocumentsListData {
+        project_revision: ensure_positive_js_safe_integer(response.project_revision)?,
+        documents,
+    })
+}
+
+fn parse_project_document_response(
+    raw: Value,
+) -> Result<LearningProjectDocumentData, AccountLearningError> {
+    let response: RawProjectDocumentResponse =
+        serde_json::from_value(raw).map_err(|_| AccountLearningError::invalid_response())?;
+    if response.status != "ok" {
+        return Err(AccountLearningError::invalid_response());
+    }
+    Ok(LearningProjectDocumentData {
+        project_revision: ensure_positive_js_safe_integer(response.project_revision)?,
+        document: validate_project_document(response.document)?,
+    })
+}
+
+fn parse_project_documents_revision_response(
+    raw: Value,
+) -> Result<LearningProjectDocumentsRevisionData, AccountLearningError> {
+    let response: RawProjectRevisionResponse =
+        serde_json::from_value(raw).map_err(|_| AccountLearningError::invalid_response())?;
+    if response.status != "ok" {
+        return Err(AccountLearningError::invalid_response());
+    }
+    Ok(LearningProjectDocumentsRevisionData {
+        project_revision: ensure_positive_js_safe_integer(response.project_revision)?,
+    })
 }
 
 fn parse_project_list_response(
@@ -614,6 +877,35 @@ fn insert_patch_text(map: &mut Map<String, Value>, key: &str, value: &Option<Opt
                 .unwrap_or(Value::Null),
         );
     }
+}
+
+fn insert_optional_serialized<T: Serialize>(
+    map: &mut Map<String, Value>,
+    key: &str,
+    value: &Option<T>,
+) -> Result<(), AccountLearningError> {
+    if let Some(value) = value {
+        map.insert(
+            key.to_string(),
+            serde_json::to_value(value).map_err(|_| AccountLearningError::invalid_response())?,
+        );
+    }
+    Ok(())
+}
+
+fn insert_optional_sort_order(
+    map: &mut Map<String, Value>,
+    value: Option<i64>,
+) -> Result<bool, AccountLearningError> {
+    if let Some(value) = value {
+        let sort_order = ensure_input_sort_order(value)?;
+        map.insert(
+            "sortOrder".to_string(),
+            Value::Number(serde_json::Number::from(sort_order)),
+        );
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn list_request(
@@ -761,6 +1053,130 @@ fn duplicate_request(
     })
 }
 
+fn project_documents_list_request(
+    input: LearningProjectDocumentsListInput,
+) -> Result<LearningProjectRequest, AccountLearningError> {
+    let project_id = uuid_path_segment(&input.project_id)?;
+    Ok(LearningProjectRequest {
+        method: Method::GET,
+        path: format!("/learning/projects/{project_id}/documents"),
+        query: Vec::new(),
+        body: None,
+        is_write: false,
+    })
+}
+
+fn project_document_add_request(
+    input: LearningProjectDocumentAddInput,
+) -> Result<LearningProjectRequest, AccountLearningError> {
+    let project_id = uuid_path_segment(&input.project_id)?;
+    let document_id = document_uuid_path_segment(&input.document_id)?;
+    let mut body = Map::new();
+    body.insert(
+        "expectedRevision".to_string(),
+        Value::Number(ensure_input_revision(input.expected_revision)?.into()),
+    );
+    body.insert("documentId".to_string(), Value::String(document_id));
+    insert_optional_serialized(&mut body, "role", &input.role)?;
+    insert_optional_serialized(&mut body, "importance", &input.importance)?;
+    insert_optional_sort_order(&mut body, input.sort_order)?;
+    Ok(LearningProjectRequest {
+        method: Method::POST,
+        path: format!("/learning/projects/{project_id}/documents"),
+        query: Vec::new(),
+        body: Some(body_from_map(body)),
+        is_write: true,
+    })
+}
+
+fn project_document_update_request(
+    input: LearningProjectDocumentUpdateInput,
+) -> Result<LearningProjectRequest, AccountLearningError> {
+    let project_id = uuid_path_segment(&input.project_id)?;
+    let document_id = document_uuid_path_segment(&input.document_id)?;
+    let mut body = Map::new();
+    body.insert(
+        "expectedRevision".to_string(),
+        Value::Number(ensure_input_revision(input.expected_revision)?.into()),
+    );
+    let mut has_update = false;
+    if input.role.is_some() {
+        insert_optional_serialized(&mut body, "role", &input.role)?;
+        has_update = true;
+    }
+    if input.importance.is_some() {
+        insert_optional_serialized(&mut body, "importance", &input.importance)?;
+        has_update = true;
+    }
+    has_update |= insert_optional_sort_order(&mut body, input.sort_order)?;
+    if !has_update {
+        return Err(AccountLearningError::new(
+            "validation",
+            "Learning project document update is empty",
+        ));
+    }
+    Ok(LearningProjectRequest {
+        method: Method::PATCH,
+        path: format!("/learning/projects/{project_id}/documents/{document_id}"),
+        query: Vec::new(),
+        body: Some(body_from_map(body)),
+        is_write: true,
+    })
+}
+
+fn project_document_remove_request(
+    input: LearningProjectDocumentRevisionInput,
+) -> Result<LearningProjectRequest, AccountLearningError> {
+    let project_id = uuid_path_segment(&input.project_id)?;
+    let document_id = document_uuid_path_segment(&input.document_id)?;
+    Ok(LearningProjectRequest {
+        method: Method::DELETE,
+        path: format!("/learning/projects/{project_id}/documents/{document_id}"),
+        query: Vec::new(),
+        body: Some(serde_json::json!({
+            "expectedRevision": ensure_input_revision(input.expected_revision)?,
+        })),
+        is_write: true,
+    })
+}
+
+fn project_documents_reorder_request(
+    input: LearningProjectDocumentsReorderInput,
+) -> Result<LearningProjectRequest, AccountLearningError> {
+    let project_id = uuid_path_segment(&input.project_id)?;
+    if input.document_ids.len() > MAX_REORDER_DOCUMENT_IDS {
+        return Err(AccountLearningError::new(
+            "validation",
+            "Learning project document order is invalid",
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let document_ids = input
+        .document_ids
+        .into_iter()
+        .map(|id| {
+            let document_id = document_uuid_path_segment(&id)?;
+            if !seen.insert(document_id.clone()) {
+                return Err(AccountLearningError::new(
+                    "validation",
+                    "Learning project document order is invalid",
+                ));
+            }
+            Ok(Value::String(document_id))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(LearningProjectRequest {
+        method: Method::PUT,
+        path: format!("/learning/projects/{project_id}/documents/order"),
+        query: Vec::new(),
+        body: Some(serde_json::json!({
+            "expectedRevision": ensure_input_revision(input.expected_revision)?,
+            "documentIds": document_ids,
+        })),
+        is_write: true,
+    })
+}
+
 async fn session_matches<S: LearningSessionProvider + Sync>(
     sessions: &S,
     expected_platform_user_id: &str,
@@ -901,6 +1317,74 @@ pub async fn account_learning_project_duplicate(
     execute_account_learning_command(&app, &account, request, parse_project_response).await
 }
 
+#[tauri::command]
+pub async fn account_learning_project_documents_list(
+    app: AppHandle,
+    account: tauri::State<'_, AccountState>,
+    input: LearningProjectDocumentsListInput,
+) -> Result<AccountLearningEnvelope<LearningProjectDocumentsListData>, AccountLearningError> {
+    let request = project_documents_list_request(input)?;
+    execute_account_learning_command(
+        &app,
+        &account,
+        request,
+        parse_project_documents_list_response,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn account_learning_project_document_add(
+    app: AppHandle,
+    account: tauri::State<'_, AccountState>,
+    input: LearningProjectDocumentAddInput,
+) -> Result<AccountLearningEnvelope<LearningProjectDocumentData>, AccountLearningError> {
+    let request = project_document_add_request(input)?;
+    execute_account_learning_command(&app, &account, request, parse_project_document_response).await
+}
+
+#[tauri::command]
+pub async fn account_learning_project_document_update(
+    app: AppHandle,
+    account: tauri::State<'_, AccountState>,
+    input: LearningProjectDocumentUpdateInput,
+) -> Result<AccountLearningEnvelope<LearningProjectDocumentData>, AccountLearningError> {
+    let request = project_document_update_request(input)?;
+    execute_account_learning_command(&app, &account, request, parse_project_document_response).await
+}
+
+#[tauri::command]
+pub async fn account_learning_project_document_remove(
+    app: AppHandle,
+    account: tauri::State<'_, AccountState>,
+    input: LearningProjectDocumentRevisionInput,
+) -> Result<AccountLearningEnvelope<LearningProjectDocumentsRevisionData>, AccountLearningError> {
+    let request = project_document_remove_request(input)?;
+    execute_account_learning_command(
+        &app,
+        &account,
+        request,
+        parse_project_documents_revision_response,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn account_learning_project_documents_reorder(
+    app: AppHandle,
+    account: tauri::State<'_, AccountState>,
+    input: LearningProjectDocumentsReorderInput,
+) -> Result<AccountLearningEnvelope<LearningProjectDocumentsRevisionData>, AccountLearningError> {
+    let request = project_documents_reorder_request(input)?;
+    execute_account_learning_command(
+        &app,
+        &account,
+        request,
+        parse_project_documents_revision_response,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -909,6 +1393,8 @@ mod tests {
 
     const PROJECT_ID: &str = "11111111-1111-4111-8111-111111111111";
     const OTHER_PROJECT_ID: &str = "22222222-2222-4222-8222-222222222222";
+    const DOCUMENT_ID: &str = "33333333-3333-4333-8333-333333333333";
+    const OTHER_DOCUMENT_ID: &str = "44444444-4444-4444-8444-444444444444";
 
     struct FakeSessionProvider {
         sessions: Mutex<VecDeque<Result<LearningSession, AccountLearningError>>>,
@@ -1012,6 +1498,55 @@ mod tests {
             }],
             "limit": 50,
             "offset": 0
+        })
+    }
+
+    fn project_document_json(document_id: &str, deleted: bool) -> Value {
+        serde_json::json!({
+            "documentId": document_id,
+            "title": "Material",
+            "documentType": "uploaded_file",
+            "role": "material",
+            "importance": "normal",
+            "sortOrder": 0,
+            "createdAt": "2026-07-25T00:00:00.000Z",
+            "updatedAt": "2026-07-25T00:00:00.000Z",
+            "deletedAt": if deleted {
+                Value::String("2026-07-25T01:00:00.000Z".to_string())
+            } else {
+                Value::Null
+            },
+            "status": if deleted { "deleted" } else { "available" },
+            "ownerUserId": "must-not-leak",
+            "storageKey": "must-not-leak",
+            "path": "must-not-leak",
+            "body": "must-not-leak"
+        })
+    }
+
+    fn project_documents_list_response() -> Value {
+        serde_json::json!({
+            "status": "ok",
+            "projectRevision": 2,
+            "documents": [
+                project_document_json(DOCUMENT_ID, false),
+                project_document_json(OTHER_DOCUMENT_ID, true)
+            ]
+        })
+    }
+
+    fn project_document_response() -> Value {
+        serde_json::json!({
+            "status": "ok",
+            "projectRevision": 3,
+            "document": project_document_json(DOCUMENT_ID, false)
+        })
+    }
+
+    fn project_revision_response() -> Value {
+        serde_json::json!({
+            "status": "ok",
+            "projectRevision": 4
         })
     }
 
@@ -1431,5 +1966,463 @@ mod tests {
         })
         .unwrap();
         assert_eq!(blank_name.body.unwrap(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn project_document_requests_use_fixed_paths_and_bodies() {
+        let list = project_documents_list_request(LearningProjectDocumentsListInput {
+            project_id: PROJECT_ID.to_string(),
+        })
+        .unwrap();
+        assert_eq!(list.method, Method::GET);
+        assert_eq!(
+            list.path,
+            format!("/learning/projects/{PROJECT_ID}/documents")
+        );
+        assert!(list.body.is_none());
+        assert!(!list.is_write);
+
+        let add = project_document_add_request(LearningProjectDocumentAddInput {
+            project_id: PROJECT_ID.to_string(),
+            expected_revision: 2,
+            document_id: DOCUMENT_ID.to_string(),
+            role: None,
+            importance: None,
+            sort_order: None,
+        })
+        .unwrap();
+        let add_body = add.body.unwrap();
+        assert_eq!(add.method, Method::POST);
+        assert_eq!(
+            add.path,
+            format!("/learning/projects/{PROJECT_ID}/documents")
+        );
+        assert_eq!(add_body["expectedRevision"], 2);
+        assert_eq!(add_body["documentId"], DOCUMENT_ID);
+        assert!(add_body.get("role").is_none());
+        assert!(add_body.get("importance").is_none());
+        assert!(add_body.get("sortOrder").is_none());
+        assert!(add_body.get("ownerId").is_none());
+        assert!(add_body.get("token").is_none());
+        assert!(add_body.get("path").is_none());
+
+        let update = project_document_update_request(LearningProjectDocumentUpdateInput {
+            project_id: PROJECT_ID.to_string(),
+            document_id: DOCUMENT_ID.to_string(),
+            expected_revision: 3,
+            role: Some(LearningProjectDocumentRole::Reference),
+            importance: Some(LearningProjectDocumentImportance::Core),
+            sort_order: Some(7),
+        })
+        .unwrap();
+        let update_body = update.body.unwrap();
+        assert_eq!(update.method, Method::PATCH);
+        assert_eq!(
+            update.path,
+            format!("/learning/projects/{PROJECT_ID}/documents/{DOCUMENT_ID}")
+        );
+        assert_eq!(update_body["expectedRevision"], 3);
+        assert_eq!(update_body["role"], "reference");
+        assert_eq!(update_body["importance"], "core");
+        assert_eq!(update_body["sortOrder"], 7);
+
+        let remove = project_document_remove_request(LearningProjectDocumentRevisionInput {
+            project_id: PROJECT_ID.to_string(),
+            document_id: DOCUMENT_ID.to_string(),
+            expected_revision: 4,
+        })
+        .unwrap();
+        assert_eq!(remove.method, Method::DELETE);
+        assert_eq!(
+            remove.path,
+            format!("/learning/projects/{PROJECT_ID}/documents/{DOCUMENT_ID}")
+        );
+        assert_eq!(remove.body.unwrap()["expectedRevision"], 4);
+
+        let reorder = project_documents_reorder_request(LearningProjectDocumentsReorderInput {
+            project_id: PROJECT_ID.to_string(),
+            expected_revision: 5,
+            document_ids: vec![OTHER_DOCUMENT_ID.to_string(), DOCUMENT_ID.to_string()],
+        })
+        .unwrap();
+        assert_eq!(reorder.method, Method::PUT);
+        assert_eq!(
+            reorder.path,
+            format!("/learning/projects/{PROJECT_ID}/documents/order")
+        );
+        assert_eq!(reorder.body.unwrap()["documentIds"][0], OTHER_DOCUMENT_ID);
+    }
+
+    #[test]
+    fn project_document_inputs_reject_unsafe_values() {
+        assert_eq!(
+            project_document_add_request(LearningProjectDocumentAddInput {
+                project_id: PROJECT_ID.to_string(),
+                expected_revision: 0,
+                document_id: DOCUMENT_ID.to_string(),
+                role: None,
+                importance: None,
+                sort_order: None,
+            })
+            .unwrap_err()
+            .code,
+            "validation"
+        );
+        assert_eq!(
+            project_document_add_request(LearningProjectDocumentAddInput {
+                project_id: PROJECT_ID.to_string(),
+                expected_revision: 1,
+                document_id: DOCUMENT_ID.to_string(),
+                role: None,
+                importance: None,
+                sort_order: Some(-1),
+            })
+            .unwrap_err()
+            .code,
+            "validation"
+        );
+        assert_eq!(
+            project_document_add_request(LearningProjectDocumentAddInput {
+                project_id: PROJECT_ID.to_string(),
+                expected_revision: 1,
+                document_id: DOCUMENT_ID.to_string(),
+                role: None,
+                importance: None,
+                sort_order: Some(POSTGRES_INTEGER_MAX as i64 + 1),
+            })
+            .unwrap_err()
+            .code,
+            "validation"
+        );
+        assert_eq!(
+            project_document_update_request(LearningProjectDocumentUpdateInput {
+                project_id: PROJECT_ID.to_string(),
+                document_id: DOCUMENT_ID.to_string(),
+                expected_revision: 1,
+                role: None,
+                importance: None,
+                sort_order: Some(POSTGRES_INTEGER_MAX as i64 + 1),
+            })
+            .unwrap_err()
+            .code,
+            "validation"
+        );
+        assert_eq!(
+            project_document_update_request(LearningProjectDocumentUpdateInput {
+                project_id: PROJECT_ID.to_string(),
+                document_id: DOCUMENT_ID.to_string(),
+                expected_revision: 1,
+                role: None,
+                importance: None,
+                sort_order: None,
+            })
+            .unwrap_err()
+            .code,
+            "validation"
+        );
+        assert_eq!(
+            project_document_remove_request(LearningProjectDocumentRevisionInput {
+                project_id: PROJECT_ID.to_string(),
+                document_id: format!("{DOCUMENT_ID}/file"),
+                expected_revision: 1,
+            })
+            .unwrap_err()
+            .code,
+            "learningProjectDocumentNotFound"
+        );
+    }
+
+    #[test]
+    fn project_document_sort_order_matches_postgres_integer_range() {
+        let lower = project_document_add_request(LearningProjectDocumentAddInput {
+            project_id: PROJECT_ID.to_string(),
+            expected_revision: 1,
+            document_id: DOCUMENT_ID.to_string(),
+            role: None,
+            importance: None,
+            sort_order: Some(0),
+        })
+        .unwrap();
+        assert_eq!(lower.body.unwrap()["sortOrder"], 0);
+
+        let upper = project_document_update_request(LearningProjectDocumentUpdateInput {
+            project_id: PROJECT_ID.to_string(),
+            document_id: DOCUMENT_ID.to_string(),
+            expected_revision: 1,
+            role: None,
+            importance: None,
+            sort_order: Some(POSTGRES_INTEGER_MAX as i64),
+        })
+        .unwrap();
+        assert_eq!(upper.body.unwrap()["sortOrder"], POSTGRES_INTEGER_MAX);
+
+        let mut accepted_response = project_document_response();
+        accepted_response["document"]["sortOrder"] =
+            Value::Number(serde_json::Number::from(POSTGRES_INTEGER_MAX));
+        assert_eq!(
+            parse_project_document_response(accepted_response)
+                .unwrap()
+                .document
+                .sort_order,
+            i32::MAX as u32
+        );
+    }
+
+    #[test]
+    fn project_document_enums_and_unknown_fields_are_rejected() {
+        for role in [
+            "material",
+            "syllabus",
+            "note",
+            "exercise",
+            "reference",
+            "other",
+        ] {
+            let input: LearningProjectDocumentAddInput =
+                serde_json::from_value(serde_json::json!({
+                    "projectId": PROJECT_ID,
+                    "expectedRevision": 1,
+                    "documentId": DOCUMENT_ID,
+                    "role": role
+                }))
+                .unwrap();
+            assert!(matches!(
+                input.role,
+                Some(
+                    LearningProjectDocumentRole::Material
+                        | LearningProjectDocumentRole::Syllabus
+                        | LearningProjectDocumentRole::Note
+                        | LearningProjectDocumentRole::Exercise
+                        | LearningProjectDocumentRole::Reference
+                        | LearningProjectDocumentRole::Other
+                )
+            ));
+        }
+        for importance in ["normal", "important", "core"] {
+            serde_json::from_value::<LearningProjectDocumentAddInput>(serde_json::json!({
+                "projectId": PROJECT_ID,
+                "expectedRevision": 1,
+                "documentId": DOCUMENT_ID,
+                "importance": importance
+            }))
+            .unwrap();
+        }
+        assert!(
+            serde_json::from_value::<LearningProjectDocumentAddInput>(serde_json::json!({
+                "projectId": PROJECT_ID,
+                "expectedRevision": 1,
+                "documentId": DOCUMENT_ID,
+                "role": "admin"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<LearningProjectDocumentAddInput>(serde_json::json!({
+                "projectId": PROJECT_ID,
+                "expectedRevision": 1,
+                "documentId": DOCUMENT_ID,
+                "importance": "secret"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<LearningProjectDocumentAddInput>(serde_json::json!({
+                "projectId": PROJECT_ID,
+                "expectedRevision": 1,
+                "documentId": DOCUMENT_ID,
+                "ownerId": "unsafe"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn project_documents_reorder_rejects_duplicates_and_large_inputs() {
+        assert!((MAX_REORDER_DOCUMENT_IDS as u64).saturating_sub(1) <= POSTGRES_INTEGER_MAX);
+        assert_eq!(
+            project_documents_reorder_request(LearningProjectDocumentsReorderInput {
+                project_id: PROJECT_ID.to_string(),
+                expected_revision: 1,
+                document_ids: vec![DOCUMENT_ID.to_string(), DOCUMENT_ID.to_uppercase()],
+            })
+            .unwrap_err()
+            .code,
+            "validation"
+        );
+        assert_eq!(
+            project_documents_reorder_request(LearningProjectDocumentsReorderInput {
+                project_id: PROJECT_ID.to_string(),
+                expected_revision: 1,
+                document_ids: (0..=MAX_REORDER_DOCUMENT_IDS)
+                    .map(|_| DOCUMENT_ID.to_string())
+                    .collect(),
+            })
+            .unwrap_err()
+            .code,
+            "validation"
+        );
+        let empty = project_documents_reorder_request(LearningProjectDocumentsReorderInput {
+            project_id: PROJECT_ID.to_string(),
+            expected_revision: 1,
+            document_ids: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(empty.body.unwrap()["documentIds"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn project_document_responses_are_whitelisted() {
+        let list =
+            parse_project_documents_list_response(project_documents_list_response()).unwrap();
+        assert_eq!(list.project_revision, 2);
+        assert_eq!(list.documents.len(), 2);
+        assert_eq!(
+            list.documents[0].status,
+            LearningProjectDocumentStatus::Available
+        );
+        assert_eq!(
+            list.documents[1].status,
+            LearningProjectDocumentStatus::Deleted
+        );
+        let serialized = serde_json::to_value(list).unwrap();
+        assert!(serialized["documents"][0].get("ownerUserId").is_none());
+        assert!(serialized["documents"][0].get("storageKey").is_none());
+        assert!(serialized["documents"][0].get("path").is_none());
+        assert!(serialized["documents"][0].get("body").is_none());
+
+        let document = parse_project_document_response(project_document_response()).unwrap();
+        assert_eq!(document.project_revision, 3);
+        assert_eq!(document.document.document_id, DOCUMENT_ID);
+
+        let revision =
+            parse_project_documents_revision_response(project_revision_response()).unwrap();
+        assert_eq!(revision.project_revision, 4);
+    }
+
+    #[test]
+    fn invalid_project_document_responses_are_rejected() {
+        let too_large_revision = serde_json::json!({
+            "status": "ok",
+            "projectRevision": JS_SAFE_INTEGER_MAX + 1,
+            "documents": []
+        });
+        assert_eq!(
+            parse_project_documents_list_response(too_large_revision)
+                .unwrap_err()
+                .code,
+            "invalidResponse"
+        );
+
+        let too_large_sort_order = serde_json::json!({
+            "status": "ok",
+            "projectRevision": 1,
+            "document": {
+                "documentId": DOCUMENT_ID,
+                "title": "Material",
+                "documentType": "uploaded_file",
+                "role": "material",
+                "importance": "normal",
+                "sortOrder": POSTGRES_INTEGER_MAX + 1,
+                "createdAt": "2026-07-25T00:00:00.000Z",
+                "updatedAt": "2026-07-25T00:00:00.000Z",
+                "deletedAt": null,
+                "status": "available"
+            }
+        });
+        assert_eq!(
+            parse_project_document_response(too_large_sort_order)
+                .unwrap_err()
+                .code,
+            "invalidResponse"
+        );
+
+        let mut mismatched_status = project_document_response();
+        mismatched_status["document"]["deletedAt"] = Value::Null;
+        mismatched_status["document"]["status"] = Value::String("deleted".to_string());
+        assert_eq!(
+            parse_project_document_response(mismatched_status)
+                .unwrap_err()
+                .code,
+            "invalidResponse"
+        );
+    }
+
+    #[test]
+    fn project_document_errors_map_to_stable_safe_codes() {
+        assert_eq!(
+            map_server_error(
+                StatusCode::CONFLICT,
+                Some("learning_project_document_exists"),
+                true
+            )
+            .code,
+            "learningProjectDocumentExists"
+        );
+        assert_eq!(
+            map_server_error(
+                StatusCode::NOT_FOUND,
+                Some("learning_project_document_not_found"),
+                true
+            )
+            .code,
+            "learningProjectDocumentNotFound"
+        );
+        assert_eq!(
+            map_server_error(StatusCode::NOT_FOUND, Some("document_not_found"), true).code,
+            "learningProjectDocumentNotFound"
+        );
+        assert_eq!(
+            map_server_error(
+                StatusCode::BAD_REQUEST,
+                Some("invalid_learning_project_document_order"),
+                true
+            )
+            .code,
+            "validation"
+        );
+        let unavailable = map_server_error(StatusCode::GATEWAY_TIMEOUT, None, true);
+        assert_eq!(unavailable.code, "unavailable");
+        assert!(unavailable.message.contains("unknown"));
+    }
+
+    #[tokio::test]
+    async fn project_document_commands_reuse_shared_envelope_flow() {
+        let request = project_documents_list_request(LearningProjectDocumentsListInput {
+            project_id: PROJECT_ID.to_string(),
+        })
+        .unwrap();
+        let (result, remote) = execute_test_request(
+            vec![
+                Ok(test_session("user-a")),
+                Ok(test_session("user-a")),
+                Ok(test_session("user-b")),
+            ],
+            project_documents_list_response(),
+            request,
+            parse_project_documents_list_response,
+        )
+        .await;
+        let result = result.unwrap();
+        assert_eq!(
+            result.status,
+            AccountLearningEnvelopeStatus::CompletedAccountChanged
+        );
+        assert_eq!(result.data.unwrap().documents.len(), 2);
+        assert_eq!(remote.requests.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn duplicate_project_request_does_not_copy_documents_in_tauri() {
+        let duplicate = duplicate_request(LearningProjectDuplicateInput {
+            project_id: PROJECT_ID.to_string(),
+            name: Some("copy".to_string()),
+        })
+        .unwrap();
+        assert_eq!(duplicate.method, Method::POST);
+        assert_eq!(
+            duplicate.path,
+            format!("/learning/projects/{PROJECT_ID}/duplicate")
+        );
+        assert!(!duplicate.path.contains("/documents"));
     }
 }

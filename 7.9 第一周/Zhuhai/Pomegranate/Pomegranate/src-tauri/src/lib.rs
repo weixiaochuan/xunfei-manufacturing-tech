@@ -950,6 +950,16 @@ pub fn run() {
             #[cfg(desktop)]
             account_learning::account_learning_project_duplicate,
             #[cfg(desktop)]
+            account_learning::account_learning_project_documents_list,
+            #[cfg(desktop)]
+            account_learning::account_learning_project_document_add,
+            #[cfg(desktop)]
+            account_learning::account_learning_project_document_update,
+            #[cfg(desktop)]
+            account_learning::account_learning_project_document_remove,
+            #[cfg(desktop)]
+            account_learning::account_learning_project_documents_reorder,
+            #[cfg(desktop)]
             account_documents::account_list_documents,
             #[cfg(desktop)]
             account_documents::account_create_markdown_document,
