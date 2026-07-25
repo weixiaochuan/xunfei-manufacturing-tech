@@ -820,10 +820,7 @@ pub fn run() {
             #[cfg(desktop)]
             if instance_id.is_none() {
                 start_md_deliver_watcher(app.handle().clone(), framework_app_data_dir.clone());
-                start_account_deliver_watcher(
-                    app.handle().clone(),
-                    framework_app_data_dir.clone(),
-                );
+                start_account_deliver_watcher(app.handle().clone(), framework_app_data_dir.clone());
 
                 // 全局快捷键：仅默认实例注册，避免多开实例互抢系统级热键。
                 // 单条注册失败只 log warn，不阻断启动；用户可在设置页改键/禁用
@@ -928,6 +925,8 @@ pub fn run() {
             account::account_list_files,
             #[cfg(desktop)]
             account::account_pick_and_upload_file,
+            #[cfg(desktop)]
+            account::account_pick_and_upload_learning_material,
             #[cfg(desktop)]
             account::account_download_file,
             #[cfg(desktop)]

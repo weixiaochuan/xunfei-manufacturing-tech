@@ -18,15 +18,16 @@ const SESSION_PATH: &str = "/auth/session";
 const LOGOUT_PATH: &str = "/auth/logout";
 const FILES_PATH: &str = "/files";
 const ACCOUNT_EVENT_NAME: &str = "account:login-result";
+const LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND: &str = "learning_assistant_upload";
+const LEARNING_MATERIAL_UNKNOWN_RESULT_MESSAGE: &str =
+    "上传结果无法确认，请刷新“助学模块上传”目录后再决定是否重试";
 const USER_FILE_MAX_BYTES: u64 = 20 * 1024 * 1024;
 const ALLOWED_UPLOAD_EXTENSIONS: &[&str] = &[
-    "doc", "docx", "xls", "xlsx", "csv", "ppt", "pptx", "pdf", "md", "markdown",
-    "mdx", "mdxl", "txt", "rtf", "json", "xml", "yaml", "yml", "png", "jpg", "jpeg",
-    "gif", "webp", "bmp", "svg",
+    "doc", "docx", "xls", "xlsx", "csv", "ppt", "pptx", "pdf", "md", "markdown", "mdx", "mdxl",
+    "txt", "rtf", "json", "xml", "yaml", "yml", "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg",
 ];
 const BLOCKED_UPLOAD_EXTENSIONS: &[&str] = &[
-    "exe", "msi", "dll", "bat", "cmd", "com", "scr", "ps1", "vbs", "js", "jse", "jar",
-    "reg", "lnk",
+    "exe", "msi", "dll", "bat", "cmd", "com", "scr", "ps1", "vbs", "js", "jse", "jar", "reg", "lnk",
 ];
 const MAX_TICKET_LENGTH: usize = 512;
 const SESSION_TOKEN_MIN_LENGTH: usize = 43;
@@ -77,6 +78,31 @@ pub struct UserFileList {
 pub enum FilePickerResult {
     Success { file: UserFile },
     Cancelled,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum LearningMaterialUploadResult {
+    Uploaded {
+        file: UserFile,
+        #[serde(rename = "documentId")]
+        document_id: String,
+        #[serde(rename = "folderId")]
+        folder_id: String,
+        #[serde(rename = "folderKind")]
+        folder_kind: String,
+    },
+    Cancelled,
+    AccountChanged,
+    UploadedAccountChanged {
+        file: UserFile,
+        #[serde(rename = "documentId")]
+        document_id: String,
+        #[serde(rename = "folderId")]
+        folder_id: String,
+        #[serde(rename = "folderKind")]
+        folder_kind: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -147,9 +173,18 @@ enum RemoteError {
     ServiceUnavailable,
     Rejected,
     InvalidResponse,
+    InvalidFolderKind,
     NotFound,
     TooLarge,
     UnsupportedType,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UploadedFileResult {
+    file: UserFile,
+    document_id: Option<String>,
+    folder_id: Option<String>,
+    folder_kind: Option<String>,
 }
 
 #[derive(Clone)]
@@ -179,7 +214,8 @@ trait AccountRemote: Send + Sync {
         _token: &[u8],
         _file_name: String,
         _content: Vec<u8>,
-    ) -> Result<UserFile, RemoteError> {
+        _folder_kind: Option<&'static str>,
+    ) -> Result<UploadedFileResult, RemoteError> {
         Err(RemoteError::ServiceUnavailable)
     }
     async fn download_file(
@@ -255,9 +291,18 @@ struct FileListResponse {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct FileUploadResponse {
     status: String,
     file: Option<UserFile>,
+    document_id: Option<String>,
+    folder_id: Option<String>,
+    folder_kind: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ErrorResponse {
+    error: Option<String>,
 }
 
 #[async_trait]
@@ -377,13 +422,18 @@ impl AccountRemote for HttpAccountRemote {
         token: &[u8],
         file_name: String,
         content: Vec<u8>,
-    ) -> Result<UserFile, RemoteError> {
+        folder_kind: Option<&'static str>,
+    ) -> Result<UploadedFileResult, RemoteError> {
         let part = reqwest::multipart::Part::bytes(content).file_name(file_name);
+        let mut form = reqwest::multipart::Form::new().part("file", part);
+        if let Some(folder_kind) = folder_kind {
+            form = form.text("folderKind", folder_kind);
+        }
         let response = self
             .client
             .post(account_server_url(FILES_PATH))
             .header(AUTHORIZATION, Self::authorization_header(token)?)
-            .multipart(reqwest::multipart::Form::new().part("file", part))
+            .multipart(form)
             .send()
             .await
             .map_err(|_| RemoteError::ServiceUnavailable)?;
@@ -394,6 +444,14 @@ impl AccountRemote for HttpAccountRemote {
             return Err(RemoteError::TooLarge);
         }
         if response.status() == reqwest::StatusCode::BAD_REQUEST {
+            let error_code = response
+                .json::<ErrorResponse>()
+                .await
+                .ok()
+                .and_then(|payload| payload.error);
+            if error_code.as_deref() == Some("invalid_folder_kind") {
+                return Err(RemoteError::InvalidFolderKind);
+            }
             return Err(RemoteError::UnsupportedType);
         }
         if !response.status().is_success() {
@@ -406,7 +464,13 @@ impl AccountRemote for HttpAccountRemote {
         if payload.status != "ok" {
             return Err(RemoteError::InvalidResponse);
         }
-        validate_user_file(payload.file.ok_or(RemoteError::InvalidResponse)?)
+        let file = validate_user_file(payload.file.ok_or(RemoteError::InvalidResponse)?)?;
+        Ok(UploadedFileResult {
+            file,
+            document_id: payload.document_id,
+            folder_id: payload.folder_id,
+            folder_kind: payload.folder_kind,
+        })
     }
 
     async fn download_file(
@@ -638,6 +702,7 @@ async fn restore_session_inner(state: &AccountState) -> AccountLoginResult {
         Err(
             RemoteError::ServiceUnavailable
             | RemoteError::InvalidResponse
+            | RemoteError::InvalidFolderKind
             | RemoteError::NotFound
             | RemoteError::TooLarge
             | RemoteError::UnsupportedType,
@@ -707,6 +772,7 @@ pub fn handle_deep_link(app: AppHandle, raw_uri: String) {
             }
             Err(
                 RemoteError::ServiceUnavailable
+                | RemoteError::InvalidFolderKind
                 | RemoteError::NotFound
                 | RemoteError::TooLarge
                 | RemoteError::UnsupportedType,
@@ -726,7 +792,9 @@ pub fn handle_deep_link(app: AppHandle, raw_uri: String) {
     });
 }
 
-pub(crate) fn load_file_session(state: &AccountState) -> Result<Zeroizing<Vec<u8>>, AccountFileError> {
+pub(crate) fn load_file_session(
+    state: &AccountState,
+) -> Result<Zeroizing<Vec<u8>>, AccountFileError> {
     match state.credentials.load() {
         Ok(Some(token)) => Ok(token),
         Ok(None) => Err(AccountFileError::new("signedOut", "请先登录")),
@@ -749,9 +817,7 @@ pub(crate) async fn load_account_document_session(
     Ok((token, user))
 }
 
-pub(crate) fn account_authorization_header(
-    token: &[u8],
-) -> Result<HeaderValue, AccountFileError> {
+pub(crate) fn account_authorization_header(token: &[u8]) -> Result<HeaderValue, AccountFileError> {
     HttpAccountRemote::authorization_header(token)
         .map_err(|_| AccountFileError::new("signedOut", "登录已失效，请重新登录"))
 }
@@ -783,11 +849,8 @@ pub(crate) async fn load_verified_document_migration_session(
     Ok((token, user))
 }
 
-pub(crate) fn document_migration_authorization_header(
-    token: &[u8],
-) -> Result<HeaderValue, String> {
-    HttpAccountRemote::authorization_header(token)
-        .map_err(|_| "桌面登录凭据无效".to_string())
+pub(crate) fn document_migration_authorization_header(token: &[u8]) -> Result<HeaderValue, String> {
+    HttpAccountRemote::authorization_header(token).map_err(|_| "桌面登录凭据无效".to_string())
 }
 
 pub(crate) fn document_migration_server_url(path: &str) -> String {
@@ -805,10 +868,26 @@ fn map_file_remote_error(state: &AccountState, error: RemoteError) -> AccountFil
         RemoteError::UnsupportedType => {
             AccountFileError::new("fileTypeRejected", "不支持上传此文件类型")
         }
+        RemoteError::InvalidFolderKind => AccountFileError::new(
+            "invalidFolderKind",
+            "助学上传目录类型被拒绝，请更新应用后重试",
+        ),
         RemoteError::ServiceUnavailable => AccountFileError::new("unavailable", "账号服务暂不可用"),
         RemoteError::InvalidResponse => {
             AccountFileError::new("invalidResponse", "账号服务返回了无效的文件信息")
         }
+    }
+}
+
+fn map_learning_upload_remote_error(state: &AccountState, error: RemoteError) -> AccountFileError {
+    match error {
+        RemoteError::ServiceUnavailable => {
+            AccountFileError::new("unavailable", LEARNING_MATERIAL_UNKNOWN_RESULT_MESSAGE)
+        }
+        RemoteError::InvalidResponse => {
+            AccountFileError::new("invalidResponse", LEARNING_MATERIAL_UNKNOWN_RESULT_MESSAGE)
+        }
+        other => map_file_remote_error(state, other),
     }
 }
 
@@ -833,10 +912,12 @@ async fn list_files_inner(
         .map_err(|error| map_file_remote_error(state, error))
 }
 
-async fn upload_file_inner(
-    state: &AccountState,
-    path: &Path,
-) -> Result<UserFile, AccountFileError> {
+struct PreparedUploadFile {
+    file_name: String,
+    content: Vec<u8>,
+}
+
+async fn prepare_upload_file(path: &Path) -> Result<PreparedUploadFile, AccountFileError> {
     if !is_allowed_upload_path(path) {
         return Err(AccountFileError::new(
             "fileTypeRejected",
@@ -863,12 +944,138 @@ async fn upload_file_inner(
     if content.len() as u64 > USER_FILE_MAX_BYTES {
         return Err(AccountFileError::new("tooLarge", "文件超过 20 MiB"));
     }
+    Ok(PreparedUploadFile { file_name, content })
+}
+
+async fn upload_file_inner(
+    state: &AccountState,
+    path: &Path,
+) -> Result<UserFile, AccountFileError> {
+    let prepared = prepare_upload_file(path).await?;
     let token = load_file_session(state)?;
-    state
+    let uploaded = state
         .remote
-        .upload_file(&token, file_name, content)
+        .upload_file(&token, prepared.file_name, prepared.content, None)
         .await
-        .map_err(|error| map_file_remote_error(state, error))
+        .map_err(|error| map_file_remote_error(state, error))?;
+    Ok(uploaded.file)
+}
+
+struct LearningUploadSession {
+    token: Zeroizing<Vec<u8>>,
+    platform_user_id: String,
+}
+
+struct LearningMaterialUpload {
+    file: UserFile,
+    document_id: String,
+    folder_id: String,
+    folder_kind: String,
+}
+
+async fn begin_learning_material_upload_session(
+    state: &AccountState,
+) -> Result<LearningUploadSession, AccountFileError> {
+    let (token, user) = load_account_document_session(state).await?;
+    Ok(LearningUploadSession {
+        token,
+        platform_user_id: user.platform_user_id,
+    })
+}
+
+async fn current_account_matches(
+    state: &AccountState,
+    expected_platform_user_id: &str,
+) -> Result<bool, AccountFileError> {
+    match load_account_document_session(state).await {
+        Ok((_token, user)) => Ok(user.platform_user_id == expected_platform_user_id),
+        Err(error) if error.code == "signedOut" => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+async fn current_account_matches_after_upload(
+    state: &AccountState,
+    expected_platform_user_id: &str,
+) -> bool {
+    current_account_matches(state, expected_platform_user_id)
+        .await
+        .unwrap_or(false)
+}
+
+fn required_uuid_field(value: Option<String>) -> Result<String, RemoteError> {
+    let value = value.ok_or(RemoteError::InvalidResponse)?;
+    if Uuid::parse_str(&value).is_err() {
+        return Err(RemoteError::InvalidResponse);
+    }
+    Ok(value)
+}
+
+fn validate_learning_material_upload(
+    uploaded: UploadedFileResult,
+) -> Result<LearningMaterialUpload, RemoteError> {
+    let document_id = required_uuid_field(uploaded.document_id)?;
+    let folder_id = required_uuid_field(uploaded.folder_id)?;
+    let folder_kind = uploaded.folder_kind.ok_or(RemoteError::InvalidResponse)?;
+    if folder_kind != LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND {
+        return Err(RemoteError::InvalidResponse);
+    }
+    Ok(LearningMaterialUpload {
+        file: uploaded.file,
+        document_id,
+        folder_id,
+        folder_kind,
+    })
+}
+
+fn learning_material_result(
+    material: LearningMaterialUpload,
+    account_changed_after_upload: bool,
+) -> LearningMaterialUploadResult {
+    if account_changed_after_upload {
+        LearningMaterialUploadResult::UploadedAccountChanged {
+            file: material.file,
+            document_id: material.document_id,
+            folder_id: material.folder_id,
+            folder_kind: material.folder_kind,
+        }
+    } else {
+        LearningMaterialUploadResult::Uploaded {
+            file: material.file,
+            document_id: material.document_id,
+            folder_id: material.folder_id,
+            folder_kind: material.folder_kind,
+        }
+    }
+}
+
+async fn upload_learning_material_path_inner(
+    state: &AccountState,
+    session: LearningUploadSession,
+    path: &Path,
+) -> Result<LearningMaterialUploadResult, AccountFileError> {
+    if !current_account_matches(state, &session.platform_user_id).await? {
+        return Ok(LearningMaterialUploadResult::AccountChanged);
+    }
+    let prepared = prepare_upload_file(path).await?;
+    let uploaded = state
+        .remote
+        .upload_file(
+            &session.token,
+            prepared.file_name,
+            prepared.content,
+            Some(LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND),
+        )
+        .await
+        .map_err(|error| map_learning_upload_remote_error(state, error))?;
+    let material = validate_learning_material_upload(uploaded)
+        .map_err(|error| map_learning_upload_remote_error(state, error))?;
+    let account_changed_after_upload =
+        !current_account_matches_after_upload(state, &session.platform_user_id).await;
+    Ok(learning_material_result(
+        material,
+        account_changed_after_upload,
+    ))
 }
 
 fn parse_file_id(file_id: &str) -> Result<Uuid, AccountFileError> {
@@ -1073,6 +1280,36 @@ pub async fn account_pick_and_upload_file(
 }
 
 #[tauri::command]
+pub async fn account_pick_and_upload_learning_material(
+    app: AppHandle,
+    state: tauri::State<'_, AccountState>,
+) -> Result<LearningMaterialUploadResult, AccountFileError> {
+    let session = match begin_learning_material_upload_session(&state).await {
+        Ok(session) => session,
+        Err(error) => {
+            notify_signed_out(&app, &error);
+            return Err(error);
+        }
+    };
+    let Some(selected) = app
+        .dialog()
+        .file()
+        .add_filter("支持的文件", ALLOWED_UPLOAD_EXTENSIONS)
+        .blocking_pick_file()
+    else {
+        return Ok(LearningMaterialUploadResult::Cancelled);
+    };
+    let path = selected
+        .into_path()
+        .map_err(|_| AccountFileError::new("uploadFailed", "无法读取所选文件"))?;
+    let result = upload_learning_material_path_inner(&state, session, &path).await;
+    if let Err(error) = &result {
+        notify_signed_out(&app, error);
+    }
+    result
+}
+
+#[tauri::command]
 pub async fn account_download_file(
     app: AppHandle,
     state: tauri::State<'_, AccountState>,
@@ -1129,6 +1366,7 @@ pub async fn account_delete_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{collections::VecDeque, fs, path::PathBuf};
 
     #[derive(Default)]
     struct MemoryCredentialStore {
@@ -1187,6 +1425,16 @@ mod tests {
         }
     }
 
+    fn test_user_with_id(platform_user_id: &str) -> AccountUser {
+        AccountUser {
+            platform_user_id: platform_user_id.to_string(),
+            account_number: "POME-000001".to_string(),
+            username: platform_user_id.to_string(),
+            display_name: Some(platform_user_id.to_string()),
+            email: None,
+        }
+    }
+
     fn test_state(
         credentials: Arc<MemoryCredentialStore>,
         session_result: Result<AccountUser, RemoteError>,
@@ -1194,6 +1442,87 @@ mod tests {
         let remote = Arc::new(FakeRemote {
             session_result: Mutex::new(session_result),
             logout_count: Mutex::new(0),
+        });
+        (
+            AccountState {
+                pending_result: Mutex::new(None),
+                credentials,
+                remote: remote.clone(),
+            },
+            remote,
+        )
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct UploadRecord {
+        token: Vec<u8>,
+        file_name: String,
+        content: Vec<u8>,
+        folder_kind: Option<String>,
+    }
+
+    struct FakeUploadRemote {
+        sessions: Mutex<VecDeque<Result<AccountUser, RemoteError>>>,
+        upload_result: Mutex<Result<UploadedFileResult, RemoteError>>,
+        uploads: Mutex<Vec<UploadRecord>>,
+    }
+
+    #[async_trait]
+    impl AccountRemote for FakeUploadRemote {
+        async fn exchange_ticket(
+            &self,
+            _ticket: &str,
+        ) -> Result<(Zeroizing<String>, AccountUser), RemoteError> {
+            unreachable!()
+        }
+
+        async fn get_session(&self, _token: &[u8]) -> Result<AccountUser, RemoteError> {
+            self.sessions
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Ok(test_user()))
+        }
+
+        async fn logout(&self, _token: &[u8]) -> Result<(), RemoteError> {
+            unreachable!()
+        }
+
+        async fn upload_file(
+            &self,
+            token: &[u8],
+            file_name: String,
+            content: Vec<u8>,
+            folder_kind: Option<&'static str>,
+        ) -> Result<UploadedFileResult, RemoteError> {
+            self.uploads.lock().unwrap().push(UploadRecord {
+                token: token.to_vec(),
+                file_name,
+                content,
+                folder_kind: folder_kind.map(str::to_string),
+            });
+            self.upload_result.lock().unwrap().clone()
+        }
+    }
+
+    fn uploaded_file_result() -> UploadedFileResult {
+        UploadedFileResult {
+            file: test_file(),
+            document_id: Some("22222222-2222-4222-8222-222222222222".to_string()),
+            folder_id: Some("33333333-3333-4333-8333-333333333333".to_string()),
+            folder_kind: Some(LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND.to_string()),
+        }
+    }
+
+    fn upload_test_state(
+        credentials: Arc<MemoryCredentialStore>,
+        sessions: Vec<Result<AccountUser, RemoteError>>,
+        upload_result: Result<UploadedFileResult, RemoteError>,
+    ) -> (AccountState, Arc<FakeUploadRemote>) {
+        let remote = Arc::new(FakeUploadRemote {
+            sessions: Mutex::new(VecDeque::from(sessions)),
+            upload_result: Mutex::new(upload_result),
+            uploads: Mutex::new(Vec::new()),
         });
         (
             AccountState {
@@ -1264,6 +1593,27 @@ mod tests {
                 list_result: Mutex::new(list_result),
                 delete_result: Mutex::new(delete_result),
             }),
+        }
+    }
+
+    fn temp_upload_file(name: &str, content: &[u8]) -> PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("pome-account-upload-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(name);
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    fn temp_sized_upload_file(name: &str, size: u64) -> PathBuf {
+        let path = temp_upload_file(name, &[]);
+        fs::File::create(&path).unwrap().set_len(size).unwrap();
+        path
+    }
+
+    fn cleanup_temp_upload(path: &Path) {
+        if let Some(parent) = path.parent() {
+            let _ = fs::remove_dir_all(parent);
         }
     }
 
@@ -1438,16 +1788,350 @@ mod tests {
     }
 
     #[test]
+    fn learning_material_result_uses_camel_case_safe_fields() {
+        let serialized =
+            serde_json::to_string(&LearningMaterialUploadResult::UploadedAccountChanged {
+                file: test_file(),
+                document_id: "22222222-2222-4222-8222-222222222222".to_string(),
+                folder_id: "33333333-3333-4333-8333-333333333333".to_string(),
+                folder_kind: LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND.to_string(),
+            })
+            .unwrap();
+
+        assert!(serialized.contains("\"status\":\"uploadedAccountChanged\""));
+        assert!(serialized.contains("\"documentId\""));
+        assert!(serialized.contains("\"folderId\""));
+        assert!(serialized.contains("\"folderKind\""));
+        for forbidden in [
+            "document_id",
+            "folder_id",
+            "folder_kind",
+            "localPath",
+            "ownerUserId",
+            "storageKey",
+            "sessionToken",
+        ] {
+            assert!(!serialized.contains(forbidden));
+        }
+    }
+
+    #[test]
     fn upload_type_policy_accepts_only_the_explicit_allowlist() {
         for extension in ALLOWED_UPLOAD_EXTENSIONS {
-            assert!(is_allowed_upload_path(Path::new(&format!("sample.{extension}"))), "{extension}");
+            assert!(
+                is_allowed_upload_path(Path::new(&format!("sample.{extension}"))),
+                "{extension}"
+            );
         }
         for extension in BLOCKED_UPLOAD_EXTENSIONS {
-            assert!(!is_allowed_upload_path(Path::new(&format!("sample.{extension}"))), "{extension}");
+            assert!(
+                !is_allowed_upload_path(Path::new(&format!("sample.{extension}"))),
+                "{extension}"
+            );
         }
         assert!(!is_allowed_upload_path(Path::new("sample.html")));
         assert!(!is_allowed_upload_path(Path::new("sample")));
         assert!(is_allowed_upload_path(Path::new("REPORT.PDF")));
+    }
+
+    #[test]
+    fn old_upload_response_without_document_fields_still_parses() {
+        let payload: FileUploadResponse = serde_json::from_str(
+            r#"{
+              "status":"ok",
+              "file":{
+                "id":"11111111-1111-4111-8111-111111111111",
+                "originalName":"notes.txt",
+                "mimeType":"text/plain",
+                "sizeBytes":12,
+                "sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "createdAt":"2026-07-23T00:00:00.000Z"
+              }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(payload.status, "ok");
+        assert!(payload.document_id.is_none());
+        assert!(payload.folder_id.is_none());
+        assert!(payload.folder_kind.is_none());
+        assert_eq!(
+            validate_user_file(payload.file.unwrap()).unwrap(),
+            test_file()
+        );
+    }
+
+    #[tokio::test]
+    async fn ordinary_upload_does_not_send_folder_kind() {
+        let credentials = Arc::new(MemoryCredentialStore::default());
+        let token = b"ordinary-upload-session-token-value-123456789";
+        credentials.save(token).unwrap();
+        let path = temp_upload_file("notes.txt", b"hello");
+        let (state, remote) = upload_test_state(
+            credentials,
+            vec![],
+            Ok(UploadedFileResult {
+                file: test_file(),
+                document_id: None,
+                folder_id: None,
+                folder_kind: None,
+            }),
+        );
+
+        let result = upload_file_inner(&state, &path).await.unwrap();
+        cleanup_temp_upload(&path);
+
+        assert_eq!(result, test_file());
+        let uploads = remote.uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0].token, token);
+        assert_eq!(uploads[0].file_name, "notes.txt");
+        assert_eq!(uploads[0].content, b"hello");
+        assert_eq!(uploads[0].folder_kind, None);
+    }
+
+    #[tokio::test]
+    async fn learning_material_upload_sends_fixed_folder_kind_and_leaf_file_name() {
+        let credentials = Arc::new(MemoryCredentialStore::default());
+        let token = b"learning-upload-session-token-value-1234567";
+        credentials.save(token).unwrap();
+        let path = temp_upload_file("course notes.txt", b"material");
+        let (state, remote) = upload_test_state(
+            credentials,
+            vec![Ok(test_user()), Ok(test_user()), Ok(test_user())],
+            Ok(uploaded_file_result()),
+        );
+
+        let session = begin_learning_material_upload_session(&state)
+            .await
+            .unwrap();
+        let result = upload_learning_material_path_inner(&state, session, &path)
+            .await
+            .unwrap();
+        cleanup_temp_upload(&path);
+
+        assert!(matches!(
+            result,
+            LearningMaterialUploadResult::Uploaded {
+                document_id,
+                folder_id,
+                folder_kind,
+                ..
+            } if document_id == "22222222-2222-4222-8222-222222222222"
+                && folder_id == "33333333-3333-4333-8333-333333333333"
+                && folder_kind == LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND
+        ));
+        let uploads = remote.uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(
+            uploads[0].folder_kind.as_deref(),
+            Some(LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND)
+        );
+        assert_eq!(uploads[0].file_name, "course notes.txt");
+        assert!(!uploads[0].file_name.contains('\\'));
+        assert!(!uploads[0].file_name.contains('/'));
+    }
+
+    #[tokio::test]
+    async fn learning_material_upload_requires_login_before_file_selection() {
+        let credentials = Arc::new(MemoryCredentialStore::default());
+        let (state, remote) = upload_test_state(credentials, vec![], Ok(uploaded_file_result()));
+
+        let error = match begin_learning_material_upload_session(&state).await {
+            Ok(_) => panic!("expected signed-out learning material upload session to fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, "signedOut");
+        assert!(remote.uploads.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn learning_material_upload_stops_when_account_changes_before_upload() {
+        let credentials = Arc::new(MemoryCredentialStore::default());
+        credentials
+            .save(b"learning-upload-session-token-value-1234567")
+            .unwrap();
+        let path = temp_upload_file("notes.txt", b"material");
+        let (state, remote) = upload_test_state(
+            credentials,
+            vec![
+                Ok(test_user_with_id("user-a")),
+                Ok(test_user_with_id("user-b")),
+            ],
+            Ok(uploaded_file_result()),
+        );
+
+        let session = begin_learning_material_upload_session(&state)
+            .await
+            .unwrap();
+        let result = upload_learning_material_path_inner(&state, session, &path)
+            .await
+            .unwrap();
+        cleanup_temp_upload(&path);
+
+        assert_eq!(result, LearningMaterialUploadResult::AccountChanged);
+        assert!(remote.uploads.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn learning_material_upload_reports_account_change_after_success() {
+        let credentials = Arc::new(MemoryCredentialStore::default());
+        credentials
+            .save(b"learning-upload-session-token-value-1234567")
+            .unwrap();
+        let path = temp_upload_file("notes.txt", b"material");
+        let (state, remote) = upload_test_state(
+            credentials,
+            vec![
+                Ok(test_user_with_id("user-a")),
+                Ok(test_user_with_id("user-a")),
+                Ok(test_user_with_id("user-b")),
+            ],
+            Ok(uploaded_file_result()),
+        );
+
+        let session = begin_learning_material_upload_session(&state)
+            .await
+            .unwrap();
+        let result = upload_learning_material_path_inner(&state, session, &path)
+            .await
+            .unwrap();
+        cleanup_temp_upload(&path);
+
+        assert!(matches!(
+            result,
+            LearningMaterialUploadResult::UploadedAccountChanged {
+                document_id,
+                folder_kind,
+                ..
+            } if document_id == "22222222-2222-4222-8222-222222222222"
+                && folder_kind == LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND
+        ));
+        assert_eq!(remote.uploads.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn learning_material_upload_rejects_unconfirmed_server_response() {
+        for (document_id, folder_id, folder_kind) in [
+            (
+                None,
+                Some("33333333-3333-4333-8333-333333333333".to_string()),
+                Some(LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND.to_string()),
+            ),
+            (
+                Some("22222222-2222-4222-8222-222222222222".to_string()),
+                None,
+                Some(LEARNING_ASSISTANT_UPLOAD_FOLDER_KIND.to_string()),
+            ),
+            (
+                Some("22222222-2222-4222-8222-222222222222".to_string()),
+                Some("33333333-3333-4333-8333-333333333333".to_string()),
+                Some("other".to_string()),
+            ),
+        ] {
+            let credentials = Arc::new(MemoryCredentialStore::default());
+            credentials
+                .save(b"learning-upload-session-token-value-1234567")
+                .unwrap();
+            let path = temp_upload_file("notes.txt", b"material");
+            let (state, _remote) = upload_test_state(
+                credentials,
+                vec![Ok(test_user()), Ok(test_user())],
+                Ok(UploadedFileResult {
+                    file: test_file(),
+                    document_id,
+                    folder_id,
+                    folder_kind,
+                }),
+            );
+
+            let session = begin_learning_material_upload_session(&state)
+                .await
+                .unwrap();
+            let error = upload_learning_material_path_inner(&state, session, &path)
+                .await
+                .unwrap_err();
+            cleanup_temp_upload(&path);
+
+            assert_eq!(error.code, "invalidResponse");
+            assert_eq!(error.message, LEARNING_MATERIAL_UNKNOWN_RESULT_MESSAGE);
+        }
+    }
+
+    #[tokio::test]
+    async fn learning_material_upload_rejects_invalid_local_file_before_upload() {
+        let credentials = Arc::new(MemoryCredentialStore::default());
+        credentials
+            .save(b"learning-upload-session-token-value-1234567")
+            .unwrap();
+        let path = temp_upload_file("script.exe", b"not allowed");
+        let (state, remote) = upload_test_state(
+            credentials,
+            vec![Ok(test_user()), Ok(test_user())],
+            Ok(uploaded_file_result()),
+        );
+
+        let session = begin_learning_material_upload_session(&state)
+            .await
+            .unwrap();
+        let error = upload_learning_material_path_inner(&state, session, &path)
+            .await
+            .unwrap_err();
+        cleanup_temp_upload(&path);
+
+        assert_eq!(error.code, "fileTypeRejected");
+        assert!(remote.uploads.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn learning_material_upload_rejects_oversized_file_before_upload() {
+        let credentials = Arc::new(MemoryCredentialStore::default());
+        credentials
+            .save(b"learning-upload-session-token-value-1234567")
+            .unwrap();
+        let path = temp_sized_upload_file("large.pdf", USER_FILE_MAX_BYTES + 1);
+        let (state, remote) = upload_test_state(
+            credentials,
+            vec![Ok(test_user()), Ok(test_user())],
+            Ok(uploaded_file_result()),
+        );
+
+        let session = begin_learning_material_upload_session(&state)
+            .await
+            .unwrap();
+        let error = upload_learning_material_path_inner(&state, session, &path)
+            .await
+            .unwrap_err();
+        cleanup_temp_upload(&path);
+
+        assert_eq!(error.code, "tooLarge");
+        assert!(remote.uploads.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn learning_material_upload_keeps_network_unknown_error_safe() {
+        let credentials = Arc::new(MemoryCredentialStore::default());
+        let token = b"learning-upload-session-token-value-1234567";
+        credentials.save(token).unwrap();
+        let path = temp_upload_file("notes.txt", b"material");
+        let (state, remote) = upload_test_state(
+            credentials,
+            vec![Ok(test_user()), Ok(test_user())],
+            Err(RemoteError::ServiceUnavailable),
+        );
+
+        let session = begin_learning_material_upload_session(&state)
+            .await
+            .unwrap();
+        let error = upload_learning_material_path_inner(&state, session, &path)
+            .await
+            .unwrap_err();
+        cleanup_temp_upload(&path);
+
+        assert_eq!(error.code, "unavailable");
+        assert_eq!(error.message, LEARNING_MATERIAL_UNKNOWN_RESULT_MESSAGE);
+        assert!(!format!("{error:?}").contains(std::str::from_utf8(token).unwrap()));
+        assert_eq!(remote.uploads.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
