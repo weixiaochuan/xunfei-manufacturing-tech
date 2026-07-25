@@ -1,0 +1,82 @@
+{
+  "resources": [
+    {
+      "resourceId": "syseng-demo-001",
+      "title": "系统工程基础概念讲义",
+      "type": "courseware",
+      "course": "系统工程",
+      "knowledgePoint": "系统工程基础概念",
+      "difficulty": "easy",
+      "url": "https://example.edu/resources/syseng-basic-concepts",
+      "summary": "围绕系统、要素、结构、功能和环境等基础概念建立入门框架。",
+      "tags": ["阶段1", "概念", "入门"],
+      "duration": "30分钟",
+      "reason": ""
+    },
+    {
+      "resourceId": "syseng-demo-002",
+      "title": "系统边界与系统环境案例",
+      "type": "article",
+      "course": "系统工程",
+      "knowledgePoint": "系统边界与系统环境",
+      "difficulty": "easy",
+      "url": "https://example.edu/resources/syseng-boundary-environment",
+      "summary": "通过企业生产系统和城市交通系统案例说明边界划分与环境识别方法。",
+      "tags": ["阶段1", "案例", "边界"],
+      "duration": "25分钟",
+      "reason": ""
+    },
+    {
+      "resourceId": "syseng-demo-003",
+      "title": "系统模型方法课件",
+      "type": "courseware",
+      "course": "系统工程",
+      "knowledgePoint": "系统模型方法",
+      "difficulty": "medium",
+      "url": "https://example.edu/resources/syseng-modeling-methods",
+      "summary": "介绍结构模型、数学模型和仿真模型的适用场景与建模步骤。",
+      "tags": ["阶段2", "模型", "课件"],
+      "duration": "45分钟",
+      "reason": ""
+    },
+    {
+      "resourceId": "syseng-demo-004",
+      "title": "系统评价方法例题",
+      "type": "article",
+      "course": "系统工程",
+      "knowledgePoint": "系统评价方法",
+      "difficulty": "medium",
+      "url": "https://example.edu/resources/syseng-evaluation-examples",
+      "summary": "结合层次分析、综合评价和指标权重计算讲解典型例题。",
+      "tags": ["阶段3", "评价", "例题"],
+      "duration": "40分钟",
+      "reason": ""
+    },
+    {
+      "resourceId": "syseng-demo-005",
+      "title": "系统动力学入门视频",
+      "type": "video",
+      "course": "系统工程",
+      "knowledgePoint": "系统动力学",
+      "difficulty": "medium",
+      "url": "https://example.edu/resources/syseng-system-dynamics-video",
+      "summary": "用库存、流量、反馈回路等概念解释系统动力学的基本建模思路。",
+      "tags": ["阶段2", "动力学", "视频"],
+      "duration": "35分钟",
+      "reason": ""
+    },
+    {
+      "resourceId": "syseng-demo-006",
+      "title": "期末综合复习题库",
+      "type": "question_bank",
+      "course": "系统工程",
+      "knowledgePoint": "综合复习",
+      "difficulty": "hard",
+      "url": "https://example.edu/resources/syseng-final-review-bank",
+      "summary": "覆盖系统分析、建模、评价和综合应用的复习题与参考答案。",
+      "tags": ["阶段4", "复习", "题库"],
+      "duration": "90分钟",
+      "reason": ""
+    }
+  ]
+}

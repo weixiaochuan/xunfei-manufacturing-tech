@@ -1,0 +1,57 @@
+# Repository-wide generated dependencies
+node_modules/
+**/node_modules/
+target/
+**/target/
+.venv/
+**/.venv/
+venv/
+**/venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+dist/
+**/dist/
+build/
+**/build/
+
+# PPT temporary workdirs and generated example exports
+.pptx-build-*/
+**/.pptx-build-*/
+ppt-master/examples/**/exports/**
+!ppt-master/examples/**/exports/.gitkeep
+
+# Logs, caches, and temporary files
+logs/
+*.log
+*.tmp
+*.temp
+*.pid
+*.bak
+*.swp
+*.swo
+*~
+.cache/
+.pytest_cache/
+.mypy_cache/
+
+# Local environment files and sensitive machine-local configs
+.env
+.env.*
+!.env.example
+!**/.env.example
+.envrc
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+Pomegranate/src-tauri/keys/
+
+# Machine-local runtime data and generated validation outputs
+.runtime-data*/
+ppt-master/projects/
+work-test/
+files.v21_
+ppt-master/examples/**/backup/
