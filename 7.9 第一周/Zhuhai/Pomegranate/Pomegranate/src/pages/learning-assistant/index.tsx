@@ -80,9 +80,12 @@ import {
 import {
   appendLearningAssistantQuizRecordToProgress,
   buildLearningAssistantQuizRecord,
+  buildLearningAssistantLocalReplan,
   buildLearningAssistantStageQuiz,
+  extractLearningAssistantMasteryRecords,
   extractLearningAssistantQuizRecords,
   scoreLearningAssistantQuiz,
+  type LearningAssistantMasteryRecord,
   type LearningAssistantQuizQuestion,
   type LearningAssistantQuizRecord,
   type LearningAssistantQuizScoreResult,
@@ -248,6 +251,10 @@ export default function LearningAssistantPage() {
   );
   const quizRecords = useMemo(
     () => extractLearningAssistantQuizRecords(currentProject?.progress),
+    [currentProject?.progress],
+  );
+  const masteryRecords = useMemo(
+    () => extractLearningAssistantMasteryRecords(currentProject?.progress),
     [currentProject?.progress],
   );
 
@@ -684,10 +691,21 @@ export default function LearningAssistantPage() {
         answers: session.answers,
         scoreResult,
       });
+      const progress = appendLearningAssistantQuizRecordToProgress(currentProject.progress, record);
+      const replan = buildLearningAssistantLocalReplan(plan, record);
       const saved = await updateAccountLearningProject({
         projectId: currentProject.id,
         expectedRevision: currentProject.revision,
-        progress: appendLearningAssistantQuizRecordToProgress(currentProject.progress, record),
+        progress,
+        ...(replan
+          ? {
+              currentPlan: toJsonObject(replan.plan),
+              planAdjustments: [
+                ...currentProject.planAdjustments,
+                toJsonObject(replan.adjustment),
+              ],
+            }
+          : {}),
       });
       const project = unwrapEnvelope(saved, "测试结果已保存，但账号已切换，请重新打开项目确认。");
       if (!project) return;
@@ -701,7 +719,11 @@ export default function LearningAssistantPage() {
         },
       }));
       setProjects((previous) => upsertProjectSummary(previous, summaryFromDetail(project)));
-      message.success("阶段测试结果已保存到当前项目。");
+      message.success(
+        replan
+          ? "阶段测试结果已保存，并已根据薄弱点追加补学任务。"
+          : "阶段测试结果已保存到当前项目。",
+      );
     } catch (error) {
       setStageQuizzes((previous) => ({
         ...previous,
@@ -1046,7 +1068,10 @@ export default function LearningAssistantPage() {
 
             <Card title="测试记录与掌握反馈">
               {currentProject ? (
-                <QuizRecordList records={quizRecords} />
+                <Space direction="vertical" className="w-full">
+                  <MasteryRecordSummary records={masteryRecords} />
+                  <QuizRecordList records={quizRecords} />
+                </Space>
               ) : (
                 <Text type="secondary">打开项目后可生成阶段测试，提交后题目、答案、解析和分数会保存到当前项目。</Text>
               )}
@@ -1388,6 +1413,47 @@ function QuizScoreResultView({ result }: { result: LearningAssistantQuizScoreRes
   );
 }
 
+function MasteryRecordSummary({ records }: { records: LearningAssistantMasteryRecord[] }) {
+  if (!records.length) {
+    return <Alert type="info" showIcon message="提交阶段测试后，将按知识点生成掌握度记录。" />;
+  }
+  return (
+    <Space direction="vertical" className="w-full">
+      <Space wrap>
+        <Tag color="green">
+          已掌握 {records.filter((record) => record.masteryLevel === "mastered").length}
+        </Tag>
+        <Tag color="blue">
+          基本掌握 {records.filter((record) => record.masteryLevel === "basic").length}
+        </Tag>
+        <Tag color="orange">
+          薄弱 {records.filter((record) => record.masteryLevel === "weak").length}
+        </Tag>
+      </Space>
+      <List
+        size="small"
+        dataSource={records.slice(0, 8)}
+        renderItem={(record) => (
+          <List.Item>
+            <Space direction="vertical" className="w-full" size={0}>
+              <Space wrap size="small">
+                <Text strong>{record.knowledgePoint}</Text>
+                <Tag color={masteryTagColor(record.masteryLevel)}>
+                  {formatMasteryLevel(record.masteryLevel)}
+                </Tag>
+                <Text type="secondary">
+                  最近 {record.latestPercentage} 分，最佳 {record.bestPercentage} 分，测试 {record.attempts} 次
+                </Text>
+              </Space>
+              <Text type="secondary">{record.suggestions.join("；")}</Text>
+            </Space>
+          </List.Item>
+        )}
+      />
+    </Space>
+  );
+}
+
 function QuizRecordList({ records }: { records: LearningAssistantQuizRecord[] }) {
   if (!records.length) {
     return (
@@ -1454,6 +1520,18 @@ function formatQuizQuestionType(type: LearningAssistantQuizQuestion["type"]) {
   if (type === "choice") return "选择题";
   if (type === "judgment") return "判断题";
   return "简答题";
+}
+
+function formatMasteryLevel(level: LearningAssistantMasteryRecord["masteryLevel"]) {
+  if (level === "mastered") return "已掌握";
+  if (level === "basic") return "基本掌握";
+  return "薄弱";
+}
+
+function masteryTagColor(level: LearningAssistantMasteryRecord["masteryLevel"]) {
+  if (level === "mastered") return "green";
+  if (level === "basic") return "blue";
+  return "orange";
 }
 
 function buildPlanInput(values: LearningGoalFormValues) {

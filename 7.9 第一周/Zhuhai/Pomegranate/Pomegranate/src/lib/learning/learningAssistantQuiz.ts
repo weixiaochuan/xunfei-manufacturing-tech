@@ -1,6 +1,8 @@
 import type { JsonObject } from "./accountLearningTypes.ts";
 
 export const LEARNING_ASSISTANT_QUIZ_SOURCE = "local-fallback-quiz";
+export const LEARNING_ASSISTANT_MASTERY_SOURCE = "local-quiz-mastery";
+export const LEARNING_ASSISTANT_REPLAN_SOURCE = "local-quiz-replan";
 export const LEARNING_ASSISTANT_QUIZ_RECORD_LIMIT = 20;
 
 export type LearningAssistantQuizQuestionType = "choice" | "judgment" | "short_answer";
@@ -105,6 +107,30 @@ export interface LearningAssistantQuizRecord {
   suggestions: string[];
   canAdvance: boolean;
   items: LearningAssistantQuizRecordItem[];
+}
+
+export interface LearningAssistantMasteryRecord {
+  knowledgePoint: string;
+  source: typeof LEARNING_ASSISTANT_MASTERY_SOURCE;
+  masteryLevel: "mastered" | "basic" | "weak";
+  attempts: number;
+  bestPercentage: number;
+  latestPercentage: number;
+  latestTestedAt: string;
+  evidenceRecordKeys: string[];
+  suggestions: string[];
+}
+
+export interface LearningAssistantReplanAdjustment {
+  adjustmentKey: string;
+  source: typeof LEARNING_ASSISTANT_REPLAN_SOURCE;
+  adjustedAt: string;
+  stageIndex: number;
+  stageName: string;
+  reason: string;
+  weakKnowledgePoints: string[];
+  addedTasks: string[];
+  needRetest: boolean;
 }
 
 interface QuizCandidate {
@@ -243,6 +269,8 @@ export function appendLearningAssistantQuizRecordToProgress(
     record,
     ...records.filter((item) => item.recordKey !== record.recordKey),
   ].slice(0, limit);
+  const masteryRecords = buildLearningAssistantMasteryRecords(nextRecords);
+  const replanSuggestions = buildLearningAssistantReplanSuggestions(nextRecords);
   return {
     ...previous,
     quizRecords: nextRecords,
@@ -250,6 +278,10 @@ export function appendLearningAssistantQuizRecordToProgress(
     latestQuizAt: record.testedAt,
     latestQuizPercentage: record.percentage,
     latestWeakKnowledgePoints: record.weakKnowledgePoints,
+    masteryRecords,
+    masteryRecordCount: masteryRecords.length,
+    latestMasteryAt: record.testedAt,
+    replanSuggestions,
   };
 }
 
@@ -260,6 +292,111 @@ export function extractLearningAssistantQuizRecords(
   return progress.quizRecords
     .map(parseQuizRecord)
     .filter((record): record is LearningAssistantQuizRecord => record !== null);
+}
+
+export function extractLearningAssistantMasteryRecords(
+  progress: JsonObject | null | undefined,
+): LearningAssistantMasteryRecord[] {
+  if (!isRecord(progress) || !Array.isArray(progress.masteryRecords)) return [];
+  return progress.masteryRecords
+    .map(parseMasteryRecord)
+    .filter((record): record is LearningAssistantMasteryRecord => record !== null);
+}
+
+export function buildLearningAssistantMasteryRecords(
+  records: LearningAssistantQuizRecord[],
+): LearningAssistantMasteryRecord[] {
+  const grouped = new Map<string, LearningAssistantQuizRecordItem[]>();
+  const evidence = new Map<string, string[]>();
+  const latest = new Map<string, string>();
+  for (const record of records) {
+    for (const item of record.items) {
+      const point = item.knowledgePoint.trim();
+      if (!point) continue;
+      grouped.set(point, [...(grouped.get(point) ?? []), item]);
+      evidence.set(point, uniqueStrings([...(evidence.get(point) ?? []), record.recordKey]).slice(0, 6));
+      latest.set(point, record.testedAt);
+    }
+  }
+  return [...grouped.entries()]
+    .map(([knowledgePoint, items]) => {
+      const percentages = items.map((item) => getLearningQuizPercentage(item.score, item.maxScore));
+      const latestPercentage = percentages[percentages.length - 1] ?? 0;
+      const bestPercentage = Math.max(...percentages, 0);
+      const masteryLevel = masteryLevelFromPercentage(latestPercentage);
+      return {
+        knowledgePoint,
+        source: LEARNING_ASSISTANT_MASTERY_SOURCE as typeof LEARNING_ASSISTANT_MASTERY_SOURCE,
+        masteryLevel,
+        attempts: items.length,
+        bestPercentage,
+        latestPercentage,
+        latestTestedAt: latest.get(knowledgePoint) ?? "",
+        evidenceRecordKeys: evidence.get(knowledgePoint) ?? [],
+        suggestions: masterySuggestions(knowledgePoint, masteryLevel),
+      };
+    })
+    .sort((left, right) => {
+      const levelOrder = { weak: 0, basic: 1, mastered: 2 };
+      return (
+        levelOrder[left.masteryLevel] - levelOrder[right.masteryLevel] ||
+        left.knowledgePoint.localeCompare(right.knowledgePoint)
+      );
+    });
+}
+
+export function buildLearningAssistantLocalReplan<T extends { stages?: unknown[]; message?: string }>(
+  plan: T | null | undefined,
+  record: LearningAssistantQuizRecord,
+  adjustedAt = new Date().toISOString(),
+): { plan: T; adjustment: LearningAssistantReplanAdjustment } | null {
+  if (!plan || !Array.isArray(plan.stages) || record.canAdvance) return null;
+  const stages = plan.stages.map(copyRecord);
+  const currentStage = stages[record.stageIndex];
+  if (!isRecord(currentStage)) return null;
+  const weakPoints = uniqueStrings([
+    ...record.weakKnowledgePoints,
+    ...record.items.filter((item) => !item.correct).map((item) => item.knowledgePoint),
+    ...record.missingKeywords.map((keyword) => `缺失关键词：${keyword}`),
+  ]).slice(0, 8);
+  const weakText = weakPoints.length ? weakPoints.join("、") : "本阶段核心知识点";
+  const addedTasks = [
+    `重新学习薄弱知识点：${weakText}。`,
+    `围绕「${weakText}」补做选择题、判断题和简答题练习。`,
+    "完成补学后重新生成阶段测试，确认掌握情况。",
+  ];
+  const stageGoal = readString(currentStage, "goal") || record.stageName;
+  currentStage.goal = stageGoal.includes("补学")
+    ? stageGoal
+    : `${stageGoal}（补学：先补齐薄弱点再推进）`;
+  currentStage.learningTasks = mergeTaskArray(currentStage.learningTasks, [
+    addedTasks[0],
+    `复盘本次测试错题，整理「${weakText}」的概念和应用条件。`,
+  ]);
+  currentStage.practiceTasks = mergeTaskArray(currentStage.practiceTasks, [addedTasks[1]]);
+  currentStage.checkTasks = mergeTaskArray(currentStage.checkTasks, [addedTasks[2]]);
+  currentStage.completionCriteria = mergeTaskArray(currentStage.completionCriteria, [
+    "重新测试达到 60 分以上，或能够说明本次薄弱知识点的关键判断依据。",
+  ]);
+  const adjustment: LearningAssistantReplanAdjustment = {
+    adjustmentKey: `replan-${record.recordKey}`,
+    source: LEARNING_ASSISTANT_REPLAN_SOURCE,
+    adjustedAt,
+    stageIndex: record.stageIndex,
+    stageName: record.stageName,
+    reason: `阶段测试 ${record.percentage} 分，低于继续推进阈值，已按薄弱知识点增加补学和复测任务。`,
+    weakKnowledgePoints: weakPoints,
+    addedTasks,
+    needRetest: true,
+  };
+  return {
+    plan: {
+      ...plan,
+      stages,
+      message: `已根据「${record.stageName}」测试结果加入补学任务，建议完成后重新测试。`,
+    },
+    adjustment,
+  };
 }
 
 export function getLearningQuizPercentage(totalScore: number, maxScore: number): number {
@@ -565,8 +702,86 @@ function parseQuizRecordItem(value: unknown): LearningAssistantQuizRecordItem | 
   };
 }
 
+function parseMasteryRecord(value: unknown): LearningAssistantMasteryRecord | null {
+  if (!isRecord(value) || value.source !== LEARNING_ASSISTANT_MASTERY_SOURCE) return null;
+  const knowledgePoint = readString(value, "knowledgePoint");
+  const masteryLevel = readMasteryLevel(value.masteryLevel);
+  const attempts = readNonNegativeInteger(value.attempts);
+  const bestPercentage = readPercentage(value.bestPercentage);
+  const latestPercentage = readPercentage(value.latestPercentage);
+  const latestTestedAt = readString(value, "latestTestedAt");
+  if (
+    !knowledgePoint ||
+    !masteryLevel ||
+    attempts === null ||
+    bestPercentage === null ||
+    latestPercentage === null ||
+    !latestTestedAt
+  ) {
+    return null;
+  }
+  return {
+    knowledgePoint,
+    source: LEARNING_ASSISTANT_MASTERY_SOURCE,
+    masteryLevel,
+    attempts,
+    bestPercentage,
+    latestPercentage,
+    latestTestedAt,
+    evidenceRecordKeys: readStringArray(value.evidenceRecordKeys),
+    suggestions: readStringArray(value.suggestions),
+  };
+}
+
 function normalizeQuizAnswer(answer: string): string {
   return answer.trim().toLocaleLowerCase().replace(/\s+/g, "");
+}
+
+function buildLearningAssistantReplanSuggestions(
+  records: LearningAssistantQuizRecord[],
+): JsonObject[] {
+  return records
+    .filter((record) => !record.canAdvance)
+    .slice(0, 5)
+    .map((record) => ({
+      source: LEARNING_ASSISTANT_REPLAN_SOURCE,
+      recordKey: record.recordKey,
+      stageIndex: record.stageIndex,
+      stageName: record.stageName,
+      percentage: record.percentage,
+      weakKnowledgePoints: record.weakKnowledgePoints,
+      suggestion: `建议围绕「${
+        record.weakKnowledgePoints.length ? record.weakKnowledgePoints.join("、") : "本阶段核心知识点"
+      }」补学并重新测试。`,
+    }));
+}
+
+function masteryLevelFromPercentage(
+  percentage: number,
+): LearningAssistantMasteryRecord["masteryLevel"] {
+  if (percentage >= 85) return "mastered";
+  if (percentage >= 60) return "basic";
+  return "weak";
+}
+
+function masterySuggestions(
+  knowledgePoint: string,
+  level: LearningAssistantMasteryRecord["masteryLevel"],
+): string[] {
+  if (level === "mastered") return [`保持「${knowledgePoint}」的综合应用练习。`];
+  if (level === "basic") return [`复习「${knowledgePoint}」的易错点，再进入后续阶段。`];
+  return [`重新学习「${knowledgePoint}」的概念、适用条件和典型题。`];
+}
+
+function copyRecord(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(copyRecord);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, copyRecord(item)]));
+}
+
+function mergeTaskArray(value: unknown, additions: string[]): string[] {
+  const existing = Array.isArray(value) ? value.filter(isNonEmptyString) : [];
+  return uniqueStrings([...additions, ...existing]).slice(0, 10);
 }
 
 function splitMeaningfulTerms(value: string | undefined): string[] {
@@ -634,6 +849,10 @@ function readQuestionType(value: unknown): LearningAssistantQuizQuestionType | n
 
 function readLevel(value: unknown): LearningAssistantQuizScoreResult["level"] | null {
   return value === "优秀" || value === "基本掌握" || value === "需要重学" ? value : null;
+}
+
+function readMasteryLevel(value: unknown): LearningAssistantMasteryRecord["masteryLevel"] | null {
+  return value === "mastered" || value === "basic" || value === "weak" ? value : null;
 }
 
 function readNonNegativeInteger(value: unknown): number | null {
