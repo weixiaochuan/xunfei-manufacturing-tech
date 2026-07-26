@@ -13,6 +13,7 @@ import {
   List,
   Modal,
   Popconfirm,
+  Radio,
   Select,
   Space,
   Spin,
@@ -76,6 +77,16 @@ import {
   type LearningAssistantQaRecord,
   type LearningAssistantQaSource,
 } from "@/lib/learning/learningAssistantQa";
+import {
+  appendLearningAssistantQuizRecordToProgress,
+  buildLearningAssistantQuizRecord,
+  buildLearningAssistantStageQuiz,
+  extractLearningAssistantQuizRecords,
+  scoreLearningAssistantQuiz,
+  type LearningAssistantQuizQuestion,
+  type LearningAssistantQuizRecord,
+  type LearningAssistantQuizScoreResult,
+} from "@/lib/learning/learningAssistantQuiz";
 import { useAccountStore } from "@/store/account";
 
 const { Paragraph, Text, Title } = Typography;
@@ -181,6 +192,14 @@ interface LearningAssistantPlanResult {
   error: string | null;
 }
 
+interface StageQuizSession {
+  questions: LearningAssistantQuizQuestion[];
+  answers: Record<string, string>;
+  scoring: boolean;
+  scoreResult: LearningAssistantQuizScoreResult | null;
+  message: string;
+}
+
 const DEFAULT_VALUES: LearningGoalFormValues = {
   name: "机械制造工艺学学习项目",
   courseName: FIXED_COURSE_NAME,
@@ -211,6 +230,7 @@ export default function LearningAssistantPage() {
   const [uploading, setUploading] = useState(false);
   const [qaQuestion, setQaQuestion] = useState("");
   const [askingQuestion, setAskingQuestion] = useState(false);
+  const [stageQuizzes, setStageQuizzes] = useState<Record<number, StageQuizSession>>({});
 
   const linkedDocuments = useMemo(
     () => [...documents].sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt)),
@@ -226,6 +246,10 @@ export default function LearningAssistantPage() {
     () => extractLearningAssistantQaRecords(currentProject?.progress),
     [currentProject?.progress],
   );
+  const quizRecords = useMemo(
+    () => extractLearningAssistantQuizRecords(currentProject?.progress),
+    [currentProject?.progress],
+  );
 
   useEffect(() => {
     if (!currentUser) {
@@ -235,6 +259,7 @@ export default function LearningAssistantPage() {
       setPlan(null);
       setCheckResult(null);
       setQaQuestion("");
+      setStageQuizzes({});
       form.setFieldsValue(DEFAULT_VALUES);
       return;
     }
@@ -371,6 +396,7 @@ export default function LearningAssistantPage() {
         message.info(generated.message || generated.fallbackReason);
       }
       setPlan(enhancedPlan);
+      setStageQuizzes({});
       await handleSaveProject(enhancedPlan);
     } catch (error) {
       message.error(formatLearningError(error, "生成本地 fallback 学习计划失败"));
@@ -445,6 +471,7 @@ export default function LearningAssistantPage() {
         setDocuments([]);
         setPlan(null);
         setQaQuestion("");
+        setStageQuizzes({});
         form.setFieldsValue(DEFAULT_VALUES);
       }
       message.success("学习项目已删除。");
@@ -587,10 +614,111 @@ export default function LearningAssistantPage() {
     }
   }
 
+  function handleStartStageQuiz(stage: LearningAssistantStage, stageIndex: number) {
+    if (!currentProject) {
+      message.warning("请先创建或打开学习项目，再生成阶段测试。");
+      return;
+    }
+    const values = form.getFieldsValue();
+    const questions = buildLearningAssistantStageQuiz({
+      stage,
+      stageIndex,
+      currentLevel: values.currentLevel,
+      limit: 5,
+    });
+    setStageQuizzes((previous) => ({
+      ...previous,
+      [stageIndex]: {
+        questions,
+        answers: {},
+        scoring: false,
+        scoreResult: null,
+        message: questions.length
+          ? "本阶段测试由当前 fallback 计划和本地知识点条目生成，未调用正式题库。"
+          : "当前阶段缺少可用知识点，暂无法生成测试。",
+      },
+    }));
+  }
+
+  function handleQuizAnswerChange(stageIndex: number, questionKey: string, answer: string) {
+    setStageQuizzes((previous) => {
+      const session = previous[stageIndex];
+      if (!session) return previous;
+      return {
+        ...previous,
+        [stageIndex]: {
+          ...session,
+          answers: {
+            ...session.answers,
+            [questionKey]: answer,
+          },
+        },
+      };
+    });
+  }
+
+  async function handleSubmitStageQuiz(stage: LearningAssistantStage, stageIndex: number) {
+    if (!currentProject) {
+      message.warning("请先创建或打开学习项目，再提交测试。");
+      return;
+    }
+    const session = stageQuizzes[stageIndex];
+    if (!session?.questions.length) return;
+    setStageQuizzes((previous) => ({
+      ...previous,
+      [stageIndex]: {
+        ...session,
+        scoring: true,
+      },
+    }));
+    try {
+      const answers = session.questions.map((question) => ({
+        questionKey: question.questionKey,
+        userAnswer: session.answers[question.questionKey] ?? "",
+      }));
+      const scoreResult = scoreLearningAssistantQuiz(session.questions, answers);
+      const record = buildLearningAssistantQuizRecord({
+        stage,
+        stageIndex,
+        questions: session.questions,
+        answers: session.answers,
+        scoreResult,
+      });
+      const saved = await updateAccountLearningProject({
+        projectId: currentProject.id,
+        expectedRevision: currentProject.revision,
+        progress: appendLearningAssistantQuizRecordToProgress(currentProject.progress, record),
+      });
+      const project = unwrapEnvelope(saved, "测试结果已保存，但账号已切换，请重新打开项目确认。");
+      if (!project) return;
+      openProjectDetail(project);
+      setStageQuizzes((previous) => ({
+        ...previous,
+        [stageIndex]: {
+          ...session,
+          scoring: false,
+          scoreResult,
+        },
+      }));
+      setProjects((previous) => upsertProjectSummary(previous, summaryFromDetail(project)));
+      message.success("阶段测试结果已保存到当前项目。");
+    } catch (error) {
+      setStageQuizzes((previous) => ({
+        ...previous,
+        [stageIndex]: {
+          ...session,
+          scoring: false,
+        },
+      }));
+      message.error(formatLearningError(error, "提交阶段测试失败"));
+    }
+  }
+
   function openProjectDetail(project: LearningProjectDetail) {
     setCurrentProject(project);
     form.setFieldsValue(formValuesFromProject(project));
     setPlan(isLearningPlan(project.currentPlan) ? project.currentPlan : null);
+    setStageQuizzes({});
   }
 
   function unwrapEnvelope<T>(
@@ -916,6 +1044,14 @@ export default function LearningAssistantPage() {
               )}
             </Card>
 
+            <Card title="测试记录与掌握反馈">
+              {currentProject ? (
+                <QuizRecordList records={quizRecords} />
+              ) : (
+                <Text type="secondary">打开项目后可生成阶段测试，提交后题目、答案、解析和分数会保存到当前项目。</Text>
+              )}
+            </Card>
+
             <Card title="学习计划">
               {generating ? (
                 <div className="flex min-h-48 items-center justify-center">
@@ -946,6 +1082,21 @@ export default function LearningAssistantPage() {
                             <TaskGroup title="学习任务" items={stage.learningTasks} />
                             <TaskGroup title="练习任务" items={stage.practiceTasks} />
                             <TaskGroup title="检查标准" items={stage.completionCriteria} />
+                            <Space wrap>
+                              <Button
+                                icon={<PenLine size={14} />}
+                                onClick={() => handleStartStageQuiz(stage, index)}
+                              >
+                                生成阶段测试
+                              </Button>
+                            </Space>
+                            <StageQuizPanel
+                              session={stageQuizzes[index]}
+                              onAnswerChange={(questionKey, answer) =>
+                                handleQuizAnswerChange(index, questionKey, answer)
+                              }
+                              onSubmit={() => void handleSubmitStageQuiz(stage, index)}
+                            />
                             {stage.learningEntries?.length ? (
                               <List
                                 size="small"
@@ -1144,6 +1295,165 @@ function QaSourceList({ sources }: { sources: LearningAssistantQaSource[] }) {
       ))}
     </Space>
   );
+}
+
+function StageQuizPanel({
+  session,
+  onAnswerChange,
+  onSubmit,
+}: {
+  session?: StageQuizSession;
+  onAnswerChange: (questionKey: string, answer: string) => void;
+  onSubmit: () => void;
+}) {
+  if (!session) return null;
+  if (!session.questions.length) {
+    return <Alert type="info" showIcon message={session.message || "当前阶段暂无可用测试题。"} />;
+  }
+
+  return (
+    <Card size="small" title="阶段测试">
+      <Space direction="vertical" className="w-full">
+        {session.message ? <Alert type="info" showIcon message={session.message} /> : null}
+        <List
+          size="small"
+          dataSource={session.questions}
+          renderItem={(question, questionIndex) => (
+            <List.Item>
+              <Space direction="vertical" className="w-full">
+                <Space wrap size="small">
+                  <Tag color="processing">第 {questionIndex + 1} 题</Tag>
+                  <Tag>{formatQuizQuestionType(question.type)}</Tag>
+                  <Tag color="blue">{question.score} 分</Tag>
+                  <Tag color="green">{question.knowledgePoint}</Tag>
+                </Space>
+                <Text strong>{question.question}</Text>
+                {question.type === "choice" || question.type === "judgment" ? (
+                  <Radio.Group
+                    value={session.answers[question.questionKey]}
+                    onChange={(event) => onAnswerChange(question.questionKey, event.target.value)}
+                  >
+                    <Space direction="vertical">
+                      {question.options.map((option) => (
+                        <Radio key={option} value={option}>
+                          {option}
+                        </Radio>
+                      ))}
+                    </Space>
+                  </Radio.Group>
+                ) : (
+                  <Input.TextArea
+                    value={session.answers[question.questionKey] ?? ""}
+                    autoSize={{ minRows: 2, maxRows: 5 }}
+                    placeholder="请输入你的答案"
+                    onChange={(event) => onAnswerChange(question.questionKey, event.target.value)}
+                  />
+                )}
+              </Space>
+            </List.Item>
+          )}
+        />
+        <Button type="primary" loading={session.scoring} onClick={onSubmit}>
+          提交测试并保存
+        </Button>
+        {session.scoreResult ? <QuizScoreResultView result={session.scoreResult} /> : null}
+      </Space>
+    </Card>
+  );
+}
+
+function QuizScoreResultView({ result }: { result: LearningAssistantQuizScoreResult }) {
+  return (
+    <Card size="small" title="评分结果">
+      <Space direction="vertical" className="w-full">
+        <Space wrap>
+          <Tag color="blue">
+            总分：{result.totalScore} / {result.maxScore}
+          </Tag>
+          <Tag color="cyan">百分制：{result.percentage} 分</Tag>
+          <Tag color={result.canAdvance ? "green" : "orange"}>{result.level}</Tag>
+        </Space>
+        <Alert type={result.canAdvance ? "success" : "warning"} showIcon message={result.feedback} />
+        <Descriptions column={1} size="small" bordered>
+          <Descriptions.Item label="薄弱知识点">
+            {result.weakKnowledgePoints.length ? result.weakKnowledgePoints.join("、") : "暂无明显薄弱点"}
+          </Descriptions.Item>
+          <Descriptions.Item label="缺失关键词">
+            {result.missingKeywords.length ? result.missingKeywords.join("、") : "暂无"}
+          </Descriptions.Item>
+          <Descriptions.Item label="复习建议">{result.suggestions.join("；")}</Descriptions.Item>
+        </Descriptions>
+      </Space>
+    </Card>
+  );
+}
+
+function QuizRecordList({ records }: { records: LearningAssistantQuizRecord[] }) {
+  if (!records.length) {
+    return (
+      <Empty
+        image={Empty.PRESENTED_IMAGE_SIMPLE}
+        description="当前项目暂无阶段测试记录。"
+      />
+    );
+  }
+  return (
+    <List
+      size="small"
+      dataSource={records}
+      renderItem={(record) => (
+        <List.Item>
+          <Space direction="vertical" className="w-full" size="small">
+            <Space wrap size="small">
+              <Text strong>{record.stageName}</Text>
+              <Tag color={record.canAdvance ? "green" : "orange"}>{record.level}</Tag>
+              <Tag color="blue">
+                {record.totalScore}/{record.maxScore} · {record.percentage} 分
+              </Tag>
+              <Text type="secondary">{record.testedAt}</Text>
+            </Space>
+            <Paragraph className="!mb-0">{record.feedback}</Paragraph>
+            <TaskGroup title="复习建议" items={record.suggestions} />
+            <QuizRecordItems record={record} />
+          </Space>
+        </List.Item>
+      )}
+    />
+  );
+}
+
+function QuizRecordItems({ record }: { record: LearningAssistantQuizRecord }) {
+  return (
+    <List
+      size="small"
+      dataSource={record.items}
+      locale={{ emptyText: "暂无题目明细" }}
+      renderItem={(item, index) => (
+        <List.Item>
+          <Space direction="vertical" className="w-full" size={0}>
+            <Space wrap size="small">
+              <Tag>第 {index + 1} 题</Tag>
+              <Tag>{formatQuizQuestionType(item.questionType)}</Tag>
+              <Tag color={item.correct ? "green" : "red"}>
+                {item.score}/{item.maxScore} 分
+              </Tag>
+              <Tag color="purple">{item.knowledgePoint}</Tag>
+            </Space>
+            <Text>{item.question}</Text>
+            <Text type="secondary">你的答案：{item.userAnswer || "未作答"}</Text>
+            <Text type="secondary">标准答案：{item.standardAnswer}</Text>
+            <Text type="secondary">解析：{item.explanation}</Text>
+          </Space>
+        </List.Item>
+      )}
+    />
+  );
+}
+
+function formatQuizQuestionType(type: LearningAssistantQuizQuestion["type"]) {
+  if (type === "choice") return "选择题";
+  if (type === "judgment") return "判断题";
+  return "简答题";
 }
 
 function buildPlanInput(values: LearningGoalFormValues) {
