@@ -13,6 +13,7 @@ import {
   List,
   Modal,
   Popconfirm,
+  Progress,
   Radio,
   Select,
   Space,
@@ -77,6 +78,12 @@ import {
   type LearningAssistantQaRecord,
   type LearningAssistantQaSource,
 } from "@/lib/learning/learningAssistantQa";
+import {
+  buildLearningAssistantProgressOverview,
+  type LearningAssistantProgressActivity,
+  type LearningAssistantProgressOverview,
+  type LearningAssistantStageProgress,
+} from "@/lib/learning/learningAssistantProgress";
 import {
   appendLearningAssistantQuizRecordToProgress,
   buildLearningAssistantQuizRecord,
@@ -256,6 +263,16 @@ export default function LearningAssistantPage() {
   const masteryRecords = useMemo(
     () => extractLearningAssistantMasteryRecords(currentProject?.progress),
     [currentProject?.progress],
+  );
+  const progressOverview = useMemo(
+    () =>
+      buildLearningAssistantProgressOverview({
+        plan,
+        progress: currentProject?.progress,
+        linkedDocumentCount: documents.length,
+        planAdjustments: currentProject?.planAdjustments,
+      }),
+    [currentProject?.planAdjustments, currentProject?.progress, documents.length, plan],
   );
 
   useEffect(() => {
@@ -1041,6 +1058,16 @@ export default function LearningAssistantPage() {
               )}
             </Card>
 
+            <Card title="学习进度">
+              {currentProject ? (
+                <LearningProgressOverviewPanel overview={progressOverview} />
+              ) : (
+                <Text type="secondary">
+                  打开项目后会汇总阶段完成情况、测试记录、掌握度、资料和最近学习活动。
+                </Text>
+              )}
+            </Card>
+
             <Card title="知识库问答与项目记忆">
               {currentProject ? (
                 <Space direction="vertical" className="w-full">
@@ -1322,6 +1349,92 @@ function QaSourceList({ sources }: { sources: LearningAssistantQaSource[] }) {
   );
 }
 
+function LearningProgressOverviewPanel({
+  overview,
+}: {
+  overview: LearningAssistantProgressOverview;
+}) {
+  const progressStatus =
+    overview.stageCount > 0 && overview.completedStageCount === overview.stageCount
+      ? "success"
+      : overview.needsReviewStageCount
+        ? "exception"
+        : "active";
+
+  return (
+    <Space direction="vertical" className="w-full">
+      <Progress
+        percent={overview.progressPercent}
+        status={progressStatus}
+        format={(percent) => `${percent ?? 0}%`}
+      />
+      <Space wrap>
+        <Tag color="blue">阶段 {overview.completedStageCount}/{overview.stageCount}</Tag>
+        <Tag color="purple">测试 {overview.quizRecordCount}</Tag>
+        <Tag color="green">已掌握 {overview.mastery.mastered}</Tag>
+        <Tag color="orange">薄弱 {overview.mastery.weak}</Tag>
+        <Tag>资料 {overview.linkedDocumentCount}</Tag>
+      </Space>
+      {overview.stageStatuses.length ? (
+        <List
+          size="small"
+          dataSource={overview.stageStatuses}
+          renderItem={(stage) => (
+            <List.Item>
+              <Space direction="vertical" className="w-full" size={2}>
+                <Space wrap size="small">
+                  <Text strong>
+                    {stage.stageIndex + 1}. {stage.stageName}
+                  </Text>
+                  <Tag color={stageProgressTagColor(stage.status)}>
+                    {formatStageProgressStatus(stage.status)}
+                  </Tag>
+                  {stage.latestPercentage !== null ? (
+                    <Text type="secondary">最近测试 {stage.latestPercentage}%</Text>
+                  ) : null}
+                </Space>
+                {stage.weakKnowledgePoints.length ? (
+                  <Text type="secondary">
+                    薄弱点：{stage.weakKnowledgePoints.join("、")}
+                  </Text>
+                ) : null}
+              </Space>
+            </List.Item>
+          )}
+        />
+      ) : (
+        <Alert type="info" showIcon message="生成学习计划后会显示阶段进度。" />
+      )}
+      <RecentActivityList activities={overview.recentActivities} />
+    </Space>
+  );
+}
+
+function RecentActivityList({ activities }: { activities: LearningAssistantProgressActivity[] }) {
+  if (!activities.length) {
+    return <Text type="secondary">暂无最近学习活动。</Text>;
+  }
+  return (
+    <List
+      size="small"
+      dataSource={activities}
+      renderItem={(activity) => (
+        <List.Item>
+          <Space direction="vertical" size={0}>
+            <Space wrap size="small">
+              <Tag color={activityTagColor(activity.activityType)}>
+                {formatActivityType(activity.activityType)}
+              </Tag>
+              <Text>{activity.message}</Text>
+            </Space>
+            <Text type="secondary">{activity.occurredAt}</Text>
+          </Space>
+        </List.Item>
+      )}
+    />
+  );
+}
+
 function StageQuizPanel({
   session,
   onAnswerChange,
@@ -1532,6 +1645,36 @@ function masteryTagColor(level: LearningAssistantMasteryRecord["masteryLevel"]) 
   if (level === "mastered") return "green";
   if (level === "basic") return "blue";
   return "orange";
+}
+
+function formatStageProgressStatus(status: LearningAssistantStageProgress["status"]) {
+  if (status === "completed") return "已完成";
+  if (status === "needsReview") return "需复习";
+  if (status === "inProgress") return "进行中";
+  return "未开始";
+}
+
+function stageProgressTagColor(status: LearningAssistantStageProgress["status"]) {
+  if (status === "completed") return "green";
+  if (status === "needsReview") return "orange";
+  if (status === "inProgress") return "blue";
+  return "default";
+}
+
+function formatActivityType(type: LearningAssistantProgressActivity["activityType"]) {
+  if (type === "qa") return "问答";
+  if (type === "quiz") return "测试";
+  if (type === "replan") return "调整";
+  if (type === "document") return "资料";
+  return "项目";
+}
+
+function activityTagColor(type: LearningAssistantProgressActivity["activityType"]) {
+  if (type === "qa") return "cyan";
+  if (type === "quiz") return "purple";
+  if (type === "replan") return "orange";
+  if (type === "document") return "blue";
+  return "default";
 }
 
 function buildPlanInput(values: LearningGoalFormValues) {
