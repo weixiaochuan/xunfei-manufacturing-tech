@@ -61,6 +61,12 @@ import {
   pickAndUploadLearningMaterial,
   type LearningMaterialUploadResult,
 } from "@/lib/learning/accountLearningUpload";
+import {
+  attachDiagnosisToUnderstanding,
+  buildLearningAssistantDiagnosis,
+  extractLearningAssistantDiagnosis,
+  type LearningAssistantDiagnosis,
+} from "@/lib/learning/learningAssistantDiagnostics";
 import { useAccountStore } from "@/store/account";
 
 const { Paragraph, Text, Title } = Typography;
@@ -114,6 +120,10 @@ interface LearningAssistantUnderstanding {
   currentGap: string;
   strategy: string;
   closedLoop: string;
+  diagnosis?: LearningAssistantDiagnosis;
+  masteredKnowledgePoints?: string[];
+  pendingKnowledgePoints?: string[];
+  weakKnowledgePoints?: string[];
   source?: string;
   [key: string]: unknown;
 }
@@ -195,6 +205,12 @@ export default function LearningAssistantPage() {
     () => [...documents].sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt)),
     [documents],
   );
+  const activeDiagnosis = useMemo(
+    () =>
+      extractLearningAssistantDiagnosis(plan?.understanding) ??
+      extractLearningAssistantDiagnosis(currentProject?.understanding),
+    [currentProject?.understanding, plan?.understanding],
+  );
 
   useEffect(() => {
     if (!currentUser) {
@@ -234,15 +250,17 @@ export default function LearningAssistantPage() {
     try {
       const values = await form.validateFields();
       setSaving(true);
+      const diagnosis = buildLearningAssistantDiagnosis(goalSnapshotFromValues(values));
+      const understanding = attachDiagnosisToUnderstanding(buildDraftUnderstanding(values), diagnosis);
       const created = await createAccountLearningProject({
         name: (values.name ?? inferProjectName(values)).trim(),
         learningType: "course",
         courseName: values.courseName,
         goalSummary: buildGoalSummary(values),
         learningGoal: buildLearningGoal(values),
-        understanding: {},
+        understanding: toJsonObject(understanding),
         currentPlan: {},
-        progress: buildProgress("draft", null, 0),
+        progress: buildProgress("draft", null, 0, diagnosis),
         planAdjustments: [],
       });
       const project = unwrapEnvelope(created, "学习项目已创建，但账号已切换，请重新刷新项目列表。");
@@ -293,7 +311,12 @@ export default function LearningAssistantPage() {
         learningGoal: buildLearningGoal(values),
         understanding: toJsonObject(nextPlan?.understanding ?? currentProject.understanding),
         currentPlan: nextPlan ? toJsonObject(nextPlan) : toJsonObject(currentProject.currentPlan),
-        progress: buildProgress(nextPlan ? "planned" : "draft", nextPlan, documents.length),
+        progress: buildProgress(
+          nextPlan ? "planned" : "draft",
+          nextPlan,
+          documents.length,
+          extractLearningAssistantDiagnosis(nextPlan?.understanding ?? currentProject.understanding),
+        ),
       });
       const project = unwrapEnvelope(saved, "学习项目已保存，但账号已切换，请刷新后再继续编辑。");
       if (!project) return null;
@@ -320,13 +343,18 @@ export default function LearningAssistantPage() {
       const generated = await invoke<LearningAssistantPlanResult>("learning_assistant_generate_plan", {
         input: buildPlanInput(values),
       });
+      const diagnosis = buildLearningAssistantDiagnosis(goalSnapshotFromValues(values), generated);
+      const enhancedPlan: LearningAssistantPlanResult = {
+        ...generated,
+        understanding: attachDiagnosisToUnderstanding(generated.understanding, diagnosis),
+      };
       if (!generated.success || generated.error) {
         message.warning(generated.error || generated.message || "本地 fallback 未生成可用计划。");
       } else if (generated.fallbackReason || generated.message) {
         message.info(generated.message || generated.fallbackReason);
       }
-      setPlan(generated);
-      await handleSaveProject(generated);
+      setPlan(enhancedPlan);
+      await handleSaveProject(enhancedPlan);
     } catch (error) {
       message.error(formatLearningError(error, "生成本地 fallback 学习计划失败"));
     } finally {
@@ -764,6 +792,43 @@ export default function LearningAssistantPage() {
               </Form>
             </Card>
 
+            <Card title="初始学情诊断">
+              {activeDiagnosis ? (
+                <Space direction="vertical" className="w-full">
+                  <Alert
+                    type={activeDiagnosis.weakKnowledgePoints.length ? "warning" : "info"}
+                    showIcon
+                    message={activeDiagnosis.summary}
+                    description={`依据：${activeDiagnosis.basis.join("、")}；生成时间：${activeDiagnosis.generatedAt}`}
+                  />
+                  <DiagnosisTagGroup
+                    title="已掌握"
+                    color="green"
+                    emptyText="暂无明确已掌握知识点"
+                    items={activeDiagnosis.masteredKnowledgePoints}
+                  />
+                  <DiagnosisTagGroup
+                    title="待学习"
+                    color="blue"
+                    emptyText="生成计划后显示知识点"
+                    items={activeDiagnosis.pendingKnowledgePoints}
+                  />
+                  <DiagnosisTagGroup
+                    title="薄弱点"
+                    color="orange"
+                    emptyText="暂无明确薄弱点"
+                    items={activeDiagnosis.weakKnowledgePoints}
+                  />
+                  <TaskGroup title="复习建议" items={activeDiagnosis.suggestions} />
+                </Space>
+              ) : (
+                <Empty
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  description="创建项目后会保存基础诊断，生成 fallback 计划后会结合知识点更新。"
+                />
+              )}
+            </Card>
+
             <Card title="学习计划">
               {generating ? (
                 <div className="flex min-h-48 items-center justify-center">
@@ -915,6 +980,35 @@ function TaskGroup({ title, items }: { title: string; items: string[] }) {
   );
 }
 
+function DiagnosisTagGroup({
+  title,
+  items,
+  color,
+  emptyText,
+}: {
+  title: string;
+  items: string[];
+  color: string;
+  emptyText: string;
+}) {
+  return (
+    <div>
+      <Text strong>{title}</Text>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {items.length ? (
+          items.map((item) => (
+            <Tag key={item} color={color}>
+              {item}
+            </Tag>
+          ))
+        ) : (
+          <Text type="secondary">{emptyText}</Text>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function buildPlanInput(values: LearningGoalFormValues) {
   return {
     learningAssistantRoot: null,
@@ -925,6 +1019,28 @@ function buildPlanInput(values: LearningGoalFormValues) {
     dailyStudyHours: values.dailyStudyHours,
     currentLevel: values.currentLevel,
     finalGoal: values.finalGoal,
+  };
+}
+
+function goalSnapshotFromValues(values: LearningGoalFormValues) {
+  return {
+    courseName: values.courseName,
+    learningGoal: values.learningGoal,
+    learningCycle: values.learningCycle,
+    dailyStudyHours: values.dailyStudyHours,
+    currentLevel: values.currentLevel,
+    finalGoal: values.finalGoal,
+  };
+}
+
+function buildDraftUnderstanding(values: LearningGoalFormValues): LearningAssistantUnderstanding {
+  const dailyTime = formatStudyHours(values.dailyStudyHours);
+  return {
+    summary: `围绕「${values.courseName}」在${values.learningCycle}内完成「${values.learningGoal}」，每天投入${dailyTime}。`,
+    currentGap: `当前基础为「${values.currentLevel}」，需要生成计划后结合本地知识点进一步确认已掌握、待学习和薄弱知识点。`,
+    strategy: "先完成初始诊断，再生成 fallback 学习计划，随后通过问答、测试和复盘持续更新掌握度。",
+    closedLoop: "目标设定 → 初始诊断 → 计划生成 → 学习执行 → 测试反馈 → 计划调整。",
+    source: FALLBACK_SOURCE,
   };
 }
 
@@ -949,12 +1065,17 @@ function buildProgress(
   status: "draft" | "planned",
   currentPlan: LearningAssistantPlanResult | null,
   linkedDocumentCount: number,
+  diagnosis: LearningAssistantDiagnosis | null,
 ): JsonObject {
   return {
     status,
     source: FALLBACK_SOURCE,
     stageCount: currentPlan?.stages.length ?? 0,
     linkedDocumentCount,
+    diagnosisStatus: diagnosis ? "available" : "pending",
+    masteredKnowledgeCount: diagnosis?.masteredKnowledgePoints.length ?? 0,
+    pendingKnowledgeCount: diagnosis?.pendingKnowledgePoints.length ?? 0,
+    weakKnowledgeCount: diagnosis?.weakKnowledgePoints.length ?? 0,
     updatedAt: new Date().toISOString(),
   };
 }
