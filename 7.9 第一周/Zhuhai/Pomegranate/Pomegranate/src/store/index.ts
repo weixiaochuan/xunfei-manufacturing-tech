@@ -43,6 +43,7 @@ export type ActiveView =
   | "graph"
   | "course-graph"
   | "ai"
+  | "learning-assistant"
   | "prompts"
   | "plugins"
   | "ppt-generation"
@@ -165,7 +166,7 @@ interface AppStore {
    * 用户启用的可选侧栏视图集合（持久化到 app_config 的 enabled_views）。
    *
    * 核心视图（home/notes/search/trash/about）始终显示，不在此集合内。
-   * 此集合只跟踪可选项：daily / tasks / cards / tags / graph / ai / prompts / plugins / hidden。
+   * 此集合只跟踪可选项：daily / tasks / cards / tags / graph / ai / learning-assistant / prompts / plugins / hidden。
    *
    * 默认值：除 cards 外全部启用（见 DEFAULT_ENABLED_VIEWS）。
    */
@@ -419,6 +420,7 @@ export const OPTIONAL_VIEWS: readonly ActiveView[] = [
   "graph",
   "course-graph",
   "ai",
+  "learning-assistant",
   "prompts",
   "plugins",
   "hidden",
@@ -431,6 +433,9 @@ export const OPTIONAL_VIEWS: readonly ActiveView[] = [
 const DEFAULT_ENABLED_VIEWS: Set<ActiveView> = new Set(
   OPTIONAL_VIEWS.filter((v) => v !== "cards"),
 );
+
+const ENABLED_VIEWS_LEARNING_ASSISTANT_MIGRATION_KEY =
+  "enabled_views_learning_assistant_migration_v1";
 
 /** 移动端 Dashboard 可隐藏项（仅移动端用） */
 export type MobileDashboardItem =
@@ -564,7 +569,22 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
   loadEnabledViews: async () => {
     const raw = await getConfigOrNull("enabled_views");
-    if (!raw) return; // 无值 → 保留构造默认（除 cards 外全开）
+    const migrationApplied =
+      (await getConfigOrNull(ENABLED_VIEWS_LEARNING_ASSISTANT_MIGRATION_KEY)) ===
+      "1";
+    if (!raw) {
+      if (!migrationApplied) {
+        void configApi
+          .set(ENABLED_VIEWS_LEARNING_ASSISTANT_MIGRATION_KEY, "1")
+          .catch((e) =>
+            console.warn(
+              "[settings] persist learning assistant migration marker failed:",
+              e,
+            ),
+          );
+      }
+      return; // 无值 → 保留构造默认（除 cards 外全开）
+    }
     try {
       const list = JSON.parse(raw) as ActiveView[];
       if (Array.isArray(list)) {
@@ -572,7 +592,26 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const valid = list.filter((v) =>
           OPTIONAL_VIEWS.includes(v as ActiveView),
         );
-        set({ enabledViews: new Set(valid) });
+        const next = new Set(valid);
+        if (!migrationApplied && !next.has("learning-assistant")) {
+          next.add("learning-assistant");
+          void configApi
+            .set("enabled_views", JSON.stringify([...next]))
+            .catch((e) =>
+              console.warn("[settings] persist enabled_views failed:", e),
+            );
+        }
+        if (!migrationApplied) {
+          void configApi
+            .set(ENABLED_VIEWS_LEARNING_ASSISTANT_MIGRATION_KEY, "1")
+            .catch((e) =>
+              console.warn(
+                "[settings] persist learning assistant migration marker failed:",
+                e,
+              ),
+            );
+        }
+        set({ enabledViews: next });
       }
     } catch (e) {
       console.warn("[settings] parse enabled_views failed:", e);

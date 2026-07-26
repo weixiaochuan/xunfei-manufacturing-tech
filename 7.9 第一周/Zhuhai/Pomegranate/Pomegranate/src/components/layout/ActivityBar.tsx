@@ -14,6 +14,7 @@ import {
   GitBranch,
   Network,
   Bot,
+  GraduationCap,
   Sparkles,
   Plug,
   Presentation,
@@ -82,6 +83,7 @@ const MAIN_GROUPS: ActivityItem[][] = [
   // AI 辅助
   [
     { view: "ai", route: "/ai", label: "AI 问答", icon: <Bot size={18} /> },
+    { view: "learning-assistant", route: "/learning-assistant", label: "AI 助学", icon: <GraduationCap size={18} /> },
     { view: "prompts", route: "/prompts", label: "提示词", icon: <Sparkles size={18} /> },
     { view: "plugins", route: "/plugins", label: "插件", icon: <Plug size={18} /> },
   ],
@@ -106,6 +108,7 @@ const ROUTE_TO_VIEW: Array<[string, ActiveView]> = [
   ["/graph", "graph"],
   ["/course-graph", "course-graph"],
   ["/ai", "ai"],
+  ["/learning-assistant", "learning-assistant"],
   ["/prompts", "prompts"],
   ["/plugins", "plugins"],
   ["/hidden", "hidden"],

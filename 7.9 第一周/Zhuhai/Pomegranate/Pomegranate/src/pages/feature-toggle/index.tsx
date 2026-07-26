@@ -16,6 +16,7 @@ import {
   Tag,
   GitFork,
   Bot,
+  GraduationCap,
   Sparkles,
   Plug,
   EyeOff,
@@ -132,6 +133,13 @@ const OPTIONS: OptionMeta[] = [
     desc: "和 AI 对话，让它读你的笔记",
     icon: <Bot size={16} className="text-[#FA8C16]" />,
     iconBg: "bg-orange-100",
+  },
+  {
+    view: "learning-assistant",
+    label: "AI 助学",
+    desc: "账号学习项目 / fallback 计划 / 助学资料",
+    icon: <GraduationCap size={16} className="text-blue-600" />,
+    iconBg: "bg-blue-100",
   },
   {
     view: "prompts",

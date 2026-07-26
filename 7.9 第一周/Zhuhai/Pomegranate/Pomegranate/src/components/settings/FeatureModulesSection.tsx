@@ -6,6 +6,7 @@ import {
   Tags,
   GitBranch,
   Bot,
+  GraduationCap,
   Sparkles,
   Plug,
   EyeOff,
@@ -63,6 +64,12 @@ const MODULES: ModuleMeta[] = [
     label: "AI 问答",
     desc: "和 AI 对话，让它读你的笔记给出建议",
     icon: <Bot size={16} />,
+  },
+  {
+    view: "learning-assistant",
+    label: "AI 助学",
+    desc: "账号学习项目、本地 fallback 计划与助学资料关联",
+    icon: <GraduationCap size={16} />,
   },
   {
     view: "prompts",

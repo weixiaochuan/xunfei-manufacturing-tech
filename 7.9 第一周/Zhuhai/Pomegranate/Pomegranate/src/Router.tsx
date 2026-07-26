@@ -20,6 +20,7 @@ import { isAccountDocumentSource } from "@/lib/documents/documentSource";
 const GraphPage = lazy(() => import("@/pages/graph"));
 const CourseGraphPage = lazy(() => import("@/pages/course-graph"));
 const AiChatPage = lazy(() => import("@/pages/ai"));
+const LearningAssistantPage = lazy(() => import("@/pages/learning-assistant"));
 const MobileAiChat = lazy(() => import("@/pages/ai/MobileAiChat").then(m => ({ default: m.MobileAiChat })));
 const MobileTaskDetail = lazy(() => import("@/pages/tasks/MobileTaskDetail").then(m => ({ default: m.MobileTaskDetail })));
 const MobileSync = lazy(() => import("@/pages/sync/MobileSync").then(m => ({ default: m.MobileSync })));
@@ -124,6 +125,7 @@ const router = createHashRouter([
       { path: "graph", element: <DocumentGraphScope><LazyPage><GraphPage /></LazyPage></DocumentGraphScope> },
       { path: "course-graph", element: <LazyPage><CourseGraphPage /></LazyPage> },
       { path: "ai", element: <LazyPage><AiChatPage /></LazyPage> },
+      { path: "learning-assistant", element: <LazyPage><LearningAssistantPage /></LazyPage> },
       { path: "prompts", element: <LazyPage><PromptsPage /></LazyPage> },
       { path: "plugins", element: <LazyPage><PluginsPage /></LazyPage> },
       { path: "ppt-generation", element: <LazyPage><PptGenerationPage /></LazyPage> },
