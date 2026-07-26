@@ -67,6 +67,15 @@ import {
   extractLearningAssistantDiagnosis,
   type LearningAssistantDiagnosis,
 } from "@/lib/learning/learningAssistantDiagnostics";
+import {
+  appendLearningAssistantQaRecordToProgress,
+  buildLearningAssistantQaRecord,
+  extractLearningAssistantQaRecords,
+  LEARNING_ASSISTANT_QA_SOURCE,
+  type LearningAssistantKbSearchResult,
+  type LearningAssistantQaRecord,
+  type LearningAssistantQaSource,
+} from "@/lib/learning/learningAssistantQa";
 import { useAccountStore } from "@/store/account";
 
 const { Paragraph, Text, Title } = Typography;
@@ -200,6 +209,8 @@ export default function LearningAssistantPage() {
   const [generating, setGenerating] = useState(false);
   const [checking, setChecking] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [qaQuestion, setQaQuestion] = useState("");
+  const [askingQuestion, setAskingQuestion] = useState(false);
 
   const linkedDocuments = useMemo(
     () => [...documents].sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt)),
@@ -211,6 +222,10 @@ export default function LearningAssistantPage() {
       extractLearningAssistantDiagnosis(currentProject?.understanding),
     [currentProject?.understanding, plan?.understanding],
   );
+  const qaRecords = useMemo(
+    () => extractLearningAssistantQaRecords(currentProject?.progress),
+    [currentProject?.progress],
+  );
 
   useEffect(() => {
     if (!currentUser) {
@@ -219,6 +234,7 @@ export default function LearningAssistantPage() {
       setDocuments([]);
       setPlan(null);
       setCheckResult(null);
+      setQaQuestion("");
       form.setFieldsValue(DEFAULT_VALUES);
       return;
     }
@@ -316,6 +332,7 @@ export default function LearningAssistantPage() {
           nextPlan,
           documents.length,
           extractLearningAssistantDiagnosis(nextPlan?.understanding ?? currentProject.understanding),
+          currentProject.progress,
         ),
       });
       const project = unwrapEnvelope(saved, "学习项目已保存，但账号已切换，请刷新后再继续编辑。");
@@ -427,6 +444,7 @@ export default function LearningAssistantPage() {
         setCurrentProject(null);
         setDocuments([]);
         setPlan(null);
+        setQaQuestion("");
         form.setFieldsValue(DEFAULT_VALUES);
       }
       message.success("学习项目已删除。");
@@ -522,6 +540,50 @@ export default function LearningAssistantPage() {
       );
     } catch (error) {
       message.error(formatLearningError(error, "读取项目资料失败"));
+    }
+  }
+
+  async function handleAskKnowledgeQuestion(searchText = qaQuestion) {
+    if (!currentProject) {
+      message.warning("请先创建或打开学习项目，再使用知识库问答。");
+      return;
+    }
+    const question = searchText.trim();
+    if (!question) {
+      message.warning("请输入要询问的内容。");
+      return;
+    }
+    setQaQuestion(question);
+    setAskingQuestion(true);
+    try {
+      const values = form.getFieldsValue();
+      const searched = await invoke<LearningAssistantKbSearchResult>("learning_kb_search", {
+        input: buildKnowledgeQuestionInput(values, plan, question),
+      });
+      const record = buildLearningAssistantQaRecord({
+        question,
+        searched,
+        documents: linkedDocuments,
+      });
+      const saved = await updateAccountLearningProject({
+        projectId: currentProject.id,
+        expectedRevision: currentProject.revision,
+        progress: appendLearningAssistantQaRecordToProgress(currentProject.progress, record),
+      });
+      const project = unwrapEnvelope(saved, "问答记录已保存，但账号已切换，请重新打开项目确认。");
+      if (!project) return;
+      openProjectDetail(project);
+      setProjects((previous) => upsertProjectSummary(previous, summaryFromDetail(project)));
+      setQaQuestion("");
+      message.success(
+        record.generationType === LEARNING_ASSISTANT_QA_SOURCE
+          ? "知识库回答已生成并保存到当前项目。"
+          : "本地知识库暂无命中，已保存本次提问记录。",
+      );
+    } catch (error) {
+      message.error(formatLearningError(error, "知识库问答失败"));
+    } finally {
+      setAskingQuestion(false);
     }
   }
 
@@ -829,6 +891,31 @@ export default function LearningAssistantPage() {
               )}
             </Card>
 
+            <Card title="知识库问答与项目记忆">
+              {currentProject ? (
+                <Space direction="vertical" className="w-full">
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="回答仅基于本地知识点 Excel 检索结果"
+                    description="关联资料目前作为项目线索展示，第一版不解析资料正文；没有命中时会明确标记为不可用，不会编造引用。"
+                  />
+                  <Input.Search
+                    value={qaQuestion}
+                    allowClear
+                    enterButton="提问并保存"
+                    loading={askingQuestion}
+                    placeholder="例如：工艺规程设计的步骤是什么？"
+                    onChange={(event) => setQaQuestion(event.target.value)}
+                    onSearch={(value) => void handleAskKnowledgeQuestion(value)}
+                  />
+                  <QaRecordList records={qaRecords} />
+                </Space>
+              ) : (
+                <Text type="secondary">打开项目后可使用本地知识库问答，问答记录会在线保存到当前项目。</Text>
+              )}
+            </Card>
+
             <Card title="学习计划">
               {generating ? (
                 <div className="flex min-h-48 items-center justify-center">
@@ -1009,6 +1096,56 @@ function DiagnosisTagGroup({
   );
 }
 
+function QaRecordList({ records }: { records: LearningAssistantQaRecord[] }) {
+  if (!records.length) {
+    return (
+      <Empty
+        image={Empty.PRESENTED_IMAGE_SIMPLE}
+        description="当前项目暂无知识库问答记录。"
+      />
+    );
+  }
+  return (
+    <List
+      size="small"
+      dataSource={records}
+      renderItem={(record) => (
+        <List.Item>
+          <Space direction="vertical" className="w-full" size="small">
+            <Space wrap size="small">
+              <Text strong>{record.question}</Text>
+              <Tag color={record.generationType === LEARNING_ASSISTANT_QA_SOURCE ? "green" : "orange"}>
+                {record.generationType === LEARNING_ASSISTANT_QA_SOURCE ? "本地知识库" : "未命中"}
+              </Tag>
+              <Text type="secondary">置信度 {Math.round(record.confidence * 100)}%</Text>
+              <Text type="secondary">{record.askedAt}</Text>
+            </Space>
+            <Paragraph className="!mb-0 whitespace-pre-line">{record.answer}</Paragraph>
+            <QaSourceList sources={record.sources} />
+          </Space>
+        </List.Item>
+      )}
+    />
+  );
+}
+
+function QaSourceList({ sources }: { sources: LearningAssistantQaSource[] }) {
+  if (!sources.length) {
+    return <Text type="secondary">暂无可追溯来源。</Text>;
+  }
+  return (
+    <Space wrap size="small">
+      {sources.map((source) => (
+        <Tag key={source.sourceKey} color={source.sourceKind === "knowledgeBase" ? "blue" : "purple"}>
+          {source.sourceKind === "knowledgeBase"
+            ? `${source.title} · ${source.sourceFile ?? "Excel"}`
+            : `${source.title}${source.status === "deleted" ? " · 已删除" : ""}`}
+        </Tag>
+      ))}
+    </Space>
+  );
+}
+
 function buildPlanInput(values: LearningGoalFormValues) {
   return {
     learningAssistantRoot: null,
@@ -1020,6 +1157,51 @@ function buildPlanInput(values: LearningGoalFormValues) {
     currentLevel: values.currentLevel,
     finalGoal: values.finalGoal,
   };
+}
+
+function buildKnowledgeQuestionInput(
+  values: Partial<LearningGoalFormValues>,
+  currentPlan: LearningAssistantPlanResult | null,
+  question: string,
+) {
+  const stages = currentPlan?.stages ?? [];
+  return {
+    course: values.courseName ?? FIXED_COURSE_NAME,
+    query: question,
+    stageName: "",
+    stageIndex: 0,
+    stageGoal: values.learningGoal ?? "",
+    learningTasks: flattenStageTasks(stages, "learningTasks"),
+    resourceTasks: flattenStageTasks(stages, "resourceTasks"),
+    practiceTasks: flattenStageTasks(stages, "practiceTasks"),
+    checkTasks: flattenStageTasks(stages, "checkTasks"),
+    knowledgePoints: collectPlanKnowledgePoints(currentPlan),
+    topK: 5,
+  };
+}
+
+function collectPlanKnowledgePoints(currentPlan: LearningAssistantPlanResult | null): string[] {
+  const points = new Set<string>();
+  for (const stage of currentPlan?.stages ?? []) {
+    for (const point of stage.knowledgePoints ?? []) {
+      if (point.trim()) points.add(point.trim());
+    }
+    for (const entry of stage.learningEntries ?? []) {
+      if (entry.title.trim()) points.add(entry.title.trim());
+      if (entry.section.trim()) points.add(entry.section.trim());
+    }
+  }
+  return [...points].slice(0, 30);
+}
+
+function flattenStageTasks(
+  stages: LearningAssistantStage[],
+  key: "learningTasks" | "resourceTasks" | "practiceTasks" | "checkTasks",
+): string[] {
+  return stages
+    .flatMap((stage) => stage[key])
+    .filter((task) => task.trim())
+    .slice(0, 30);
 }
 
 function goalSnapshotFromValues(values: LearningGoalFormValues) {
@@ -1066,8 +1248,11 @@ function buildProgress(
   currentPlan: LearningAssistantPlanResult | null,
   linkedDocumentCount: number,
   diagnosis: LearningAssistantDiagnosis | null,
+  previousProgress?: JsonObject | null,
 ): JsonObject {
+  const previous = isRecord(previousProgress) ? previousProgress : {};
   return {
+    ...previous,
     status,
     source: FALLBACK_SOURCE,
     stageCount: currentPlan?.stages.length ?? 0,
