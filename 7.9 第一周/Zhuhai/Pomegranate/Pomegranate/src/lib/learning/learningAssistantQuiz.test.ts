@@ -56,6 +56,23 @@ test("builds stage quiz from project plan without question bank data", () => {
   assert.ok(questions.every((item) => item.stageName === stage.name));
 });
 
+test("fills stage quiz with fallback question seeds when project plan is sparse", () => {
+  const questions = buildLearningAssistantStageQuiz({
+    stage: {
+      name: "工艺规程设计",
+      courseName: "机械制造工艺学",
+      goal: "理解机械加工工艺规程",
+      knowledgePoints: [],
+    },
+    stageIndex: 0,
+    limit: 4,
+  });
+
+  assert.equal(questions.length, 4);
+  assert.ok(questions.some((question) => question.questionKey.includes("mfg-q001")));
+  assert.ok(questions.some((question) => question.sourceFile === "browser-fallback-questions"));
+});
+
 test("scores objective questions exactly and short answers by keywords", () => {
   const questions = buildLearningAssistantStageQuiz({ stage, stageIndex: 0, limit: 3 });
   const result = scoreLearningAssistantQuiz(questions, [
@@ -173,6 +190,8 @@ test("builds local replan without overwriting the whole plan", () => {
   assert.equal(replanned.plan.stages[1].learningTasks[0], "后续任务");
   assert.ok(replanned.plan.stages[0].learningTasks[0].includes("重新学习"));
   assert.ok(replanned.plan.stages[0].learningTasks.includes("原学习任务"));
+  assert.ok((replanned.plan.stages[0].resourceTasks ?? []).some((task: string) => task.includes("补学资料")));
+  assert.ok(replanned.adjustment.addedTasks.some((task) => task.includes("补学资料")));
 });
 
 test("preserves ordinary learning text containing token password and path words", () => {

@@ -1,4 +1,9 @@
 import type { JsonObject } from "./accountLearningTypes.ts";
+import {
+  findLearningAssistantFallbackQuestions,
+  findLearningAssistantFallbackResources,
+  type LearningAssistantFallbackQuestion,
+} from "./learningAssistantFallbackResources.ts";
 
 export const LEARNING_ASSISTANT_QUIZ_SOURCE = "local-fallback-quiz";
 export const LEARNING_ASSISTANT_MASTERY_SOURCE = "local-quiz-mastery";
@@ -10,6 +15,7 @@ export type LearningAssistantQuizDifficulty = "easy" | "medium" | "hard";
 
 export interface LearningAssistantQuizStageSnapshot {
   name?: string;
+  courseName?: string;
   goal?: string;
   knowledgePoints?: string[];
   learningEntries?: LearningAssistantQuizEntrySnapshot[];
@@ -151,7 +157,7 @@ export function buildLearningAssistantStageQuiz(input: {
   const stageName = clean(input.stage.name) || `阶段 ${input.stageIndex + 1}`;
   const candidates = collectQuizCandidates(input.stage);
   const limit = clampInteger(input.limit ?? 5, 1, 8);
-  return candidates.slice(0, limit).map((candidate, index) => {
+  const generatedQuestions = candidates.slice(0, limit).map((candidate, index) => {
     const type = questionTypeForIndex(index);
     const difficulty = difficultyForLevel(input.currentLevel, index);
     const score = type === "short_answer" ? 20 : 10;
@@ -173,6 +179,23 @@ export function buildLearningAssistantStageQuiz(input: {
       sourceFile: candidate.sourceFile,
     };
   });
+  if (generatedQuestions.length >= limit) return generatedQuestions;
+  const fallbackQuestions = findLearningAssistantFallbackQuestions({
+    courseName: input.stage.courseName,
+    stageName,
+    stageGoal: input.stage.goal,
+    knowledgePoints: [
+      ...(input.stage.knowledgePoints ?? []),
+      ...generatedQuestions.map((question) => question.knowledgePoint),
+    ],
+    currentLevel: input.currentLevel,
+    limit,
+  })
+    .filter((question) => !hasEquivalentQuestion(generatedQuestions, question))
+    .map((question, index) =>
+      buildQuestionFromFallback(question, input.stageIndex, stageName, generatedQuestions.length + index),
+    );
+  return [...generatedQuestions, ...fallbackQuestions].slice(0, limit);
 }
 
 export function scoreLearningAssistantQuiz(
@@ -365,6 +388,15 @@ export function buildLearningAssistantLocalReplan<T extends { stages?: unknown[]
     `围绕「${weakText}」补做选择题、判断题和简答题练习。`,
     "完成补学后重新生成阶段测试，确认掌握情况。",
   ];
+  const fallbackResourceTasks = findLearningAssistantFallbackResources({
+    stageName: record.stageName,
+    stageGoal: record.feedback,
+    knowledgePoints: weakPoints,
+    limit: 3,
+  }).map(
+    (resource) =>
+      `补学资料：${resource.title}（${resource.knowledgePoint}，${resource.duration}）`,
+  );
   const stageGoal = readString(currentStage, "goal") || record.stageName;
   currentStage.goal = stageGoal.includes("补学")
     ? stageGoal
@@ -374,6 +406,7 @@ export function buildLearningAssistantLocalReplan<T extends { stages?: unknown[]
     `复盘本次测试错题，整理「${weakText}」的概念和应用条件。`,
   ]);
   currentStage.practiceTasks = mergeTaskArray(currentStage.practiceTasks, [addedTasks[1]]);
+  currentStage.resourceTasks = mergeTaskArray(currentStage.resourceTasks, fallbackResourceTasks);
   currentStage.checkTasks = mergeTaskArray(currentStage.checkTasks, [addedTasks[2]]);
   currentStage.completionCriteria = mergeTaskArray(currentStage.completionCriteria, [
     "重新测试达到 60 分以上，或能够说明本次薄弱知识点的关键判断依据。",
@@ -386,7 +419,7 @@ export function buildLearningAssistantLocalReplan<T extends { stages?: unknown[]
     stageName: record.stageName,
     reason: `阶段测试 ${record.percentage} 分，低于继续推进阈值，已按薄弱知识点增加补学和复测任务。`,
     weakKnowledgePoints: weakPoints,
-    addedTasks,
+    addedTasks: [...addedTasks, ...fallbackResourceTasks],
     needRetest: true,
   };
   return {
@@ -496,6 +529,45 @@ function addCandidate(
     reason: clean(candidate.reason),
     sourceFile: clean(candidate.sourceFile),
   });
+}
+
+function buildQuestionFromFallback(
+  question: LearningAssistantFallbackQuestion,
+  stageIndex: number,
+  stageName: string,
+  index: number,
+): LearningAssistantQuizQuestion {
+  return {
+    questionKey: `fallback-${stageIndex + 1}-${index + 1}-${question.questionId}`,
+    stageIndex,
+    stageName,
+    knowledgePoint: question.knowledgePoint,
+    type: question.type,
+    question: question.question,
+    options: [...question.options],
+    standardAnswer: question.standardAnswer,
+    keywords: [...question.keywords],
+    score: question.score,
+    difficulty: question.difficulty,
+    explanation: question.explanation,
+    sourceTitle: question.sourceTitle,
+    sourceFile: question.sourceFile,
+  };
+}
+
+function hasEquivalentQuestion(
+  existingQuestions: LearningAssistantQuizQuestion[],
+  fallbackQuestion: LearningAssistantFallbackQuestion,
+): boolean {
+  const fallbackKey = normalizeQuestionIdentity(
+    `${fallbackQuestion.knowledgePoint}:${fallbackQuestion.question}`,
+  );
+  return existingQuestions.some(
+    (question) =>
+      normalizeQuestionIdentity(`${question.knowledgePoint}:${question.question}`) === fallbackKey ||
+      normalizeQuestionIdentity(question.knowledgePoint) ===
+        normalizeQuestionIdentity(fallbackQuestion.knowledgePoint),
+  );
 }
 
 function buildQuestionText(
@@ -735,6 +807,14 @@ function parseMasteryRecord(value: unknown): LearningAssistantMasteryRecord | nu
 
 function normalizeQuizAnswer(answer: string): string {
   return answer.trim().toLocaleLowerCase().replace(/\s+/g, "");
+}
+
+function normalizeQuestionIdentity(value: string): string {
+  return value
+    .normalize("NFKC")
+    .trim()
+    .toLocaleLowerCase("zh-Hans-CN")
+    .replace(/\s+/g, "");
 }
 
 function buildLearningAssistantReplanSuggestions(
