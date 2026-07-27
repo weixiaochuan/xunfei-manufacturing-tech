@@ -123,6 +123,56 @@ test("builds and saves traceable quiz record in progress", () => {
   assert.equal(extracted[0].items[0].sourceFile, questions[0].sourceFile);
 });
 
+test("sanitizes quiz records before appending to progress", () => {
+  const questions = buildLearningAssistantStageQuiz({ stage, stageIndex: 1, limit: 2 });
+  const scoreResult = scoreLearningAssistantQuiz(
+    questions,
+    questions.map((question) => ({
+      questionKey: question.questionKey,
+      userAnswer: question.standardAnswer,
+    })),
+  );
+  const record = buildLearningAssistantQuizRecord({
+    stage,
+    stageIndex: 1,
+    questions,
+    answers: Object.fromEntries(questions.map((question) => [question.questionKey, question.standardAnswer])),
+    scoreResult,
+    testedAt: "2026-07-26T00:30:00.000Z",
+  });
+  const unsafeRecord = {
+    ...record,
+    ownerUserId: "hidden-owner",
+    storageKey: "hidden-storage",
+    token: "hidden-token",
+    items: record.items.map((item) => ({
+      ...item,
+      authorization: "Bearer hidden-token",
+      sourcePath: "D:\\secret\\quiz.json",
+      storageKey: "nested-hidden-storage",
+    })),
+  } as unknown as typeof record;
+
+  const progress = appendLearningAssistantQuizRecordToProgress(
+    appendLearningAssistantQuizRecordToProgress({}, record),
+    unsafeRecord,
+    Number.POSITIVE_INFINITY,
+  );
+  const extracted = extractLearningAssistantQuizRecords(progress);
+  const serialized = JSON.stringify(progress);
+
+  assert.equal(progress.quizRecordCount, 1);
+  assert.equal(extracted.length, 1);
+  assert.equal(extracted[0].recordKey, record.recordKey);
+  assert.equal("ownerUserId" in extracted[0], false);
+  assert.equal("storageKey" in extracted[0], false);
+  assert.equal("authorization" in extracted[0].items[0], false);
+  assert.equal(serialized.includes("hidden-owner"), false);
+  assert.equal(serialized.includes("hidden-storage"), false);
+  assert.equal(serialized.includes("hidden-token"), false);
+  assert.equal(serialized.includes("D:\\secret"), false);
+});
+
 test("updates mastery records from saved quiz attempts", () => {
   const questions = buildLearningAssistantStageQuiz({ stage, stageIndex: 0, limit: 2 });
   const lowScore = scoreLearningAssistantQuiz(questions, [

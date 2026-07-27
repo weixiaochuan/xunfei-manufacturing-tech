@@ -294,22 +294,36 @@ export function appendLearningAssistantQuizRecordToProgress(
 ): JsonObject {
   const previous = isRecord(progress) ? progress : {};
   const records = extractLearningAssistantQuizRecords(previous);
+  const safeRecord = parseQuizRecord(record);
+  const maxRecords = normalizeQuizRecordLimit(limit);
+  if (!safeRecord) {
+    const masteryRecords = buildLearningAssistantMasteryRecords(records);
+    const replanSuggestions = buildLearningAssistantReplanSuggestions(records);
+    return {
+      ...previous,
+      quizRecords: records,
+      quizRecordCount: records.length,
+      masteryRecords,
+      masteryRecordCount: masteryRecords.length,
+      replanSuggestions,
+    };
+  }
   const nextRecords = [
-    record,
-    ...records.filter((item) => item.recordKey !== record.recordKey),
-  ].slice(0, limit);
+    safeRecord,
+    ...records.filter((item) => item.recordKey !== safeRecord.recordKey),
+  ].slice(0, maxRecords);
   const masteryRecords = buildLearningAssistantMasteryRecords(nextRecords);
   const replanSuggestions = buildLearningAssistantReplanSuggestions(nextRecords);
   return {
     ...previous,
     quizRecords: nextRecords,
     quizRecordCount: nextRecords.length,
-    latestQuizAt: record.testedAt,
-    latestQuizPercentage: record.percentage,
-    latestWeakKnowledgePoints: record.weakKnowledgePoints,
+    latestQuizAt: safeRecord.testedAt,
+    latestQuizPercentage: safeRecord.percentage,
+    latestWeakKnowledgePoints: safeRecord.weakKnowledgePoints,
     masteryRecords,
     masteryRecordCount: masteryRecords.length,
-    latestMasteryAt: record.testedAt,
+    latestMasteryAt: safeRecord.testedAt,
     replanSuggestions,
   };
 }
@@ -741,6 +755,13 @@ function parseQuizRecord(value: unknown): LearningAssistantQuizRecord | null {
           .filter((item): item is LearningAssistantQuizRecordItem => item !== null)
       : [],
   };
+}
+
+function normalizeQuizRecordLimit(limit: number): number {
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    return LEARNING_ASSISTANT_QUIZ_RECORD_LIMIT;
+  }
+  return Math.min(limit, 100);
 }
 
 function parseQuizRecordItem(value: unknown): LearningAssistantQuizRecordItem | null {
