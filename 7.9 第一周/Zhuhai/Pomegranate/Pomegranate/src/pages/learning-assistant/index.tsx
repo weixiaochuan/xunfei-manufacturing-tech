@@ -90,6 +90,7 @@ import {
   type LearningAssistantQaSource,
 } from "@/lib/learning/learningAssistantQa";
 import {
+  appendLearningAssistantActivityToProgress,
   buildLearningAssistantProgressOverview,
   type LearningAssistantProgressActivity,
   type LearningAssistantProgressOverview,
@@ -962,11 +963,21 @@ export default function LearningAssistantPage() {
     }
     setSaving(true);
     try {
+      const occurredAt = new Date().toISOString();
+      const progress = appendLearningAssistantActivityToProgress(
+        buildProgress("planned", nextPlan, documents.length, activeDiagnosis, currentProject.progress),
+        {
+          activityKey: `resource-${resource.resourceId}-${occurredAt}`,
+          activityType: "resource",
+          message: `推荐资源已加入计划：${resource.title}`,
+          occurredAt,
+        },
+      );
       const saved = await updateAccountLearningProject({
         projectId: currentProject.id,
         expectedRevision: currentProject.revision,
         currentPlan: toJsonObject(nextPlan),
-        progress: buildProgress("planned", nextPlan, documents.length, activeDiagnosis, currentProject.progress),
+        progress,
       });
       const project = unwrapEnvelope(saved, "推荐资源已加入计划，但账号已切换，请重新打开项目确认。");
       if (!project) return;

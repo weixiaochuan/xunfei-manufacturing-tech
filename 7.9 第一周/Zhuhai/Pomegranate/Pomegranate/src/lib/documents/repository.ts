@@ -93,6 +93,12 @@ async function guarded<T>(request: () => Promise<T>): Promise<T> {
   return result;
 }
 
+function canIgnoreLearningUploadFolderEnsure(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+  return code === "notFound" || code === "unavailable";
+}
+
 function fileType(file: AccountDocumentFile | null): string | null {
   if (!file) return null;
   const extension = file.originalName.split(".").pop()?.toLowerCase();
@@ -428,6 +434,11 @@ export const noteApi = {
 export const folderApi = {
   list: async (): Promise<Folder[]> => {
     if (documentSource === "local") return localFolderApi.list();
+    try {
+      await guarded(() => accountDocumentsApi.ensureLearningAssistantUploadFolder());
+    } catch (error) {
+      if (!canIgnoreLearningUploadFolderEnsure(error)) throw error;
+    }
     return buildFolderTree(await guarded(() => accountDocumentsApi.listFolders()));
   },
   create: async (name: string, parentId?: number | null): Promise<Folder> => {

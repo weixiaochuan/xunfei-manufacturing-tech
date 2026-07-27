@@ -17,7 +17,7 @@ export interface LearningAssistantStageProgress {
 
 export interface LearningAssistantProgressActivity {
   activityKey: string;
-  activityType: "project" | "qa" | "quiz" | "replan" | "document";
+  activityType: "project" | "qa" | "quiz" | "replan" | "document" | "resource";
   message: string;
   occurredAt: string;
 }
@@ -63,6 +63,28 @@ interface QuizSnapshot {
 
 interface MasterySnapshot {
   masteryLevel: "mastered" | "basic" | "weak";
+}
+
+export function appendLearningAssistantActivityToProgress(
+  progress: JsonObject | null | undefined,
+  activity: LearningAssistantProgressActivity,
+  limit = 20,
+): JsonObject {
+  const previous = isRecord(progress) ? progress : {};
+  const parsed = parseStoredActivity(activity);
+  if (!parsed) return { ...previous };
+  const existing = readStoredActivities(previous).filter(
+    (item) => item.activityKey !== parsed.activityKey,
+  );
+  const records = [parsed, ...existing]
+    .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+    .slice(0, Math.max(1, Math.min(limit, 50)));
+  return {
+    ...previous,
+    activityRecords: records,
+    activityRecordCount: records.length,
+    latestActivityAt: records[0]?.occurredAt ?? parsed.occurredAt,
+  };
 }
 
 export function buildLearningAssistantProgressOverview(
@@ -141,6 +163,8 @@ function buildRecentActivities(input: {
   linkedDocumentCount: number;
 }): LearningAssistantProgressActivity[] {
   const activities: LearningAssistantProgressActivity[] = [];
+  activities.push(...readStoredActivities(input.progress));
+
   const updatedAt = readOptionalString(input.progress.updatedAt);
   if (updatedAt) {
     activities.push({
@@ -249,6 +273,40 @@ function readMasteryRecords(progress: JsonObject): MasterySnapshot[] {
       return { masteryLevel };
     })
     .filter((record): record is MasterySnapshot => Boolean(record));
+}
+
+function readStoredActivities(progress: JsonObject): LearningAssistantProgressActivity[] {
+  return readArray(progress.activityRecords)
+    .map(parseStoredActivity)
+    .filter((record): record is LearningAssistantProgressActivity => Boolean(record));
+}
+
+function parseStoredActivity(value: unknown): LearningAssistantProgressActivity | null {
+  if (!isRecord(value)) return null;
+  const activityKey = readOptionalString(value.activityKey);
+  const message = readOptionalString(value.message);
+  const occurredAt = readOptionalString(value.occurredAt);
+  const activityType = readActivityType(value.activityType);
+  if (!activityKey || !message || !occurredAt || !activityType || !isIsoLikeString(occurredAt)) {
+    return null;
+  }
+  return {
+    activityKey: activityKey.slice(0, 160),
+    activityType,
+    message: message.slice(0, 240),
+    occurredAt,
+  };
+}
+
+function readActivityType(value: unknown): LearningAssistantProgressActivity["activityType"] | null {
+  return value === "project" ||
+    value === "qa" ||
+    value === "quiz" ||
+    value === "replan" ||
+    value === "document" ||
+    value === "resource"
+    ? value
+    : null;
 }
 
 function latestQuizForStage(quizzes: QuizSnapshot[], stageIndex: number): QuizSnapshot | null {

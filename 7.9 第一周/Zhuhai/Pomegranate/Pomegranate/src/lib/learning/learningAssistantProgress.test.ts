@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildLearningAssistantProgressOverview } from "./learningAssistantProgress.ts";
+import {
+  appendLearningAssistantActivityToProgress,
+  buildLearningAssistantProgressOverview,
+  type LearningAssistantProgressActivity,
+} from "./learningAssistantProgress.ts";
 
 const plan = {
   stages: [
@@ -104,4 +108,28 @@ test("keeps empty and malformed progress safe without inventing completion", () 
   );
   assert.deepEqual(overview.mastery, { mastered: 0, basic: 0, weak: 0 });
   assert.equal(overview.recentActivities.length, 0);
+});
+
+test("persists explicit learning activities with a safe whitelist", () => {
+  const activity = {
+    activityKey: "resource-mfg-r001",
+    activityType: "resource",
+    message: "推荐资源已加入计划：工艺规程设计入门清单",
+    occurredAt: "2026-07-27T09:00:00.000Z",
+    token: "should-not-leak",
+  };
+  const progress = appendLearningAssistantActivityToProgress(
+    { status: "planned" },
+    activity as unknown as LearningAssistantProgressActivity,
+  );
+
+  const overview = buildLearningAssistantProgressOverview({
+    plan,
+    linkedDocumentCount: 0,
+    progress,
+  });
+
+  assert.equal(overview.recentActivities[0].activityType, "resource");
+  assert.match(overview.recentActivities[0].message, /工艺规程设计/);
+  assert.equal(JSON.stringify(progress).includes("should-not-leak"), false);
 });

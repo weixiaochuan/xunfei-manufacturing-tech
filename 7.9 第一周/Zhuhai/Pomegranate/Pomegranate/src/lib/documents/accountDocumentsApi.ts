@@ -8,6 +8,7 @@ export interface AccountDocumentFolder {
   id: string;
   name: string;
   parentId: string | null;
+  folderKind: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -116,6 +117,8 @@ export const accountDocumentsApi = {
   restore: (documentId: string) =>
     invoke<AccountDocument>("account_restore_document", { documentId }),
   listFolders: () => invoke<AccountDocumentFolder[]>("account_list_document_folders"),
+  ensureLearningAssistantUploadFolder: () =>
+    invoke<AccountDocumentFolder>("account_get_or_create_learning_assistant_upload_folder"),
   createFolder: (name: string, parentId: string | null) =>
     invoke<AccountDocumentFolder>("account_create_document_folder", {
       input: { name, parentId },

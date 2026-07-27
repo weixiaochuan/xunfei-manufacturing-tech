@@ -59,6 +59,7 @@ pub struct PublicFolder {
     pub id: String,
     pub name: String,
     pub parent_id: Option<String>,
+    pub folder_kind: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -666,6 +667,26 @@ pub async fn account_list_document_folders(
 }
 
 #[tauri::command]
+pub async fn account_get_or_create_learning_assistant_upload_folder(
+    app: AppHandle,
+    documents: tauri::State<'_, AccountDocumentState>,
+    account: tauri::State<'_, AccountState>,
+) -> Result<PublicFolder, AccountDocumentError> {
+    let response = request(
+        &app,
+        &documents,
+        &account,
+        Method::POST,
+        "/document-folders/learning-assistant-upload",
+    )
+    .await?
+    .send()
+    .await
+    .map_err(|_| AccountDocumentError::new("unavailable", "账号文档服务暂不可用"))?;
+    Ok(parse_response::<FolderResponse>(&app, &account, response).await?.folder)
+}
+
+#[tauri::command]
 pub async fn account_create_document_folder(
     app: AppHandle,
     documents: tauri::State<'_, AccountDocumentState>,
@@ -1200,6 +1221,20 @@ mod tests {
         assert_ne!(key("a", "f", "1"), key("b", "f", "1"));
         assert_ne!(key("a", "f", "1"), key("a", "g", "1"));
         assert_ne!(key("a", "f", "1"), key("a", "f", "2"));
+    }
+
+    #[test]
+    fn public_folder_keeps_learning_assistant_upload_kind() {
+        let folder: PublicFolder = serde_json::from_value(serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "learning upload",
+            "parentId": null,
+            "folderKind": "learning_assistant_upload",
+            "createdAt": "2026-07-27T00:00:00.000Z",
+            "updatedAt": "2026-07-27T00:00:00.000Z"
+        }))
+        .expect("folder should deserialize");
+        assert_eq!(folder.folder_kind.as_deref(), Some("learning_assistant_upload"));
     }
 
     #[test]

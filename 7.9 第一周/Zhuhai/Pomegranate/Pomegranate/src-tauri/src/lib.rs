@@ -974,6 +974,8 @@ pub fn run() {
             #[cfg(desktop)]
             account_documents::account_list_document_folders,
             #[cfg(desktop)]
+            account_documents::account_get_or_create_learning_assistant_upload_folder,
+            #[cfg(desktop)]
             account_documents::account_create_document_folder,
             #[cfg(desktop)]
             account_documents::account_update_document_folder,
