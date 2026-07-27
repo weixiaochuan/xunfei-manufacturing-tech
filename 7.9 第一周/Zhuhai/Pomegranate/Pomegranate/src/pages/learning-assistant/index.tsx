@@ -9,7 +9,6 @@ import {
   Empty,
   Form,
   Input,
-  InputNumber,
   List,
   Modal,
   Popconfirm,
@@ -63,6 +62,7 @@ import {
   pickAndUploadLearningMaterial,
   type LearningMaterialUploadResult,
 } from "@/lib/learning/accountLearningUpload";
+import DailyTimeWheelPicker from "./components/DailyTimeWheelPicker";
 import {
   attachDiagnosisToUnderstanding,
   buildLearningAssistantDiagnosis,
@@ -1008,8 +1008,12 @@ export default function LearningAssistantPage() {
                   <Form.Item name="learningCycle" label="学习周期" rules={[{ required: true }]}>
                     <Select options={GOAL_CYCLE_OPTIONS} />
                   </Form.Item>
-                  <Form.Item name="dailyStudyHours" label="每日投入小时" rules={[{ required: true }]}>
-                    <InputNumber className="w-full" min={0.5} max={12} step={0.5} />
+                  <Form.Item
+                    name="dailyStudyHours"
+                    label="每日投入时间"
+                    rules={[{ required: true, message: "请选择每日可投入时间" }]}
+                  >
+                    <DailyTimeWheelPicker />
                   </Form.Item>
                   <Form.Item name="currentLevel" label="当前基础" rules={[{ required: true }]}>
                     <Select options={CURRENT_LEVEL_OPTIONS.map((value) => ({ value, label: value }))} />
