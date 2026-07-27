@@ -1,0 +1,6 @@
+; bcryptprimitives.dll — unified Win7 compatibility shim exports
+EXPORTS
+  ProcessPrng
+  WaitOnAddress
+  WakeByAddressSingle
+  WakeByAddressAll

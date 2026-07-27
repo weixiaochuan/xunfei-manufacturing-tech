@@ -1,0 +1,71 @@
+# Repository-wide generated dependencies
+node_modules/
+**/node_modules/
+target/
+**/target/
+.venv/
+**/.venv/
+venv/
+**/venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+dist/
+**/dist/
+build/
+**/build/
+
+# PPT temporary workdirs and generated example exports
+.pptx-build-*/
+**/.pptx-build-*/
+ppt-master/examples/**/exports/**
+!ppt-master/examples/**/exports/.gitkeep
+
+# Logs, caches, and temporary files
+logs/
+*.log
+*.tmp
+*.temp
+*.pid
+*.bak
+*.swp
+*.swo
+*~
+.cache/
+.pytest_cache/
+.mypy_cache/
+Thumbs.db
+Desktop.ini
+
+# Local application runtime data. Keep generated databases, uploads, plugin
+# installs, screenshots, and smoke-test outputs out of commits without hiding
+# source resources under Pomegranate/src or Pomegranate/src-tauri/resources.
+.runtime-data*/
+.runtime-data-*/
+
+# SQLite runtime databases and sidecars created by local app runs. Do not ignore
+# all *.db files because some checked-in resources may intentionally be .db.
+dev-app.db
+dev-app.db-shm
+dev-app.db-wal
+*.db-shm
+*.db-wal
+*.sqlite-shm
+*.sqlite-wal
+
+# Local environment files and sensitive machine-local configs
+.env
+.env.*
+!.env.example
+!**/.env.example
+.envrc
+*.secret
+!*.secret.example
+!**/*.secret.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+Pomegranate/src-tauri/keys/

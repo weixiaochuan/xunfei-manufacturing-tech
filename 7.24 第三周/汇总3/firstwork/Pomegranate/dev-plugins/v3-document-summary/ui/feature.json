@@ -1,0 +1,20 @@
+{
+  "title": "文档智能总结",
+  "description": "选择 AI 资源中心中已配置的讯飞 Workflow，再按模板粘贴总结要求和文档正文。内容会发送到讯飞星辰，并可能消耗你自己的接口额度。",
+  "fields": [
+    {
+      "key": "AGENT_USER_INPUT",
+      "label": "总结要求与文档内容",
+      "type": "multiline",
+      "required": true,
+      "rows": 16,
+      "placeholder": "请根据以下要求总结文档：\n\n总结类型：结构化总结\n总结长度：标准\n输出语言：中文\n关注重点：（可选）\n\n文档正文：\n请在这里粘贴需要总结的正文。",
+      "description": "当前声明式运行时会将此字段原样写入 Workflow 的 AGENT_USER_INPUT 参数。请确认所选 Workflow 的开始节点使用同名字段。"
+    }
+  ],
+  "submitLabel": "开始总结",
+  "outputTitle": "文档总结",
+  "output": {
+    "kind": "markdown"
+  }
+}

@@ -1,0 +1,507 @@
+import { startTransition, useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { Tooltip, Badge, theme as antdTheme, message } from "antd";
+import { hiddenPinApi } from "@/lib/api";
+import { HiddenPinUnlockModal } from "@/components/hidden/HiddenPinUnlockModal";
+import {
+  Home,
+  NotebookText,
+  Search,
+  Calendar,
+  CheckSquare,
+  Layers,
+  GitBranch,
+  Network,
+  Bot,
+  GraduationCap,
+  KeyRound,
+  Store,
+  Sparkles,
+  Presentation,
+  Microscope,
+  Trash2,
+  Info,
+  EyeOff,
+} from "lucide-react";
+import { useAppStore } from "@/store";
+import type { ActiveView } from "@/store";
+import { pluginManager } from "@/services/pluginManager";
+import type { PluginSidebarItemDef } from "@/types";
+import { resolvePluginIconComponent } from "@/components/plugin/pluginIcons";
+
+/**
+ * ActivityBar —— 方案 C 侧边栏的左侧 48px 窄图标栏。
+ *
+ * 职责：
+ *   · 切换活动视图（activeView）
+ *   · 同步跳转路由
+ *   · 点击当前已高亮的图标 = 折叠/展开右侧 SidePanel（VS Code 行为）
+ *
+ * 非职责：
+ *   · 不渲染任何视图内容（由 SidePanel 按 activeView 分发）
+ *   · 不感知文件夹 / 标签 / 待办的业务数据
+ */
+
+interface ActivityItem {
+  view: ActiveView;
+  route: string;
+  label: string;
+  icon: React.ReactNode;
+  /**
+   * 核心视图：永远显示，不受用户"功能模块"开关影响。
+   * 关闭笔记/搜索/回收站等核心入口会让应用变残废，所以不允许关。
+   */
+  core?: boolean;
+}
+
+/**
+ * 主视图按"用户意图"分四组，组与组之间渲染分隔线：
+ *   1. 概览：首页（每次启动看一眼）
+ *   2. 创作 / 工作流：笔记 / 每日笔记 / 待办（日常高频写入）
+ *   3. 检索 / 发现：搜索 / 标签 / 知识图谱（找东西）
+ *   4. AI 辅助：AI 问答 / 提示词（创作助手）
+ *
+ * 分组而非平铺的好处：用户扫一眼就能锁定意图所在区，比按使用频率排更省认知。
+ */
+const MAIN_GROUPS: ActivityItem[][] = [
+  // 概览
+  [{ view: "home", route: "/", label: "首页", icon: <Home size={18} />, core: true }],
+  // 创作 / 工作流
+  [
+    { view: "notes", route: "/notes", label: "文档", icon: <NotebookText size={18} />, core: true },
+    { view: "daily", route: "/daily", label: "日记", icon: <Calendar size={18} /> },
+    { view: "tasks", route: "/tasks", label: "待办", icon: <CheckSquare size={18} /> },
+    { view: "cards", route: "/cards", label: "卡片复习", icon: <Layers size={18} /> },
+    { view: "ppt-generation", route: "/ppt-generation", label: "PPT 生成", icon: <Presentation size={18} />, core: true },
+    { view: "learning-assistant", route: "/learning-assistant", label: "AI 助学", icon: <GraduationCap size={18} />, core: true },
+  ],
+  // 检索 / 发现
+  [
+    { view: "search", route: "/search", label: "搜索", icon: <Search size={18} />, core: true },
+    { view: "graph", route: "/graph", label: "知识图谱", icon: <GitBranch size={18} /> },
+    { view: "course-graph", route: "/course-graph", label: "课程知识图谱", icon: <Network size={18} />, core: true },
+  ],
+  // AI 辅助
+  [
+    { view: "ai", route: "/ai", label: "AI 问答", icon: <Bot size={18} /> },
+    { view: "research-assistant", route: "/research-assistant", label: "AI 助研", icon: <Microscope size={18} />, core: true },
+    { view: "ai-resources", route: "/ai-resources", label: "AI 资源中心", icon: <KeyRound size={18} />, core: true },
+    { view: "marketplace", route: "/marketplace", label: "AI 应用市场", icon: <Store size={18} />, core: true },
+    { view: "prompts", route: "/prompts", label: "提示词", icon: <Sparkles size={18} /> },
+  ],
+];
+
+/** 底部视图（放最下方，视觉上与主视图分组） */
+const BOTTOM_ITEMS: ActivityItem[] = [
+  { view: "hidden", route: "/hidden", label: "隐藏文档", icon: <EyeOff size={18} /> },
+  { view: "trash", route: "/trash", label: "回收站", icon: <Trash2 size={18} />, core: true },
+  { view: "about", route: "/about", label: "关于", icon: <Info size={18} />, core: true },
+];
+
+/** 路由 → ActiveView 的反查映射（用于根据 URL 推导高亮态） */
+const ROUTE_TO_VIEW: Array<[string, ActiveView]> = [
+  ["/notes", "notes"],
+  ["/search", "search"],
+  ["/daily", "daily"],
+  ["/tasks", "tasks"],
+  ["/cards", "cards"],
+  ["/ppt-generation", "ppt-generation"],
+  ["/learning-assistant", "learning-assistant"],
+  ["/research-assistant", "research-assistant"],
+  ["/research-library", "research-assistant"],
+  ["/course-graph", "course-graph"],
+  ["/graph", "graph"],
+  ["/ai-resources", "ai-resources"],
+  ["/ai", "ai"],
+  ["/marketplace", "marketplace"],
+  ["/developer-center", "marketplace"],
+  ["/review-center", "marketplace"],
+  ["/prompts", "prompts"],
+  ["/plugins", "marketplace"],
+  ["/hidden", "hidden"],
+  ["/trash", "trash"],
+  ["/about", "about"],
+  ["/", "home"], // 放最后：以 startsWith 匹配时 "/" 会错匹所有路径
+];
+
+export function deriveActiveViewFromPath(pathname: string): ActiveView | null {
+  // 先精确匹配非根路径，根路径单独处理
+  for (const [prefix, view] of ROUTE_TO_VIEW) {
+    if (prefix === "/") continue;
+    if (pathname === prefix || pathname.startsWith(`${prefix}/`)) return view;
+  }
+  if (pathname === "/") return "home";
+  return null;
+}
+
+export function ActivityBar() {
+  const { token } = antdTheme.useToken();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const activeView = useAppStore((s) => s.activeView);
+  const setActiveView = useAppStore((s) => s.setActiveView);
+  const sidePanelVisible = useAppStore((s) => s.sidePanelVisible);
+  const setSidePanelVisible = useAppStore((s) => s.setSidePanelVisible);
+  const toggleSidePanel = useAppStore((s) => s.toggleSidePanel);
+  const urgentTodoCount = useAppStore((s) => s.urgentTodoCount);
+  const refreshTaskStats = useAppStore((s) => s.refreshTaskStats);
+  const isHiddenUnlocked = useAppStore((s) => s.isHiddenUnlocked);
+  const enabledViews = useAppStore((s) => s.enabledViews);
+  const [unlockOpen, setUnlockOpen] = useState(false);
+
+  /** 是否显示某项：核心永远显示；可选项看用户是否在设置里启用 */
+  const isVisible = (item: ActivityItem) =>
+    item.core || enabledViews.has(item.view);
+
+  // 启动时拉一次紧急任务数，让待办 Badge 在进应用时就显示正确数字
+  // （之后由任务页/各操作主动调 refreshTaskStats 维持新鲜）
+  useEffect(() => {
+    refreshTaskStats();
+  }, [refreshTaskStats]);
+
+  // 以 URL 为准反推当前高亮（避免 store.activeView 与 URL 漂移时 UI 不一致）
+  const highlightView: ActiveView | null = useMemo(
+    () => deriveActiveViewFromPath(location.pathname) ?? activeView,
+    [location.pathname, activeView],
+  );
+
+  /** 实际跳转视图（被 handleClick 与 PIN 解锁回调共用）
+   *
+   * 用 startTransition 把"切视图 + 路由跳转 + 展开面板"标记为低优先级，
+   * 让点击事件本身能立即响应（按钮即时高亮），子树重渲染在下一帧再做。
+   * 对"点笔记 → 侧边栏弹出"这种带较重子树的场景体感优化最明显。
+   */
+  function navigateToView(item: ActivityItem) {
+    startTransition(() => {
+      setActiveView(item.view);
+      if (!sidePanelVisible) setSidePanelVisible(true);
+      navigate(item.route);
+    });
+  }
+
+  function handleClick(item: ActivityItem) {
+    // VS Code 行为：点当前已高亮的图标 = 翻转 SidePanel 可见性
+    // 注意：必须用 URL 真相判断"是否在该视图"，而非 highlightView。
+    // highlightView 在无匹配路由时（如 /settings）会回退到 store.activeView，
+    // 此时点 ActivityBar 项会被误判成"点当前视图 → 仅折叠面板"，导致无法跳转。
+    const onThisView = deriveActiveViewFromPath(location.pathname) === item.view;
+    if (onThisView) {
+      toggleSidePanel();
+      return;
+    }
+
+    // 隐藏笔记 PIN 拦截：已设过 PIN 且会话未解锁 → 弹解锁框
+    if (item.view === "hidden" && !isHiddenUnlocked()) {
+      void (async () => {
+        try {
+          if (await hiddenPinApi.isSet()) {
+            setUnlockOpen(true);
+            return;
+          }
+          navigateToView(item);
+        } catch (e) {
+          // 后端故障时不锁死入口
+          console.warn("[hidden-pin] isSet 查询失败:", e);
+          message.warning("PIN 状态查询失败，已跳过验证");
+          navigateToView(item);
+        }
+      })();
+      return;
+    }
+
+    navigateToView(item);
+  }
+
+  // ─── 插件侧边栏项 ──────────────────────────────────
+  type SidebarEntry = PluginSidebarItemDef & { pluginId: string };
+  const [pluginSidebarItems, setPluginSidebarItems] = useState<SidebarEntry[]>([]);
+
+  useEffect(() => {
+    const refresh = () => {
+      setPluginSidebarItems(pluginManager.getRegisteredSidebarItems());
+    };
+    refresh(); // 初始拉一次
+    const unsubscribe = pluginManager.subscribe("sidebar", refresh);
+    return unsubscribe;
+  }, []);
+
+  /** 按 group 把插件项分桶；undefined 的归到 "other"，渲染顺序固定 */
+  const GROUP_ORDER: Array<NonNullable<PluginSidebarItemDef["group"]> | "other"> = [
+    "workflow",
+    "search",
+    "ai",
+    "other",
+    "bottom",
+  ];
+
+  const groupedPluginItems = useMemo(() => {
+    const buckets: Record<string, SidebarEntry[]> = {};
+    for (const item of pluginSidebarItems) {
+      const key = item.group ?? "other";
+      (buckets[key] ??= []).push(item);
+    }
+    // 按 GROUP_ORDER 输出非空桶；bottom 单独返回，由调用方决定渲染位置
+    const main = GROUP_ORDER.filter((g) => g !== "bottom" && buckets[g]?.length).map(
+      (g) => buckets[g],
+    );
+    const bottom = buckets.bottom ?? [];
+    return { main, bottom };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pluginSidebarItems]);
+
+  const topItems = MAIN_GROUPS[0].filter(isVisible);
+  const scrollItems = MAIN_GROUPS.slice(1).flat().filter(isVisible);
+
+  function resolvePluginIcon(iconName: string): React.ReactNode {
+    const Comp = resolvePluginIconComponent(iconName);
+    return <Comp size={18} />;
+  }
+
+  function handlePluginItemClick(item: SidebarEntry) {
+    // 优先 onClick；否则按 viewId 导航到面板视图页
+    if (typeof item.onClick === "function") {
+      try {
+        item.onClick();
+      } catch (e) {
+        console.error(`[ActivityBar] 插件 ${item.pluginId} sidebar item ${item.id} onClick 失败:`, e);
+        pluginManager._logError(item.pluginId, "sidebar:onClick", String(e));
+        message.error(`插件「${item.pluginId}」按钮执行失败：${e}`);
+      }
+      return;
+    }
+    if (item.viewId) {
+      startTransition(() => {
+        navigate(`/plugin-view/${item.viewId}`);
+      });
+      return;
+    }
+    console.warn(
+      `[ActivityBar] 插件 ${item.pluginId} sidebar item ${item.id} 既无 onClick 也无 viewId，点击无效`,
+    );
+  }
+
+  function renderPluginSidebarItem(item: SidebarEntry) {
+    const pluginName = pluginManager.getPluginName(item.pluginId) ?? item.pluginId;
+    // tooltip 双行：插件名 · 按钮名，便于多插件并存时分辨来源
+    const tooltipTitle = (
+      <span>
+        <span style={{ opacity: 0.7, fontSize: 11 }}>{pluginName}</span>
+        <br />
+        {item.label}
+      </span>
+    );
+    return (
+      <Tooltip
+        key={`${item.pluginId}:${item.id}`}
+        title={tooltipTitle}
+        placement="right"
+        mouseEnterDelay={0.15}
+      >
+        <button
+          type="button"
+          onClick={() => handlePluginItemClick(item)}
+          aria-label={`${pluginName}: ${item.label}`}
+          className="activity-item"
+          style={{
+            width: 56,
+            height: 52,
+            borderRadius: 8,
+            border: "none",
+            cursor: "pointer",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 2,
+            padding: "4px 2px",
+            background: "transparent",
+            color: token.colorTextSecondary,
+            position: "relative",
+            transition: "background .15s, color .15s",
+          }}
+        >
+          {resolvePluginIcon(item.icon)}
+          <span
+            style={{
+              fontSize: 10,
+              lineHeight: 1.1,
+              fontWeight: 400,
+              maxWidth: "100%",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {item.label}
+          </span>
+        </button>
+      </Tooltip>
+    );
+  }
+
+  /** 渲染插件分组之间的横向分隔线（视觉上区分内置导航 / 插件 / 不同插件分组） */
+  function renderPluginDivider(key: string) {
+    return (
+      <div
+        key={key}
+        aria-hidden
+        style={{
+          width: 28,
+          height: 1,
+          margin: "4px 0",
+          background: token.colorBorderSecondary,
+        }}
+      />
+    );
+  }
+
+  function renderItem(item: ActivityItem) {
+    const isActive = highlightView === item.view;
+    const iconNode =
+      item.view === "tasks" ? (
+        <Badge
+          count={urgentTodoCount}
+          size="small"
+          offset={[2, -2]}
+          overflowCount={99}
+        >
+          {item.icon}
+        </Badge>
+      ) : (
+        item.icon
+      );
+
+    return (
+      <Tooltip key={item.view} title={item.label} placement="right" mouseEnterDelay={0.15}>
+        <button
+          type="button"
+          onClick={() => handleClick(item)}
+          aria-label={item.label}
+          aria-current={isActive ? "page" : undefined}
+          className="activity-item"
+          data-active={isActive || undefined}
+          style={{
+            width: 56,
+            height: 52,
+            borderRadius: 8,
+            border: "none",
+            cursor: "pointer",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 2,
+            padding: "4px 2px",
+            background: isActive ? `${token.colorPrimary}14` : "transparent",
+            color: isActive ? token.colorPrimary : token.colorTextSecondary,
+            position: "relative",
+            transition: "background .15s, color .15s",
+          }}
+        >
+          {iconNode}
+          <span
+            style={{
+              fontSize: 10,
+              lineHeight: 1.1,
+              fontWeight: isActive ? 600 : 400,
+              maxWidth: "100%",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {item.label}
+          </span>
+          {isActive && (
+            <span
+              aria-hidden
+              style={{
+                position: "absolute",
+                left: -6,
+                top: 10,
+                bottom: 10,
+                width: 2,
+                borderRadius: 2,
+                background: token.colorPrimary,
+              }}
+            />
+          )}
+        </button>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <nav
+      aria-label="视图切换"
+      className="activity-bar"
+      style={{
+        width: 64,
+        // 必须撑满 Sider 高度，否则下方 flex:1 spacer 没有空间，
+        // 底部三项（隐藏笔记 / 回收站 / 关于）会贴在主组按钮后面而不是钉在左下角
+        height: "100%",
+        flexShrink: 0,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        minHeight: 0,
+        overflow: "hidden",
+        paddingTop: 8,
+        paddingBottom: 8,
+        gap: 2,
+        background: token.colorBgContainer,
+        borderRight: `1px solid ${token.colorBorderSecondary}`,
+      }}
+    >
+      {topItems.map(renderItem)}
+
+      <div
+        className="activity-bar-scroll"
+        style={{
+          flex: 1,
+          minHeight: 0,
+          width: "100%",
+          overflowY: "auto",
+          overflowX: "hidden",
+          scrollbarWidth: "thin",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 2,
+        }}
+      >
+        {scrollItems.map(renderItem)}
+
+      {/* 插件主区：按 group 分桶，桶之间用细分隔线区分；与内置导航之间也加一条 */}
+      {groupedPluginItems.main.length > 0 && renderPluginDivider("plugin-top-divider")}
+      {groupedPluginItems.main.flatMap((bucket, bi) => {
+        const nodes = bucket.map(renderPluginSidebarItem);
+        // 桶之间的细分隔线（最后一桶不加）
+        if (bi < groupedPluginItems.main.length - 1) {
+          nodes.push(renderPluginDivider(`plugin-group-divider-${bi}`));
+        }
+        return nodes;
+      })}
+
+      </div>
+
+      {/* 插件底部区（group="bottom"）：跟内置 bottom 同组渲染 */}
+      {groupedPluginItems.bottom.length > 0 && (
+        <>
+          {groupedPluginItems.bottom.map(renderPluginSidebarItem)}
+          {renderPluginDivider("plugin-bottom-divider")}
+        </>
+      )}
+      {BOTTOM_ITEMS.filter(isVisible).map(renderItem)}
+      <HiddenPinUnlockModal
+        open={unlockOpen}
+        onSuccess={() => {
+          setUnlockOpen(false);
+          const hiddenItem = BOTTOM_ITEMS.find((i) => i.view === "hidden");
+          if (hiddenItem) navigateToView(hiddenItem);
+        }}
+        onCancel={() => setUnlockOpen(false)}
+      />
+    </nav>
+  );
+}

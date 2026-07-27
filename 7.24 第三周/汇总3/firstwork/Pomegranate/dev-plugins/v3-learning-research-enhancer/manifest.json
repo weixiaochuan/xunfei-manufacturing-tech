@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 3,
+  "id": "com.firstwork.learning-structure",
+  "name": "助学回答结构增强",
+  "version": "1.0.0",
+  "authorId": "firstwork-examples",
+  "description": "为 AI 助学的目标理解与计划生成提供可独立启停的结构化提示增强。",
+  "minAppVersion": "1.8.0",
+  "classification": "enhancement",
+  "runtimeKind": "prompt-pack",
+  "source": "local",
+  "activationEvents": ["onScene:learning"],
+  "supportedScenes": ["learning"],
+  "defaultActivation": {
+    "global": true,
+    "scenes": { "learning": true, "research": false, "teaching": false }
+  },
+  "permissions": ["ai.context.augment"],
+  "dependencies": {},
+  "conflictsWith": [],
+  "contributes": {
+    "features": [],
+    "agents": [],
+    "commands": [],
+    "views": [],
+    "tools": [],
+    "enhancements": [
+      {
+        "id": "learning-answer-structure",
+        "title": "学习回答结构增强",
+        "hook": "promptEnhancer",
+        "scenes": ["learning"],
+        "features": ["goal-understanding", "learning-planner"],
+        "priority": 100,
+        "mode": "append",
+        "runsBefore": [],
+        "runsAfter": [],
+        "handler": { "kind": "declarative", "resource": "prompts/learning.md" }
+      }
+    ],
+    "settings": true
+  },
+  "integrity": { "sha256": null },
+  "signature": { "status": "unsigned", "signer": null }
+}

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>机械制造工艺知识图谱</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>机械制造工艺知识图谱</h1>
+      <p>七章课程体系 · Neo4j 分层动态加载</p>
+    </div>
+    <span id="status" class="status">正在连接…</span>
+  </header>
+  <main>
+    <aside>
+      <section>
+        <h2>查找实体</h2>
+        <div class="search-row">
+          <input id="search" placeholder="输入中文知识点或内容…">
+          <button id="searchBtn">搜索</button>
+        </div>
+        <button id="resetBtn" class="secondary">恢复示例图</button>
+      </section>
+      <section>
+        <h2>使用方法</h2>
+        <ol>
+          <li>拖动节点调整位置</li>
+          <li>滚轮缩放、拖动画布</li>
+          <li>单击章节，展开对应小节</li>
+          <li>单击小节，展开对应知识点</li>
+          <li>单击知识点查看中文详情</li>
+          <li><strong>双击知识点展开概念和关联知识</strong></li>
+        </ol>
+      </section>
+      <section>
+        <h2>节点详情</h2>
+        <div id="details" class="details">请单击一个节点</div>
+      </section>
+    </aside>
+    <section class="graph-panel">
+      <div id="toolbar"><span id="counts">0 个节点 / 0 条关系</span><span id="message"></span></div>
+      <div id="cy"></div>
+    </section>
+  </main>
+  <script src="/static/vendor/cytoscape.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

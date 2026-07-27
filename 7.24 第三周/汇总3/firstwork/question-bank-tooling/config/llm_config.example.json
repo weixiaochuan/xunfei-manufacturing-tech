@@ -1,0 +1,39 @@
+{
+  "_说明": "这是配置模板。把本文件复制成 llm_config.json 再填 api_key。providers 里可以登记任意多个模型，roles 决定默认概念题/计算题各用谁，跑命令时加 --provider 名字 可临时覆盖，方便你用不同模型跑同一批知识点做对比。不要把填好 key 的 llm_config.json 提交到 git。",
+
+  "providers": {
+    "mock": {
+      "provider": "mock",
+      "_note": "离线假数据，不联网不花钱，只用来验证流程跑得通"
+    },
+    "deepseek": {
+      "provider": "openai_compatible",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "填入你的DeepSeek Key",
+      "model": "deepseek-chat"
+    },
+    "xinghuo": {
+      "provider": "openai_compatible",
+      "base_url": "https://spark-api-open.xf-yun.com/v1",
+      "api_key": "填入你的讯飞星火 APIPassword",
+      "model": "generalv3.5"
+    },
+    "kimi": {
+      "provider": "openai_compatible",
+      "base_url": "https://api.moonshot.cn/v1",
+      "api_key": "填入你的 Moonshot Key",
+      "model": "moonshot-v1-8k"
+    },
+    "glm": {
+      "provider": "openai_compatible",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "api_key": "填入你的智谱GLM Key",
+      "model": "glm-4-flash"
+    }
+  },
+
+  "roles": {
+    "concept": "mock",
+    "computation": "mock"
+  }
+}
