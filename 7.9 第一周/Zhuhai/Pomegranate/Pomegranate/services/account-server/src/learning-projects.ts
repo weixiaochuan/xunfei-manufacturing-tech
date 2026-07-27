@@ -243,6 +243,10 @@ function jsonBytes(value: JsonValue): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
+function jsonbParam(value: JsonValue): string {
+  return JSON.stringify(value);
+}
+
 function validName(value: unknown): string {
   if (typeof value !== "string") throw new LearningProjectValidationError("invalid_learning_project_name");
   const name = value.trim();
@@ -445,11 +449,11 @@ export function createPostgresLearningProjectRepository(pool: Pool): LearningPro
           input.learningType,
           input.courseName,
           input.goalSummary,
-          input.learningGoal,
-          input.understanding,
-          input.currentPlan,
-          input.progress,
-          input.planAdjustments,
+          jsonbParam(input.learningGoal),
+          jsonbParam(input.understanding),
+          jsonbParam(input.currentPlan),
+          jsonbParam(input.progress),
+          jsonbParam(input.planAdjustments),
           input.dataSchemaVersion,
         ],
       );
@@ -517,11 +521,11 @@ export function createPostgresLearningProjectRepository(pool: Pool): LearningPro
           next.learningType,
           next.courseName,
           next.goalSummary,
-          next.learningGoal,
-          next.understanding,
-          next.currentPlan,
-          next.progress,
-          next.planAdjustments,
+          jsonbParam(next.learningGoal),
+          jsonbParam(next.understanding),
+          jsonbParam(next.currentPlan),
+          jsonbParam(next.progress),
+          jsonbParam(next.planAdjustments),
           expectedRevision,
         ],
       );
@@ -587,11 +591,11 @@ export function createPostgresLearningProjectRepository(pool: Pool): LearningPro
             input.learningType,
             input.courseName,
             input.goalSummary,
-            input.learningGoal,
-            input.understanding,
-            input.currentPlan,
-            input.progress,
-            input.planAdjustments,
+            jsonbParam(input.learningGoal),
+            jsonbParam(input.understanding),
+            jsonbParam(input.currentPlan),
+            jsonbParam(input.progress),
+            jsonbParam(input.planAdjustments),
             input.dataSchemaVersion,
           ],
         );

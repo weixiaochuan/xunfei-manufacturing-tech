@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import type { AccountServerConfig } from "../src/config.js";
 import {
   createLearningProjectService,
+  createPostgresLearningProjectRepository,
   type JsonArray,
   type JsonObject,
   type LearningProjectCreateRecord,
@@ -190,6 +191,59 @@ async function createProject(
   assert.equal(response.statusCode, 201, response.body);
   return response.json().project;
 }
+
+test("Postgres repository serializes JSONB arrays as JSON text", async () => {
+  const capturedParams: unknown[][] = [];
+  const pool = {
+    query: async (_sql: string, params: unknown[]) => {
+      capturedParams.push(params);
+      return {
+        rows: [{
+          id: params[0],
+          owner_user_id: params[1],
+          name: params[2],
+          learning_type: params[3],
+          course_name: params[4],
+          goal_summary: params[5],
+          learning_goal: JSON.parse(params[6] as string),
+          understanding: JSON.parse(params[7] as string),
+          current_plan: JSON.parse(params[8] as string),
+          progress: JSON.parse(params[9] as string),
+          plan_adjustments: JSON.parse(params[10] as string),
+          data_schema_version: params[11],
+          revision: 1,
+          last_opened_at: null,
+          created_at: "2026-07-25T00:00:00.000Z",
+          updated_at: "2026-07-25T00:00:00.000Z",
+          deleted_at: null,
+        }],
+        rowCount: 1,
+      };
+    },
+  } as unknown as Pool;
+  const repository = createPostgresLearningProjectRepository(pool);
+
+  const record = await repository.create(USER_A.platformUserId, {
+    id: "33333333-3333-4333-8333-333333333333",
+    name: "Postgres JSONB serialization",
+    learningType: "systematic",
+    courseName: "Manufacturing",
+    goalSummary: "Validate JSONB arrays",
+    learningGoal: { target: "exam" },
+    understanding: { gap: "basics" },
+    currentPlan: { stages: [] },
+    progress: { currentStageIndex: 0 },
+    planAdjustments: [],
+    dataSchemaVersion: 1,
+  });
+
+  assert.deepEqual(record.planAdjustments, []);
+  const params = capturedParams[0];
+  assert.ok(params);
+  assert.equal(params[6], JSON.stringify({ target: "exam" }));
+  assert.equal(params[10], "[]");
+  assert.equal(Array.isArray(params[10]), false);
+});
 
 test("learning project endpoints require authentication", async (t) => {
   const f = fixture(); t.after(f.close);
