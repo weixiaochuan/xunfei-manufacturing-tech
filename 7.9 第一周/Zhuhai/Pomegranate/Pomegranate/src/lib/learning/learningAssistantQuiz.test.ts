@@ -119,6 +119,8 @@ test("builds and saves traceable quiz record in progress", () => {
   assert.equal(extracted[0].stageIndex, 1);
   assert.equal(extracted[0].items[0].standardAnswer, questions[0].standardAnswer);
   assert.equal(extracted[0].items[0].explanation, questions[0].explanation);
+  assert.equal(extracted[0].items[0].difficulty, questions[0].difficulty);
+  assert.equal(extracted[0].items[0].sourceFile, questions[0].sourceFile);
 });
 
 test("updates mastery records from saved quiz attempts", () => {

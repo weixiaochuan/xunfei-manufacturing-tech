@@ -18,11 +18,14 @@ import {
   Space,
   Spin,
   Tag,
+  Timeline,
   Typography,
   message,
 } from "antd";
 import {
   BookOpen,
+  CheckCircle2,
+  ClipboardList,
   Copy,
   FileText,
   FolderOpen,
@@ -30,7 +33,9 @@ import {
   Link2,
   PenLine,
   RefreshCw,
+  RotateCcw,
   Save,
+  Search,
   Sparkles,
   Trash2,
   Upload,
@@ -62,6 +67,12 @@ import {
   pickAndUploadLearningMaterial,
   type LearningMaterialUploadResult,
 } from "@/lib/learning/accountLearningUpload";
+import {
+  isAccountUploadedNote,
+  noteApi,
+  prepareAccountUploadedMaterial,
+  type AccountBackedNote,
+} from "@/lib/documents/repository";
 import DailyTimeWheelPicker from "./components/DailyTimeWheelPicker";
 import {
   attachDiagnosisToUnderstanding,
@@ -97,6 +108,10 @@ import {
   type LearningAssistantQuizRecord,
   type LearningAssistantQuizScoreResult,
 } from "@/lib/learning/learningAssistantQuiz";
+import {
+  findLearningAssistantFallbackResources,
+  type LearningAssistantFallbackResource,
+} from "@/lib/learning/learningAssistantFallbackResources";
 import { useAccountStore } from "@/store/account";
 
 const { Paragraph, Text, Title } = Typography;
@@ -210,6 +225,14 @@ interface StageQuizSession {
   message: string;
 }
 
+type LearningDocumentParseStatus = "ready" | "unchecked" | "unavailable" | "unsupported";
+
+interface LearningDocumentParseCheck {
+  status: LearningDocumentParseStatus;
+  checkedAt?: string;
+  detail: string;
+}
+
 const DEFAULT_VALUES: LearningGoalFormValues = {
   name: "机械制造工艺学学习项目",
   courseName: FIXED_COURSE_NAME,
@@ -238,6 +261,11 @@ export default function LearningAssistantPage() {
   const [generating, setGenerating] = useState(false);
   const [checking, setChecking] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [documentPickerOpen, setDocumentPickerOpen] = useState(false);
+  const [availableDocuments, setAvailableDocuments] = useState<AccountBackedNote[]>([]);
+  const [loadingAvailableDocuments, setLoadingAvailableDocuments] = useState(false);
+  const [linkingDocumentId, setLinkingDocumentId] = useState<string | null>(null);
+  const [documentParseChecks, setDocumentParseChecks] = useState<Record<string, LearningDocumentParseCheck>>({});
   const [qaQuestion, setQaQuestion] = useState("");
   const [askingQuestion, setAskingQuestion] = useState(false);
   const [stageQuizzes, setStageQuizzes] = useState<Record<number, StageQuizSession>>({});
@@ -274,6 +302,41 @@ export default function LearningAssistantPage() {
       }),
     [currentProject?.planAdjustments, currentProject?.progress, documents.length, plan],
   );
+  const fallbackResourceRecommendations = useMemo(
+    () =>
+      findLearningAssistantFallbackResources({
+        courseName: readString(currentProject?.learningGoal ?? {}, "courseName", FIXED_COURSE_NAME),
+        stageGoal: plan?.understanding?.currentGap || currentProject?.goalSummary || "",
+        knowledgePoints: [
+          ...(activeDiagnosis?.weakKnowledgePoints ?? []),
+          ...(masteryRecords
+            .filter((record) => record.masteryLevel === "weak")
+            .map((record) => record.knowledgePoint)),
+          ...collectPlanKnowledgePoints(plan),
+        ],
+        currentLevel: readString(currentProject?.learningGoal ?? {}, "currentLevel", DEFAULT_VALUES.currentLevel),
+        limit: 6,
+      }),
+    [activeDiagnosis?.weakKnowledgePoints, currentProject?.goalSummary, currentProject?.learningGoal, masteryRecords, plan],
+  );
+  const pendingReplanRecords = useMemo(
+    () =>
+      quizRecords.filter(
+        (record) =>
+          !record.canAdvance &&
+          !hasPlanAdjustment(currentProject?.planAdjustments, `replan-${record.recordKey}`),
+    ),
+  [currentProject?.planAdjustments, quizRecords],
+);
+  const documentPickerCandidates = useMemo(
+    () =>
+      availableDocuments.filter(
+        (note) =>
+          note.deleted_at === null &&
+          !documents.some((document) => document.documentId === note.account_document_id),
+      ),
+    [availableDocuments, documents],
+  );
 
   useEffect(() => {
     if (!currentUser) {
@@ -284,6 +347,9 @@ export default function LearningAssistantPage() {
       setCheckResult(null);
       setQaQuestion("");
       setStageQuizzes({});
+      setDocumentPickerOpen(false);
+      setAvailableDocuments([]);
+      setDocumentParseChecks({});
       form.setFieldsValue(DEFAULT_VALUES);
       return;
     }
@@ -496,6 +562,9 @@ export default function LearningAssistantPage() {
         setPlan(null);
         setQaQuestion("");
         setStageQuizzes({});
+        setDocumentPickerOpen(false);
+        setAvailableDocuments([]);
+        setDocumentParseChecks({});
         form.setFieldsValue(DEFAULT_VALUES);
       }
       message.success("学习项目已删除。");
@@ -531,6 +600,108 @@ export default function LearningAssistantPage() {
       message.error(formatLearningError(error, "上传或关联资料失败"));
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handleLoadAvailableDocuments(openPicker = true) {
+    if (!currentProject) {
+      message.warning("请先创建或打开学习项目，再选择已有账号文档。");
+      return;
+    }
+    setLoadingAvailableDocuments(true);
+    try {
+      const notes = await listAccountBackedNotes();
+      setAvailableDocuments(notes);
+      if (openPicker) setDocumentPickerOpen(true);
+    } catch (error) {
+      message.error(formatLearningError(error, "读取账号文档失败"));
+    } finally {
+      setLoadingAvailableDocuments(false);
+    }
+  }
+
+  async function handleLinkExistingDocument(note: AccountBackedNote) {
+    if (!currentProject) return;
+    if (documents.some((document) => document.documentId === note.account_document_id)) {
+      message.info("该文档已经关联到当前学习项目。");
+      return;
+    }
+    setLinkingDocumentId(note.account_document_id);
+    try {
+      const linked = await addAccountLearningProjectDocument({
+        projectId: currentProject.id,
+        expectedRevision: currentProject.revision,
+        documentId: note.account_document_id,
+        role: "material",
+        importance: "normal",
+      });
+      const data = unwrapEnvelope(linked, "资料已关联，但账号已切换，请重新打开项目确认。");
+      if (!data) return;
+      setCurrentProject((previous) =>
+        previous ? { ...previous, revision: data.projectRevision } : previous,
+      );
+      setDocuments((previous) => upsertDocument(previous, data.document));
+      setDocumentPickerOpen(false);
+      message.success("已有账号文档已关联到当前学习项目。");
+    } catch (error) {
+      message.error(formatLearningError(error, "关联已有账号文档失败"));
+    } finally {
+      setLinkingDocumentId(null);
+    }
+  }
+
+  async function handleCheckDocumentParseStatus(documentId: string) {
+    setDocumentParseChecks((previous) => ({
+      ...previous,
+      [documentId]: {
+        status: "unchecked",
+        detail: "正在检查解析可用性...",
+      },
+    }));
+    try {
+      const note = await findAccountNoteByDocumentId(documentId, availableDocuments);
+      if (!note) {
+        setDocumentParseChecks((previous) => ({
+          ...previous,
+          [documentId]: {
+            status: "unavailable",
+            checkedAt: new Date().toISOString(),
+            detail: "未在当前账号文档列表中找到该资料，可能已删除或账号已切换。",
+          },
+        }));
+        return;
+      }
+      if (!isAccountUploadedNote(note)) {
+        setDocumentParseChecks((previous) => ({
+          ...previous,
+          [documentId]: {
+            status: "ready",
+            checkedAt: new Date().toISOString(),
+            detail: "Markdown 文档可直接作为学习资料来源。",
+          },
+        }));
+        return;
+      }
+      const content = await prepareAccountUploadedMaterial(note);
+      setDocumentParseChecks((previous) => ({
+        ...previous,
+        [documentId]: {
+          status: content.trim() ? "ready" : "unsupported",
+          checkedAt: new Date().toISOString(),
+          detail: content.trim()
+            ? `解析可用，已读取约 ${content.trim().length} 个字符。`
+            : "文件存在，但当前解析器没有读取到可用正文。",
+        },
+      }));
+    } catch (error) {
+      setDocumentParseChecks((previous) => ({
+        ...previous,
+        [documentId]: {
+          status: "unavailable",
+          checkedAt: new Date().toISOString(),
+          detail: formatLearningError(error, "解析状态检查失败"),
+        },
+      }));
     }
   }
 
@@ -709,20 +880,11 @@ export default function LearningAssistantPage() {
         scoreResult,
       });
       const progress = appendLearningAssistantQuizRecordToProgress(currentProject.progress, record);
-      const replan = buildLearningAssistantLocalReplan(plan, record);
+      const hasReplanSuggestion = !scoreResult.canAdvance && Boolean(buildLearningAssistantLocalReplan(plan, record));
       const saved = await updateAccountLearningProject({
         projectId: currentProject.id,
         expectedRevision: currentProject.revision,
         progress,
-        ...(replan
-          ? {
-              currentPlan: toJsonObject(replan.plan),
-              planAdjustments: [
-                ...currentProject.planAdjustments,
-                toJsonObject(replan.adjustment),
-              ],
-            }
-          : {}),
       });
       const project = unwrapEnvelope(saved, "测试结果已保存，但账号已切换，请重新打开项目确认。");
       if (!project) return;
@@ -737,8 +899,8 @@ export default function LearningAssistantPage() {
       }));
       setProjects((previous) => upsertProjectSummary(previous, summaryFromDetail(project)));
       message.success(
-        replan
-          ? "阶段测试结果已保存，并已根据薄弱点追加补学任务。"
+        hasReplanSuggestion
+          ? "阶段测试结果已保存，已生成待确认的重新规划建议。"
           : "阶段测试结果已保存到当前项目。",
       );
     } catch (error) {
@@ -750,6 +912,71 @@ export default function LearningAssistantPage() {
         },
       }));
       message.error(formatLearningError(error, "提交阶段测试失败"));
+    }
+  }
+
+  async function handleApplyReplan(record: LearningAssistantQuizRecord) {
+    if (!currentProject || !plan) return;
+    if (hasPlanAdjustment(currentProject.planAdjustments, `replan-${record.recordKey}`)) {
+      message.info("该测试结果对应的调整已经应用。");
+      return;
+    }
+    const replan = buildLearningAssistantLocalReplan(plan, record);
+    if (!replan) {
+      message.info("当前测试结果不需要重新规划。");
+      return;
+    }
+    setSaving(true);
+    try {
+      const saved = await updateAccountLearningProject({
+        projectId: currentProject.id,
+        expectedRevision: currentProject.revision,
+        currentPlan: toJsonObject(replan.plan),
+        progress: buildProgress("planned", replan.plan, documents.length, activeDiagnosis, currentProject.progress),
+        planAdjustments: [
+          ...currentProject.planAdjustments,
+          toJsonObject(replan.adjustment),
+        ],
+      });
+      const project = unwrapEnvelope(saved, "重新规划已保存，但账号已切换，请重新打开项目确认。");
+      if (!project) return;
+      openProjectDetail(project);
+      setProjects((previous) => upsertProjectSummary(previous, summaryFromDetail(project)));
+      message.success("已根据错题和薄弱点追加补学、资料和复测任务。");
+    } catch (error) {
+      message.error(formatLearningError(error, "应用重新规划失败"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleAddFallbackResourceToPlan(resource: LearningAssistantFallbackResource) {
+    if (!currentProject || !plan) {
+      message.warning("请先打开项目并生成学习计划，再加入推荐资源。");
+      return;
+    }
+    const nextPlan = addFallbackResourceToPlan(plan, resource);
+    if (nextPlan === plan) {
+      message.info("该推荐资源已在当前计划中。");
+      return;
+    }
+    setSaving(true);
+    try {
+      const saved = await updateAccountLearningProject({
+        projectId: currentProject.id,
+        expectedRevision: currentProject.revision,
+        currentPlan: toJsonObject(nextPlan),
+        progress: buildProgress("planned", nextPlan, documents.length, activeDiagnosis, currentProject.progress),
+      });
+      const project = unwrapEnvelope(saved, "推荐资源已加入计划，但账号已切换，请重新打开项目确认。");
+      if (!project) return;
+      openProjectDetail(project);
+      setProjects((previous) => upsertProjectSummary(previous, summaryFromDetail(project)));
+      message.success("推荐资源已加入当前学习计划。");
+    } catch (error) {
+      message.error(formatLearningError(error, "加入推荐资源失败"));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -895,6 +1122,12 @@ export default function LearningAssistantPage() {
               </Space>
             </Card>
 
+            <FallbackResourcesPanel
+              resources={fallbackResourceRecommendations}
+              disabled={!currentProject || !plan || saving}
+              onAdd={(resource) => void handleAddFallbackResourceToPlan(resource)}
+            />
+
             <Card title="项目资料">
               {currentProject ? (
                 <Space direction="vertical" className="w-full">
@@ -907,6 +1140,14 @@ export default function LearningAssistantPage() {
                   >
                     上传到助学模块上传并关联
                   </Button>
+                  <Button
+                    block
+                    icon={<Search size={14} />}
+                    loading={loadingAvailableDocuments}
+                    onClick={() => void handleLoadAvailableDocuments(true)}
+                  >
+                    选择文档中心资料
+                  </Button>
                   <Button block icon={<RefreshCw size={14} />} onClick={() => void refreshProjectDocuments()}>
                     刷新资料关联
                   </Button>
@@ -917,6 +1158,15 @@ export default function LearningAssistantPage() {
                     renderItem={(document) => (
                       <List.Item
                         actions={[
+                          <Button
+                            key="parse"
+                            type="text"
+                            size="small"
+                            icon={<ClipboardList size={14} />}
+                            onClick={() => void handleCheckDocumentParseStatus(document.documentId)}
+                          >
+                            解析状态
+                          </Button>,
                           <Select
                             key="importance"
                             size="small"
@@ -950,10 +1200,13 @@ export default function LearningAssistantPage() {
                             </Space>
                           }
                           description={
-                            <Space size="small" wrap>
-                              <Tag>{document.documentType}</Tag>
-                              <Tag>{document.role}</Tag>
-                              <Text type="secondary">排序 {document.sortOrder}</Text>
+                            <Space direction="vertical" size={2}>
+                              <Space size="small" wrap>
+                                <Tag>{document.documentType}</Tag>
+                                <Tag>{document.role}</Tag>
+                                <Text type="secondary">排序 {document.sortOrder}</Text>
+                              </Space>
+                              <DocumentParseStatusLine check={documentParseChecks[document.documentId]} />
                             </Space>
                           }
                         />
@@ -1101,7 +1354,29 @@ export default function LearningAssistantPage() {
               {currentProject ? (
                 <Space direction="vertical" className="w-full">
                   <MasteryRecordSummary records={masteryRecords} />
-                  <QuizRecordList records={quizRecords} />
+                  <ReplanSuggestionPanel
+                    records={pendingReplanRecords}
+                    onApply={(record) => void handleApplyReplan(record)}
+                    applying={saving}
+                  />
+                  <QuizRecordList
+                    records={quizRecords}
+                    appliedRecordKeys={new Set(
+                      quizRecords
+                        .filter((record) =>
+                          hasPlanAdjustment(currentProject.planAdjustments, `replan-${record.recordKey}`),
+                        )
+                        .map((record) => record.recordKey),
+                    )}
+                    onRetake={(record) => {
+                      const stage = plan?.stages[record.stageIndex];
+                      if (!stage) {
+                        message.warning("当前计划中找不到对应阶段，请先刷新或重新打开项目。");
+                        return;
+                      }
+                      handleStartStageQuiz(stage, record.stageIndex);
+                    }}
+                  />
                 </Space>
               ) : (
                 <Text type="secondary">打开项目后可生成阶段测试，提交后题目、答案、解析和分数会保存到当前项目。</Text>
@@ -1136,6 +1411,7 @@ export default function LearningAssistantPage() {
                             <Text type="secondary">{stage.timeRange}</Text>
                             <Paragraph>{stage.goal}</Paragraph>
                             <TaskGroup title="学习任务" items={stage.learningTasks} />
+                            <TaskGroup title="推荐资料" items={stage.resourceTasks} />
                             <TaskGroup title="练习任务" items={stage.practiceTasks} />
                             <TaskGroup title="检查标准" items={stage.completionCriteria} />
                             <Space wrap>
@@ -1148,6 +1424,7 @@ export default function LearningAssistantPage() {
                             </Space>
                             <StageQuizPanel
                               session={stageQuizzes[index]}
+                              onRetake={() => handleStartStageQuiz(stage, index)}
                               onAnswerChange={(questionKey, answer) =>
                                 handleQuizAnswerChange(index, questionKey, answer)
                               }
@@ -1254,6 +1531,78 @@ export default function LearningAssistantPage() {
           )}
         />
       </Modal>
+
+      <Modal
+        title="选择文档中心资料"
+        open={documentPickerOpen}
+        footer={null}
+        width={820}
+        onCancel={() => setDocumentPickerOpen(false)}
+      >
+        <Space direction="vertical" className="w-full">
+          <Alert
+            type="info"
+            showIcon
+            message="只显示当前账号下可关联的文档"
+            description="选择后只建立项目与文档的关联，不复制文件，也不保存本地路径。"
+          />
+          <Button
+            icon={<RefreshCw size={14} />}
+            loading={loadingAvailableDocuments}
+            onClick={() => void handleLoadAvailableDocuments(false)}
+          >
+            刷新文档中心资料
+          </Button>
+          <List
+            bordered
+            loading={loadingAvailableDocuments}
+            dataSource={documentPickerCandidates}
+            locale={{ emptyText: "暂无可关联的文档中心资料，或当前文档都已关联。" }}
+            renderItem={(note) => (
+              <List.Item
+                actions={[
+                  <Button
+                    key="link"
+                    type="primary"
+                    size="small"
+                    loading={linkingDocumentId === note.account_document_id}
+                    onClick={() => void handleLinkExistingDocument(note)}
+                  >
+                    关联
+                  </Button>,
+                ]}
+              >
+                <List.Item.Meta
+                  avatar={<FileText size={18} />}
+                  title={
+                    <Space size="small" wrap>
+                      <Text>{note.title}</Text>
+                      <Tag>{note.document_kind === "uploaded_file" ? "上传文件" : "Markdown"}</Tag>
+                    </Space>
+                  }
+                  description={
+                    <Space direction="vertical" size={2}>
+                      <Space size="small" wrap>
+                        <Text type="secondary">更新：{note.updated_at}</Text>
+                        {note.account_file ? (
+                          <Text type="secondary">
+                            {note.account_file.originalName} · {note.account_file.mimeType || "未知 MIME"}
+                          </Text>
+                        ) : null}
+                      </Space>
+                      <Text type="secondary">
+                        {note.document_kind === "uploaded_file"
+                          ? "关联后可在项目资料中检查解析状态。"
+                          : "Markdown 文档可直接作为项目资料线索。"}
+                      </Text>
+                    </Space>
+                  }
+                />
+              </List.Item>
+            )}
+          />
+        </Space>
+      </Modal>
     </div>
   );
 }
@@ -1300,6 +1649,85 @@ function DiagnosisTagGroup({
         )}
       </div>
     </div>
+  );
+}
+
+function FallbackResourcesPanel({
+  resources,
+  disabled,
+  onAdd,
+}: {
+  resources: LearningAssistantFallbackResource[];
+  disabled: boolean;
+  onAdd: (resource: LearningAssistantFallbackResource) => void;
+}) {
+  return (
+    <Card title="资源推荐">
+      <Space direction="vertical" className="w-full">
+        <Alert
+          type="info"
+          showIcon
+          message="本地 fallback resources"
+          description="推荐来自内置小型静态资源清单，不调用外部平台；加入计划前需要手动确认。"
+        />
+        <List
+          size="small"
+          dataSource={resources}
+          locale={{ emptyText: "生成计划或完成测试后会按薄弱点推荐本地资源。" }}
+          renderItem={(resource) => (
+            <List.Item
+              actions={[
+                <Button
+                  key="add"
+                  size="small"
+                  icon={<CheckCircle2 size={13} />}
+                  disabled={disabled}
+                  onClick={() => onAdd(resource)}
+                >
+                  加入计划
+                </Button>,
+              ]}
+            >
+              <List.Item.Meta
+                avatar={<BookOpen size={18} />}
+                title={
+                  <Space size="small" wrap>
+                    <Text strong>{resource.title}</Text>
+                    <Tag>{formatFallbackResourceType(resource.type)}</Tag>
+                    <Tag color={difficultyTagColor(resource.difficulty)}>
+                      {formatQuizDifficulty(resource.difficulty)}
+                    </Tag>
+                  </Space>
+                }
+                description={
+                  <Space direction="vertical" size={2}>
+                    <Text type="secondary">{resource.summary}</Text>
+                    <Space size="small" wrap>
+                      <Tag color="blue">{resource.knowledgePoint}</Tag>
+                      <Text type="secondary">{resource.duration}</Text>
+                      <Text type="secondary">{resource.reason}</Text>
+                    </Space>
+                  </Space>
+                }
+              />
+            </List.Item>
+          )}
+        />
+      </Space>
+    </Card>
+  );
+}
+
+function DocumentParseStatusLine({ check }: { check?: LearningDocumentParseCheck }) {
+  if (!check) {
+    return <Text type="secondary">解析状态：未检查</Text>;
+  }
+  return (
+    <Space size="small" wrap>
+      <Tag color={parseStatusTagColor(check.status)}>{formatParseStatus(check.status)}</Tag>
+      <Text type="secondary">{check.detail}</Text>
+      {check.checkedAt ? <Text type="secondary">{check.checkedAt}</Text> : null}
+    </Space>
   );
 }
 
@@ -1419,11 +1847,11 @@ function RecentActivityList({ activities }: { activities: LearningAssistantProgr
     return <Text type="secondary">暂无最近学习活动。</Text>;
   }
   return (
-    <List
-      size="small"
-      dataSource={activities}
-      renderItem={(activity) => (
-        <List.Item>
+    <Timeline
+      className="!mt-2"
+      items={activities.map((activity) => ({
+        color: activityTimelineColor(activity.activityType),
+        children: (
           <Space direction="vertical" size={0}>
             <Space wrap size="small">
               <Tag color={activityTagColor(activity.activityType)}>
@@ -1433,18 +1861,20 @@ function RecentActivityList({ activities }: { activities: LearningAssistantProgr
             </Space>
             <Text type="secondary">{activity.occurredAt}</Text>
           </Space>
-        </List.Item>
-      )}
+        ),
+      }))}
     />
   );
 }
 
 function StageQuizPanel({
   session,
+  onRetake,
   onAnswerChange,
   onSubmit,
 }: {
   session?: StageQuizSession;
+  onRetake: () => void;
   onAnswerChange: (questionKey: string, answer: string) => void;
   onSubmit: () => void;
 }) {
@@ -1454,9 +1884,29 @@ function StageQuizPanel({
   }
 
   return (
-    <Card size="small" title="阶段测试">
+    <Card
+      size="small"
+      title="阶段测试"
+      extra={
+        <Button size="small" icon={<RotateCcw size={13} />} onClick={onRetake}>
+          重测
+        </Button>
+      }
+    >
       <Space direction="vertical" className="w-full">
         {session.message ? <Alert type="info" showIcon message={session.message} /> : null}
+        <Space wrap size="small">
+          <Tag color="blue">
+            已答 {Object.values(session.answers).filter((answer) => answer.trim()).length}/{session.questions.length}
+          </Tag>
+          {session.scoreResult ? (
+            <Tag color={session.scoreResult.canAdvance ? "green" : "orange"}>
+              {session.scoreResult.canAdvance ? "可进入下一阶段" : "建议复测"}
+            </Tag>
+          ) : (
+            <Tag>待提交</Tag>
+          )}
+        </Space>
         <List
           size="small"
           dataSource={session.questions}
@@ -1466,10 +1916,17 @@ function StageQuizPanel({
                 <Space wrap size="small">
                   <Tag color="processing">第 {questionIndex + 1} 题</Tag>
                   <Tag>{formatQuizQuestionType(question.type)}</Tag>
+                  <Tag color={difficultyTagColor(question.difficulty)}>
+                    {formatQuizDifficulty(question.difficulty)}
+                  </Tag>
                   <Tag color="blue">{question.score} 分</Tag>
                   <Tag color="green">{question.knowledgePoint}</Tag>
                 </Space>
                 <Text strong>{question.question}</Text>
+                <Space wrap size="small">
+                  <Text type="secondary">来源：{question.sourceTitle || "本地 fallback 题库"}</Text>
+                  {question.sourceFile ? <Text type="secondary">文件：{question.sourceFile}</Text> : null}
+                </Space>
                 {question.type === "choice" || question.type === "judgment" ? (
                   <Radio.Group
                     value={session.answers[question.questionKey]}
@@ -1514,6 +1971,9 @@ function QuizScoreResultView({ result }: { result: LearningAssistantQuizScoreRes
           </Tag>
           <Tag color="cyan">百分制：{result.percentage} 分</Tag>
           <Tag color={result.canAdvance ? "green" : "orange"}>{result.level}</Tag>
+          <Tag color={result.detailResults.some((item) => !item.correct) ? "red" : "green"}>
+            错题 {result.detailResults.filter((item) => !item.correct).length}
+          </Tag>
         </Space>
         <Alert type={result.canAdvance ? "success" : "warning"} showIcon message={result.feedback} />
         <Descriptions column={1} size="small" bordered>
@@ -1571,7 +2031,56 @@ function MasteryRecordSummary({ records }: { records: LearningAssistantMasteryRe
   );
 }
 
-function QuizRecordList({ records }: { records: LearningAssistantQuizRecord[] }) {
+function ReplanSuggestionPanel({
+  records,
+  onApply,
+  applying,
+}: {
+  records: LearningAssistantQuizRecord[];
+  onApply: (record: LearningAssistantQuizRecord) => void;
+  applying: boolean;
+}) {
+  if (!records.length) return null;
+  return (
+    <Alert
+      type="warning"
+      showIcon
+      message="有待确认的重新规划建议"
+      description={
+        <Space direction="vertical" className="w-full">
+          {records.map((record) => (
+            <Space key={record.recordKey} wrap>
+              <Text strong>{record.stageName}</Text>
+              <Tag color="orange">{record.percentage} 分</Tag>
+              <Text type="secondary">
+                薄弱点：{record.weakKnowledgePoints.length ? record.weakKnowledgePoints.join("、") : "核心知识点"}
+              </Text>
+              <Button
+                size="small"
+                type="primary"
+                loading={applying}
+                icon={<ClipboardList size={13} />}
+                onClick={() => onApply(record)}
+              >
+                确认并写入计划
+              </Button>
+            </Space>
+          ))}
+        </Space>
+      }
+    />
+  );
+}
+
+function QuizRecordList({
+  records,
+  appliedRecordKeys,
+  onRetake,
+}: {
+  records: LearningAssistantQuizRecord[];
+  appliedRecordKeys: Set<string>;
+  onRetake: (record: LearningAssistantQuizRecord) => void;
+}) {
   if (!records.length) {
     return (
       <Empty
@@ -1593,7 +2102,17 @@ function QuizRecordList({ records }: { records: LearningAssistantQuizRecord[] })
               <Tag color="blue">
                 {record.totalScore}/{record.maxScore} · {record.percentage} 分
               </Tag>
+              <Tag color={record.canAdvance ? "green" : "orange"}>
+                {record.canAdvance
+                  ? "已通过"
+                  : appliedRecordKeys.has(record.recordKey)
+                    ? "已重新规划"
+                    : "待复测"}
+              </Tag>
               <Text type="secondary">{record.testedAt}</Text>
+              <Button size="small" icon={<RotateCcw size={13} />} onClick={() => onRetake(record)}>
+                重测本阶段
+              </Button>
             </Space>
             <Paragraph className="!mb-0">{record.feedback}</Paragraph>
             <TaskGroup title="复习建议" items={record.suggestions} />
@@ -1620,17 +2139,64 @@ function QuizRecordItems({ record }: { record: LearningAssistantQuizRecord }) {
               <Tag color={item.correct ? "green" : "red"}>
                 {item.score}/{item.maxScore} 分
               </Tag>
+              <Tag color={item.correct ? "green" : "red"}>
+                {item.correct ? "正确" : "错题"}
+              </Tag>
+              <Tag color={difficultyTagColor(item.difficulty)}>
+                {formatQuizDifficulty(item.difficulty)}
+              </Tag>
               <Tag color="purple">{item.knowledgePoint}</Tag>
             </Space>
             <Text>{item.question}</Text>
             <Text type="secondary">你的答案：{item.userAnswer || "未作答"}</Text>
             <Text type="secondary">标准答案：{item.standardAnswer}</Text>
+            {!item.correct && item.missingKeywords.length ? (
+              <Text type="secondary">缺失关键词：{item.missingKeywords.join("、")}</Text>
+            ) : null}
+            <Text type="secondary">
+              来源：{item.sourceTitle || "本地 fallback 题库"}
+              {item.sourceFile ? ` · ${item.sourceFile}` : ""}
+            </Text>
             <Text type="secondary">解析：{item.explanation}</Text>
           </Space>
         </List.Item>
       )}
     />
   );
+}
+
+function formatQuizDifficulty(difficulty: LearningAssistantQuizQuestion["difficulty"]) {
+  if (difficulty === "easy") return "基础";
+  if (difficulty === "hard") return "进阶";
+  return "中等";
+}
+
+function difficultyTagColor(difficulty: LearningAssistantQuizQuestion["difficulty"]) {
+  if (difficulty === "easy") return "green";
+  if (difficulty === "hard") return "volcano";
+  return "gold";
+}
+
+function formatFallbackResourceType(type: LearningAssistantFallbackResource["type"]) {
+  if (type === "courseware") return "课件";
+  if (type === "case") return "案例";
+  if (type === "checklist") return "清单";
+  if (type === "exercise") return "练习";
+  return "参考";
+}
+
+function formatParseStatus(status: LearningDocumentParseStatus) {
+  if (status === "ready") return "可解析";
+  if (status === "unsupported") return "未读到正文";
+  if (status === "unavailable") return "不可用";
+  return "检查中";
+}
+
+function parseStatusTagColor(status: LearningDocumentParseStatus) {
+  if (status === "ready") return "green";
+  if (status === "unsupported") return "orange";
+  if (status === "unavailable") return "red";
+  return "blue";
 }
 
 function formatQuizQuestionType(type: LearningAssistantQuizQuestion["type"]) {
@@ -1679,6 +2245,14 @@ function activityTagColor(type: LearningAssistantProgressActivity["activityType"
   if (type === "replan") return "orange";
   if (type === "document") return "blue";
   return "default";
+}
+
+function activityTimelineColor(type: LearningAssistantProgressActivity["activityType"]) {
+  if (type === "qa") return "cyan";
+  if (type === "quiz") return "purple";
+  if (type === "replan") return "orange";
+  if (type === "document") return "blue";
+  return "gray";
 }
 
 function buildPlanInput(values: LearningGoalFormValues) {
@@ -1844,6 +2418,95 @@ function upsertDocument(
   document: LearningProjectDocument,
 ): LearningProjectDocument[] {
   return [document, ...documents.filter((item) => item.documentId !== document.documentId)];
+}
+
+async function listAccountBackedNotes(): Promise<AccountBackedNote[]> {
+  const result = await noteApi.list({ page: 1, page_size: 100, sort_by: "default" });
+  return result.items.filter(isAccountBackedNote);
+}
+
+async function findAccountNoteByDocumentId(
+  documentId: string,
+  cachedNotes: AccountBackedNote[],
+): Promise<AccountBackedNote | null> {
+  const cached = cachedNotes.find((note) => note.account_document_id === documentId);
+  if (cached) return cached;
+  const notes = await listAccountBackedNotes();
+  return notes.find((note) => note.account_document_id === documentId) ?? null;
+}
+
+function isAccountBackedNote(note: unknown): note is AccountBackedNote {
+  return (
+    isRecord(note) &&
+    typeof note.account_document_id === "string" &&
+    typeof note.document_kind === "string" &&
+    typeof note.title === "string" &&
+    typeof note.updated_at === "string"
+  );
+}
+
+function addFallbackResourceToPlan(
+  currentPlan: LearningAssistantPlanResult,
+  resource: LearningAssistantFallbackResource,
+): LearningAssistantPlanResult {
+  if (!currentPlan.stages.length) return currentPlan;
+  const stageIndex = findStageIndexForResource(currentPlan, resource);
+  const resourceTask = `推荐资料：${resource.title}（${resource.knowledgePoint}，${resource.duration}）`;
+  const targetStage = currentPlan.stages[stageIndex];
+  if (targetStage.resourceTasks.some((task) => task.includes(resource.title))) return currentPlan;
+  const stages = currentPlan.stages.map((stage, index) =>
+    index === stageIndex
+      ? {
+          ...stage,
+          resourceTasks: mergeUniqueTasks(stage.resourceTasks, [resourceTask]),
+          checkTasks: mergeUniqueTasks(stage.checkTasks, [`阅读「${resource.title}」后，用 3 句话复述关键结论。`]),
+        }
+      : stage,
+  );
+  return {
+    ...currentPlan,
+    stages,
+    message: `已将推荐资源「${resource.title}」加入「${targetStage.name}」。`,
+  };
+}
+
+function findStageIndexForResource(
+  currentPlan: LearningAssistantPlanResult,
+  resource: LearningAssistantFallbackResource,
+): number {
+  const normalizedPoint = resource.knowledgePoint.trim();
+  const matchIndex = currentPlan.stages.findIndex((stage) =>
+    [
+      stage.goal,
+      ...stage.learningTasks,
+      ...stage.resourceTasks,
+      ...stage.practiceTasks,
+      ...(stage.knowledgePoints ?? []),
+      ...(stage.learningEntries ?? []).map((entry) => `${entry.title} ${entry.section}`),
+    ].some((value) => value.includes(normalizedPoint)),
+  );
+  return matchIndex >= 0 ? matchIndex : 0;
+}
+
+function mergeUniqueTasks(existing: string[], additions: string[]): string[] {
+  const merged = [...existing];
+  for (const addition of additions) {
+    const normalized = addition.trim();
+    if (normalized && !merged.some((task) => task.trim() === normalized)) {
+      merged.push(normalized);
+    }
+  }
+  return merged;
+}
+
+function hasPlanAdjustment(adjustments: unknown, adjustmentKey: string): boolean {
+  if (!Array.isArray(adjustments)) return false;
+  return adjustments.some(
+    (adjustment) =>
+      isRecord(adjustment) &&
+      typeof adjustment.adjustmentKey === "string" &&
+      adjustment.adjustmentKey === adjustmentKey,
+  );
 }
 
 function isLearningPlan(value: unknown): value is LearningAssistantPlanResult {

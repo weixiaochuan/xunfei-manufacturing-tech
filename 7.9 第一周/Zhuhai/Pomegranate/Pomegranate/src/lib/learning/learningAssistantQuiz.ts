@@ -95,6 +95,9 @@ export interface LearningAssistantQuizRecordItem {
   correct: boolean;
   knowledgePoint: string;
   missingKeywords: string[];
+  difficulty: LearningAssistantQuizDifficulty;
+  sourceTitle?: string;
+  sourceFile?: string;
 }
 
 export interface LearningAssistantQuizRecord {
@@ -276,6 +279,9 @@ export function buildLearningAssistantQuizRecord(input: {
         correct: detail?.correct ?? false,
         knowledgePoint: question.knowledgePoint,
         missingKeywords: detail?.missingKeywords ?? [],
+        difficulty: question.difficulty,
+        sourceTitle: question.sourceTitle,
+        sourceFile: question.sourceFile,
       };
     }),
   };
@@ -771,6 +777,9 @@ function parseQuizRecordItem(value: unknown): LearningAssistantQuizRecordItem | 
     correct: value.correct === true,
     knowledgePoint,
     missingKeywords: readStringArray(value.missingKeywords),
+    difficulty: readDifficulty(value.difficulty) ?? "medium",
+    sourceTitle: readOptionalString(value.sourceTitle),
+    sourceFile: readOptionalString(value.sourceFile),
   };
 }
 
@@ -925,6 +934,15 @@ function readQuestionType(value: unknown): LearningAssistantQuizQuestionType | n
   return value === "choice" || value === "judgment" || value === "short_answer"
     ? value
     : null;
+}
+
+function readDifficulty(value: unknown): LearningAssistantQuizDifficulty | null {
+  return value === "easy" || value === "medium" || value === "hard" ? value : null;
+}
+
+function readOptionalString(value: unknown): string | undefined {
+  const text = clean(value);
+  return text || undefined;
 }
 
 function readLevel(value: unknown): LearningAssistantQuizScoreResult["level"] | null {
