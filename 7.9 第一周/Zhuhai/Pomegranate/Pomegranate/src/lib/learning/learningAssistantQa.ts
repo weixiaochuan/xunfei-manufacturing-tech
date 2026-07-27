@@ -95,11 +95,24 @@ export function appendLearningAssistantQaRecordToProgress(
 ): JsonObject {
   const previous = isRecord(progress) ? progress : {};
   const records = extractLearningAssistantQaRecords(previous);
+  const safeRecord = parseQaRecord(record);
+  if (!safeRecord) {
+    return {
+      ...previous,
+      qaRecords: records,
+      qaRecordCount: records.length,
+    };
+  }
+  const maxRecords = normalizeRecordLimit(limit);
+  const nextRecords = [
+    safeRecord,
+    ...records.filter((item) => item.recordKey !== safeRecord.recordKey),
+  ].slice(0, maxRecords);
   return {
     ...previous,
-    qaRecords: [record, ...records.filter((item) => item.recordKey !== record.recordKey)].slice(0, limit),
-    qaRecordCount: Math.min(records.length + 1, limit),
-    latestQaAt: record.askedAt,
+    qaRecords: nextRecords,
+    qaRecordCount: nextRecords.length,
+    latestQaAt: safeRecord.askedAt,
   };
 }
 
@@ -264,6 +277,11 @@ function readConfidence(value: unknown): number | null {
     return null;
   }
   return value;
+}
+
+function normalizeRecordLimit(limit: number): number {
+  if (!Number.isSafeInteger(limit) || limit < 1) return LEARNING_ASSISTANT_QA_RECORD_LIMIT;
+  return Math.min(limit, 100);
 }
 
 function isNonEmptyString(value: unknown): value is string {

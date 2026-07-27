@@ -5,6 +5,7 @@ import {
   appendLearningAssistantQaRecordToProgress,
   buildLearningAssistantQaRecord,
   extractLearningAssistantQaRecords,
+  type LearningAssistantQaRecord,
   LEARNING_ASSISTANT_QA_SOURCE,
   LEARNING_ASSISTANT_QA_UNAVAILABLE_SOURCE,
 } from "./learningAssistantQa.ts";
@@ -77,6 +78,39 @@ test("preserves normal text containing token password and path words without sca
   assert.match(extracted[0]?.question ?? "", /API token/);
   assert.equal(progress.status, "planned");
   assert.equal(progress.qaRecordCount, 1);
+});
+
+test("persists QA memory through a whitelist and keeps duplicate count stable", () => {
+  const record = buildLearningAssistantQaRecord({
+    question: "How to reuse previous answers?",
+    searched,
+    askedAt: "2026-07-26T00:00:00.000Z",
+  });
+  const unsafeRecord = {
+    ...record,
+    token: "must-not-persist",
+    ownerUserId: "hidden-owner",
+    sources: [
+      {
+        ...record.sources[0],
+        storageKey: "hidden-storage",
+        authorization: "Bearer secret",
+      },
+    ],
+  } as unknown as LearningAssistantQaRecord;
+
+  const progress = appendLearningAssistantQaRecordToProgress(
+    appendLearningAssistantQaRecordToProgress({}, unsafeRecord),
+    unsafeRecord,
+  );
+  const serialized = JSON.stringify(progress);
+
+  assert.equal(progress.qaRecordCount, 1);
+  assert.equal(extractLearningAssistantQaRecords(progress).length, 1);
+  assert.equal(serialized.includes("must-not-persist"), false);
+  assert.equal(serialized.includes("hidden-owner"), false);
+  assert.equal(serialized.includes("hidden-storage"), false);
+  assert.equal(serialized.includes("Bearer secret"), false);
 });
 
 test("extracts only whitelisted QA record fields from saved progress", () => {
