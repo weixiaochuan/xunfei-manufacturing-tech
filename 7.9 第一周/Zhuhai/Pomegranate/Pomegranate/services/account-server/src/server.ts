@@ -120,7 +120,8 @@ export function buildServer(dependencies: ServerDependencies) {
     dependencies.oidcClient ?? createOidcClient(dependencies.config.oidc),
     dependencies.stateStore ?? new OidcStateStore(),
     dependencies.ticketStore ?? new DesktopLoginTicketStore(),
-    dependencies.platformUserService ?? createPlatformUserService(dependencies.pool),
+    dependencies.platformUserService ??
+      createPlatformUserService(dependencies.pool, dependencies.config.oidc.organization),
     sessionService,
     dependencies.config.nodeEnv === "development" &&
       process.env.OIDC_DEBUG_CLAIM_TYPES === "true",

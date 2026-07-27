@@ -9,7 +9,7 @@ type NodeEnvironment = "development" | "test" | "production";
 export type DeploymentProfile = "local" | "lan" | "cloud" | "public-ip-test";
 
 export const PUBLIC_IP_TEST_ACCOUNT_SERVER_ORIGIN = "http://82.157.119.201:8080";
-export const PUBLIC_IP_TEST_CASDOOR_ORIGIN = "http://82.157.119.201:8000";
+export const PUBLIC_IP_TEST_CASDOOR_ORIGIN = "http://82.157.119.201:18000";
 export const PUBLIC_IP_TEST_REDIRECT_URI = `${PUBLIC_IP_TEST_ACCOUNT_SERVER_ORIGIN}/auth/callback`;
 
 export interface OidcConfig {
@@ -17,8 +17,8 @@ export interface OidcConfig {
   clientId: string;
   clientSecret: string;
   redirectUri: string;
-  organization: "pomegranate";
-  application: "app-pomegranate";
+  organization: string;
+  application: string;
 }
 
 export interface AccountServerConfig {
@@ -173,6 +173,14 @@ function readPublicIpTestOptIn(profile: DeploymentProfile): boolean {
   return value === "true";
 }
 
+function readLocalTestCasdoorOptIn(): boolean {
+  const value = (process.env.ALLOW_LOCAL_TEST_CASDOOR ?? "false").trim();
+  if (value !== "true" && value !== "false") {
+    throw new Error("环境变量 ALLOW_LOCAL_TEST_CASDOOR 必须是 true 或 false");
+  }
+  return value === "true";
+}
+
 function isPublicIpv4Address(hostname: string): boolean {
   const parts = hostname.split(".");
   if (parts.length !== 4 || parts.some((part) => !/^(0|[1-9]\d{0,2})$/.test(part))) {
@@ -205,6 +213,7 @@ function readPublicUrl(
   name: string,
   profile: DeploymentProfile,
   allowInsecurePublicIpTest: boolean,
+  allowLocalTestCasdoor: boolean,
   fallback?: string,
 ): string {
   const value = process.env[name]?.trim() || fallback;
@@ -229,7 +238,14 @@ function readPublicUrl(
   }
 
   const isLoopback = url.hostname === "127.0.0.1" || url.hostname === "localhost";
-  if (profile === "local" && (url.protocol !== "http:" || !isLoopback)) {
+  const isApprovedLocalTestCasdoor =
+    name === "CASDOOR_PUBLIC_URL" &&
+    allowLocalTestCasdoor &&
+    value === PUBLIC_IP_TEST_CASDOOR_ORIGIN;
+  if (
+    profile === "local" &&
+    (url.protocol !== "http:" || (!isLoopback && !isApprovedLocalTestCasdoor))
+  ) {
     throw new Error(`local 环境的 ${name} 必须使用 HTTP 回环地址`);
   }
   if (
@@ -271,6 +287,7 @@ export function loadConfig(): AccountServerConfig {
   const nodeEnv = readNodeEnvironment();
   const deploymentProfile = readDeploymentProfile();
   const allowInsecurePublicIpTest = readPublicIpTestOptIn(deploymentProfile);
+  const allowLocalTestCasdoor = readLocalTestCasdoorOptIn();
   const host = readRequired("ACCOUNT_SERVER_HOST");
   if (deploymentProfile === "local" && host !== "127.0.0.1") {
     throw new Error("local 环境的 ACCOUNT_SERVER_HOST 必须是 127.0.0.1");
@@ -292,12 +309,14 @@ export function loadConfig(): AccountServerConfig {
     "ACCOUNT_SERVER_PUBLIC_URL",
     deploymentProfile,
     allowInsecurePublicIpTest,
+    false,
     localAccountFallback,
   );
   const casdoorPublicUrl = readPublicUrl(
     "CASDOOR_PUBLIC_URL",
     deploymentProfile,
     allowInsecurePublicIpTest,
+    allowLocalTestCasdoor,
     localCasdoorFallback,
   );
 
@@ -321,8 +340,8 @@ export function loadConfig(): AccountServerConfig {
       clientId: readRequired("CASDOOR_CLIENT_ID"),
       clientSecret: readRequired("CASDOOR_CLIENT_SECRET"),
       redirectUri: readRedirectUri(accountPublicUrl),
-      organization: readExact("CASDOOR_ORGANIZATION", "pomegranate"),
-      application: readExact("CASDOOR_APPLICATION", "app-pomegranate"),
+      organization: readRequired("CASDOOR_ORGANIZATION"),
+      application: readRequired("CASDOOR_APPLICATION"),
     },
     session: {
       ttlSeconds: 7 * 24 * 60 * 60,

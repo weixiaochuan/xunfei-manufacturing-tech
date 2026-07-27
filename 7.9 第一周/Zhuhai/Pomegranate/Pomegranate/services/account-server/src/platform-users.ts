@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 
-const PLATFORM_ORGANIZATION = "pomegranate";
+const DEFAULT_PLATFORM_ORGANIZATION = "pomegranate";
 
 export interface VerifiedPlatformIdentity {
   subject: string;
@@ -120,8 +120,9 @@ async function upsertPlatformUser(
 export async function findOrCreatePlatformUser(
   pool: Pool,
   identity: VerifiedPlatformIdentity,
+  expectedOrganization = DEFAULT_PLATFORM_ORGANIZATION,
 ): Promise<PlatformUser> {
-  if (identity.organization !== PLATFORM_ORGANIZATION) {
+  if (identity.organization !== expectedOrganization) {
     throw new PlatformUserIdentityError();
   }
 
@@ -145,6 +146,9 @@ export async function findOrCreatePlatformUser(
   }
 }
 
-export function createPlatformUserService(pool: Pool): FindOrCreatePlatformUser {
-  return (identity) => findOrCreatePlatformUser(pool, identity);
+export function createPlatformUserService(
+  pool: Pool,
+  expectedOrganization = DEFAULT_PLATFORM_ORGANIZATION,
+): FindOrCreatePlatformUser {
+  return (identity) => findOrCreatePlatformUser(pool, identity, expectedOrganization);
 }

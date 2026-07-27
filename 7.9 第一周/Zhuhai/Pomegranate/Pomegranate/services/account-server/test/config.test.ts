@@ -58,6 +58,51 @@ test("public-ip-test accepts only the approved temporary origins", () => {
   assert.equal(config.oidc.redirectUri, PUBLIC_IP_TEST_REDIRECT_URI);
 });
 
+test("Casdoor organization and application are environment-specific non-empty values", () => {
+  configureBaseEnvironment();
+  process.env.CASDOOR_ORGANIZATION = "pomegranate-test";
+  process.env.CASDOOR_APPLICATION = "app-pomegranate-test";
+
+  const config = loadConfig();
+
+  assert.equal(config.oidc.organization, "pomegranate-test");
+  assert.equal(config.oidc.application, "app-pomegranate-test");
+
+  process.env.CASDOOR_ORGANIZATION = " ";
+  assert.throws(() => loadConfig(), /CASDOOR_ORGANIZATION/);
+
+  process.env.CASDOOR_ORGANIZATION = "pomegranate-test";
+  process.env.CASDOOR_APPLICATION = " ";
+  assert.throws(() => loadConfig(), /CASDOOR_APPLICATION/);
+});
+
+test("local profile can explicitly use the approved remote test Casdoor", () => {
+  configureBaseEnvironment();
+  Object.assign(process.env, {
+    DEPLOYMENT_PROFILE: "local",
+    ALLOW_INSECURE_PUBLIC_IP_TEST: "false",
+    ALLOW_LOCAL_TEST_CASDOOR: "true",
+    ACCOUNT_SERVER_HOST: "127.0.0.1",
+    ACCOUNT_SERVER_PORT: "18080",
+    ACCOUNT_SERVER_PUBLIC_URL: "http://127.0.0.1:18080",
+    CASDOOR_PUBLIC_URL: PUBLIC_IP_TEST_CASDOOR_ORIGIN,
+    CASDOOR_REDIRECT_URI: "http://127.0.0.1:18080/auth/callback",
+  });
+
+  const config = loadConfig();
+
+  assert.equal(config.deploymentProfile, "local");
+  assert.equal(config.server.publicUrl, "http://127.0.0.1:18080");
+  assert.equal(config.oidc.baseUrl, PUBLIC_IP_TEST_CASDOOR_ORIGIN);
+
+  process.env.ALLOW_LOCAL_TEST_CASDOOR = "false";
+  assert.throws(() => loadConfig(), /CASDOOR_PUBLIC_URL/);
+
+  process.env.ALLOW_LOCAL_TEST_CASDOOR = "true";
+  process.env.CASDOOR_PUBLIC_URL = "http://82.157.119.201:8000";
+  assert.throws(() => loadConfig(), /CASDOOR_PUBLIC_URL/);
+});
+
 test("public-ip-test requires the explicit insecure HTTP opt-in", () => {
   configureBaseEnvironment();
   process.env.ALLOW_INSECURE_PUBLIC_IP_TEST = "false";
