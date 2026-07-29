@@ -56,11 +56,9 @@ fn verify(
     }
 
     // 3. T25 审计日志（失败不阻业务）
-    let _ = state.db.write_audit_log(
-        &plugin_id,
-        required_permission.unwrap_or("settings"),
-        None,
-    );
+    let _ = state
+        .db
+        .write_audit_log(&plugin_id, required_permission.unwrap_or("settings"), None);
 
     Ok(plugin_id)
 }
@@ -97,8 +95,7 @@ pub fn plugin_proxy_notes_search(
     limit: Option<usize>,
 ) -> Result<Vec<SearchResult>, String> {
     verify(&state, &token, Some("notes:read")).map_err(|e| e.to_string())?;
-    SearchService::search(&state.db, &keyword, limit)
-        .map_err(|e| e.to_string())
+    SearchService::search(&state.db, &keyword, limit).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -315,8 +312,7 @@ pub fn plugin_proxy_tasks_list(
     filter: Option<PluginTaskFilter>,
 ) -> Result<Vec<PluginTaskView>, String> {
     let _plugin_id = verify(&state, &token, Some("tasks.read")).map_err(|e| e.to_string())?;
-    TaskService::list_for_plugin(&state.db, filter.unwrap_or_default())
-        .map_err(|e| e.to_string())
+    TaskService::list_for_plugin(&state.db, filter.unwrap_or_default()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

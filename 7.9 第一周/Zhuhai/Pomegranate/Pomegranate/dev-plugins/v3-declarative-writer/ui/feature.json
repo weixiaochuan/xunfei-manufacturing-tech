@@ -1,0 +1,41 @@
+{
+  "title": "结构化写作工坊",
+  "description": "填写内容后由宿主的通用声明式渲染器生成 Markdown，不执行插件 JavaScript。",
+  "fields": [
+    {
+      "id": "title",
+      "label": "文章标题",
+      "type": "text",
+      "required": true,
+      "placeholder": "例如：智能制造课程学习总结"
+    },
+    {
+      "id": "audience",
+      "label": "目标读者",
+      "type": "select",
+      "required": true,
+      "defaultValue": "student",
+      "options": [
+        { "label": "学生", "value": "student" },
+        { "label": "教师", "value": "teacher" },
+        { "label": "研究人员", "value": "researcher" }
+      ]
+    },
+    {
+      "id": "points",
+      "label": "核心要点",
+      "type": "textarea",
+      "required": true,
+      "placeholder": "每行填写一个要点"
+    },
+    {
+      "id": "includeChecklist",
+      "label": "附带检查清单",
+      "type": "switch",
+      "defaultValue": true
+    }
+  ],
+  "submitLabel": "生成 Markdown",
+  "outputTitle": "写作结果",
+  "outputTemplate": "# {{title}}\n\n> 目标读者：{{audience}}\n\n## 核心内容\n\n{{points}}\n\n## 提交前检查\n\n- [ ] 结构清晰\n- [ ] 事实准确\n- [ ] 结论回应主题\n\n检查清单开关：{{includeChecklist}}"
+}

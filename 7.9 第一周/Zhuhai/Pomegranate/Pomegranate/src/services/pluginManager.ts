@@ -50,6 +50,13 @@ interface ActivePlugin {
 
 type EventHandler = (...args: unknown[]) => void;
 
+function isLegacyJsDevModeEnabled(): boolean {
+  return Boolean(
+    import.meta.env.DEV &&
+      String(import.meta.env.VITE_FIRSTWORK_ALLOW_LEGACY_JS ?? "").toLowerCase() === "1",
+  );
+}
+
 // ───────── 内部工具 ─────────
 
 function executePluginJS(code: string, pluginId: string): PluginModule {
@@ -281,7 +288,27 @@ export class PluginManager {
 
     console.log(`[PluginManager] 激活插件: ${info.id} v${info.version}`);
 
+    const policy = await pluginApi.canExecuteRuntime(info.id);
+    if (!policy.canExecute) {
+      throw new Error(policy.blockedReason ?? "插件运行时被安全策略阻止");
+    }
+
+    if (info.runtimeKind !== "legacy-js") {
+      console.log(`[PluginManager] 插件 ${info.id} 是 ${info.runtimeKind}，本阶段不执行 JS`);
+      this.active.set(info.id, {
+        info,
+        module: {},
+        token: "",
+        styleEl: null,
+      });
+      return;
+    }
+
     // T4: 1. 向 Rust 申领令牌
+    if (!isLegacyJsDevModeEnabled()) {
+      throw new Error("legacy-js 插件默认禁用；仅开发模式显式设置 VITE_FIRSTWORK_ALLOW_LEGACY_JS=1 后允许");
+    }
+
     let token: string;
     try {
       token = await invoke<string>("plugin_acquire_token", { pluginId: info.id });
@@ -303,7 +330,7 @@ export class PluginManager {
     const pluginModule = executePluginJS(mainJS, info.id);
 
     // 4. 构造 PluginContext（无 register* 顶层方法）
-    const appAPI = createAppAPI(info.id, token, this);
+    const appAPI = createAppAPI(info, token, this);
 
     const ctx: PluginContext = {
       app: appAPI,
@@ -370,7 +397,7 @@ export class PluginManager {
 
     // 2. 异步调用 onUnload（仅 active 有记录时；用 active 快照避免上面 delete 后丢失）
     if (active && typeof active.module.onUnload === "function") {
-      const appAPI = createAppAPI(pluginId, active.token, this);
+      const appAPI = createAppAPI(active.info, active.token, this);
       const ctx: PluginContext = {
         app: appAPI,
         meta: Object.freeze({
@@ -388,9 +415,11 @@ export class PluginManager {
     }
 
     // 3. 异步作废令牌（即使失败也不阻塞 UI；Rust 侧无令牌引用最终会过期）
-    await invoke("plugin_revoke_token", { pluginId }).catch((e) => {
-      console.warn(`[PluginManager] 作废令牌失败（忽略）:`, e);
-    });
+    if (active?.token) {
+      await invoke("plugin_revoke_token", { pluginId }).catch((e) => {
+        console.warn(`[PluginManager] 作废令牌失败（忽略）:`, e);
+      });
+    }
 
     console.log(`[PluginManager] 插件 ${pluginId} 已停用`);
   }

@@ -78,9 +78,9 @@ const MODULES: ModuleMeta[] = [
     icon: <Sparkles size={16} />,
   },
   {
-    view: "plugins",
-    label: "插件",
-    desc: "安装、启用和管理应用内插件",
+    view: "marketplace",
+    label: "AI 应用市场",
+    desc: "发现、安装并管理本地应用与插件",
     icon: <Plug size={16} />,
   },
   {

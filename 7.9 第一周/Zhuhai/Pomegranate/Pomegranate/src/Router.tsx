@@ -27,7 +27,8 @@ const MobileSync = lazy(() => import("@/pages/sync/MobileSync").then(m => ({ def
 const TasksPage = lazy(() => import("@/pages/tasks"));
 const CardsPage = lazy(() => import("@/pages/cards"));
 const PromptsPage = lazy(() => import("@/pages/prompts"));
-const PluginsPage = lazy(() => import("@/pages/plugins"));
+const MarketplacePage = lazy(() => import("@/pages/marketplace"));
+const PluginFeatureHost = lazy(() => import("@/pages/plugins/PluginFeatureHost"));
 const PptGenerationPage = lazy(() => import("@/pages/ppt-generation"));
 const PluginPanelViewPage = lazy(() => import("@/pages/plugins/PluginPanelViewPage"));
 const HiddenPage = lazy(() => import("@/pages/hidden"));
@@ -127,7 +128,11 @@ const router = createHashRouter([
       { path: "ai", element: <LazyPage><AiChatPage /></LazyPage> },
       { path: "learning-assistant", element: <LazyPage><LearningAssistantPage /></LazyPage> },
       { path: "prompts", element: <LazyPage><PromptsPage /></LazyPage> },
-      { path: "plugins", element: <LazyPage><PluginsPage /></LazyPage> },
+      { path: "marketplace", element: <LazyPage><MarketplacePage /></LazyPage> },
+      { path: "developer-center", element: <Navigate to="/marketplace?section=publish" replace /> },
+      { path: "review-center", element: <Navigate to="/marketplace?section=review" replace /> },
+      { path: "plugins", element: <Navigate to="/marketplace?section=plugins" replace /> },
+      { path: "plugins/:pluginId/features/:featureId", element: <LazyPage><PluginFeatureHost /></LazyPage> },
       { path: "ppt-generation", element: <LazyPage><PptGenerationPage /></LazyPage> },
       { path: "plugin-view/:viewId", element: <LazyPage><PluginPanelViewPage /></LazyPage> },
       { path: "tasks", element: <LazyPage><TasksPage /></LazyPage> },

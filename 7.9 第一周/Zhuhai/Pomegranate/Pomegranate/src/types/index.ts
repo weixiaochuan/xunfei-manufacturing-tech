@@ -53,7 +53,6 @@ export interface PptMaterialSourceRef {
   dailyDate?: string | null;
   hasUnsavedChanges?: boolean;
 }
-
 export interface ResolvedPptMaterialSource extends PptMaterialSourceRef {
   plainText: string;
 }
@@ -170,25 +169,24 @@ export interface PptMasterGenerateResult {
   timedOutAfterSeconds?: number | null;
   failedSvgFile?: string | null;
 }
-
-// ─── 插件系统 ───────────────────────────────────
-
 export interface PluginCommandContribution {
   id: string;
   title: string;
 }
-
 export interface PluginViewContribution {
   id: string;
   title: string;
 }
-
 export interface PluginContributes {
   commands: PluginCommandContribution[];
+  views: PluginViewContribution[];
   sidebarViews: PluginViewContribution[];
+  prompts: PluginPromptContribution[];
+  aiProviders: PluginAiProviderContribution[];
+  mcpServers: PluginMcpServerContribution[];
+  editorToolbar: PluginEditorToolbarContribution[];
   settings: boolean;
 }
-
 export interface PluginManifest {
   id: string;
   name: string;
@@ -201,7 +199,6 @@ export interface PluginManifest {
   permissions: string[];
   contributes: PluginContributes;
 }
-
 export interface PluginInfo {
   id: string;
   name: string;
@@ -219,9 +216,19 @@ export interface PluginInfo {
   manifest: PluginManifest;
   installedAt: string;
   updatedAt: string;
+  contentHash: string;
+  manifestFormat: PluginManifestFormat;
+  schemaVersion: number;
+  productType: ProductType;
+  runtimeKind: PluginRuntimeKind;
+  source: PluginSource;
+  signatureStatus: SignatureStatus;
+  integrityStatus: string;
+  canExecute: boolean;
+  blockedReason: string | null;
+  rawInvokeAllowed: boolean;
+  installation: PluginInstallationInfo | null;
 }
-
-/** 插件审计日志（T25） */
 export interface PluginAuditLogEntry {
   id: number;
   pluginId: string;
@@ -236,32 +243,20 @@ export interface PluginAuditLogEntry {
 
 /** AppAPI 版本号（与 Rust 侧固定字符串保持一致） */
 export const PLUGIN_API_VERSION = "1.2.0" as const;
-
-/** 插件暴露的模块约定：module.exports = { onLoad, onUnload } */
 export interface PluginModule {
   onLoad?: (ctx: PluginContext) => void | Promise<void>;
   onUnload?: (ctx: PluginContext) => void | Promise<void>;
 }
-
-/**
- * 插件 onLoad / onUnload 回调的上下文
- *
- * v1.0.0: 移除顶层 register* 方法，统一通过 ctx.app.* 子 API 操作。
- */
 export interface PluginContext {
   app: PluginAppAPI;
   meta: Readonly<PluginMeta>;
 }
-
-/** 插件元信息（精简版） */
 export interface PluginMeta {
   id: string;
   name: string;
   version: string;
   dir: string;
 }
-
-/** 插件命令面板项 */
 export interface PluginCommandDef {
   /** 命令 ID（不含 pluginId 前缀，PluginManager 自动加） */
   id: string;
@@ -270,8 +265,6 @@ export interface PluginCommandDef {
   hotkey?: string;
   callback: () => void | Promise<void>;
 }
-
-/** 插件侧边栏条目 */
 export interface PluginSidebarItemDef {
   id: string;
   icon: string;
@@ -282,8 +275,6 @@ export interface PluginSidebarItemDef {
   /** PluginManager 填充，插件不应设置 */
   pluginId?: string;
 }
-
-/** 插件面板视图 */
 export interface PluginPanelViewDef {
   id: string;
   title: string;
@@ -293,13 +284,6 @@ export interface PluginPanelViewDef {
   /** PluginManager 填充，插件不应设置 */
   pluginId?: string;
 }
-
-/**
- * 插件功能区（Ribbon）按钮 — 1.1.0 新增
- *
- * 渲染在主窗 Header 右侧，常用于"全局快捷动作"（例如"快速捕获"、"导出当前笔记"）。
- * 与 sidebar 的区别：Ribbon 是动作触发器（点完就走），不持有视图路由。
- */
 export interface PluginRibbonItemDef {
   id: string;
   /** Lucide 图标名（不区分大小写、忽略 -_ 空格） */
@@ -309,19 +293,6 @@ export interface PluginRibbonItemDef {
   /** PluginManager 填充，插件不应设置 */
   pluginId?: string;
 }
-
-/**
- * 编辑器右键菜单项 — 1.1.0 新增
- *
- * 触发：用户在 Tiptap 编辑器内右键时检查注册表，按 `when` 过滤后追加到菜单末尾。
- *
- * `when` 决定显示条件：
- * - `"always"`        - 任何位置右键都显示（默认）
- * - `"has-selection"` - 仅当有非空选区时显示
- * - `"cursor"`        - 仅当光标无选区时显示
- *
- * 触发 callback 时会传入 EditorActionCtx，提供对当前编辑器的受控操作（不暴露 Tiptap editor 实例）。
- */
 export interface PluginEditorContextMenuItemDef {
   id: string;
   label: string;
@@ -350,40 +321,23 @@ export interface EditorActionCtx {
   /** 取整篇内容为 markdown 文本（只读） */
   getContent(): string;
 }
-
-// ─── 子 API 接口 ─────────────────────────────────
-
-/** 命令注册子 API */
 export interface PluginCommandsAPI {
   addCommand(def: PluginCommandDef): () => void;
   removeCommand(id: string): void;
   executeCommand(fullId: string): void | Promise<void>;
 }
-
-/** 侧边栏注册子 API */
 export interface PluginSidebarAPI {
   addItem(def: PluginSidebarItemDef): void;
   removeItem(id: string): void;
 }
-
-/** 面板视图注册子 API */
 export interface PluginPanelViewsAPI {
   register(def: PluginPanelViewDef): void;
   unregister(id: string): void;
 }
-
-/** Ribbon 功能区注册子 API — 1.1.0 新增 */
 export interface PluginRibbonAPI {
   addItem(def: PluginRibbonItemDef): void;
   removeItem(id: string): void;
 }
-
-/**
- * 编辑器工具栏按钮 — 1.1.0 新增
- *
- * 渲染在编辑器顶部工具栏末尾，与内置按钮以细分隔线隔开。
- * callback 收到 EditorActionCtx，与右键菜单项共用同一受控接口。
- */
 export interface PluginEditorToolbarButtonDef {
   id: string;
   /** Lucide 图标名 */
@@ -393,8 +347,6 @@ export interface PluginEditorToolbarButtonDef {
   /** PluginManager 填充，插件不应设置 */
   pluginId?: string;
 }
-
-/** 编辑器扩展点子 API — 1.1.0 新增 */
 export interface PluginEditorAPI {
   addContextMenuItem(def: PluginEditorContextMenuItemDef): void;
   removeContextMenuItem(id: string): void;
@@ -407,8 +359,6 @@ export interface PluginEditorAPI {
    */
   getCurrentSelection(): string | null;
 }
-
-/** 插件任务 CRUD API */
 export interface PluginTasksAPI {
   list(filter?: PluginTaskFilter): Promise<PluginTaskView[]>;
   get(id: number): Promise<PluginTaskView | null>;
@@ -417,8 +367,6 @@ export interface PluginTasksAPI {
   complete(id: number): Promise<void>;
   delete(id: number): Promise<void>;
 }
-
-/** 插件任务视图注册 API */
 export interface PluginTaskViewsAPI {
   register(def: {
     id: string;
@@ -427,8 +375,6 @@ export interface PluginTaskViewsAPI {
     render: (container: HTMLElement, props: TaskViewProps) => void | (() => void);
   }): () => void;
 }
-
-/** 插件事件类型清单 */
 export interface PluginEvents {
   "workspace:active-note-changed": { noteId: number | null };
   "workspace:editor-saved": { noteId: number };
@@ -440,8 +386,6 @@ export interface PluginEvents {
   "task:deleted": Task;
   "task:reminded": Task;
 }
-
-/** 插件事件总线 */
 export interface PluginEventBus {
   on<K extends keyof PluginEvents>(
     event: K,
@@ -449,23 +393,19 @@ export interface PluginEventBus {
   ): () => void;
   emit<K extends keyof PluginEvents>(event: K, data: PluginEvents[K]): void;
 }
-
 export interface PluginAiMessage {
   role: "system" | "user" | "assistant";
   content: string;
 }
-
 export interface PluginAiChatCallbacks {
   onToken?: (token: string, fullText: string) => void;
   onDone?: (fullText: string) => void;
   onError?: (error: string) => void;
 }
-
 export interface PluginAiChatOptions {
   modelId?: number;
   conversationId?: number;
 }
-
 export interface PluginAiModelInfo {
   id: number;
   name: string;
@@ -479,14 +419,12 @@ export interface PluginAiModelInfo {
   supportsVision: boolean;
   maxOutputTokens: number | null;
 }
-
 export interface PluginAiTokenPayload {
   token: string;
   fullText: string | null;
   done: boolean;
   error: string | null;
 }
-
 export interface PluginAiAPI {
   chat(
     messages: PluginAiMessage[],
@@ -496,20 +434,14 @@ export interface PluginAiAPI {
   chatSync(messages: PluginAiMessage[], options?: PluginAiChatOptions): Promise<string>;
   listModels(): Promise<PluginAiModelInfo[]>;
 }
-
-/** 工作区子 API */
 export interface PluginWorkspaceAPI {
   getActiveNoteId(): number | null;
   getActiveNote(): Promise<Note | null>;
 }
-
-/** 通知子 API */
 export interface PluginNoticesAPI {
   show(message: string, duration?: number): void;
   error(message: string): void;
 }
-
-/** 设置子 API */
 export interface PluginSettingsTabDef {
   id: string;
   title: string;
@@ -549,11 +481,9 @@ export type SettingsFormField =
       options: Array<{ value: string; label: string }>;
       default?: string;
     };
-
 export interface PluginSettingsFormSchema {
   fields: SettingsFormField[];
 }
-
 export interface PluginSettingsAPI {
   get<T = unknown>(key: string): Promise<T | undefined>;
   set(key: string, value: unknown): Promise<void>;
@@ -568,8 +498,6 @@ export interface PluginSettingsAPI {
    */
   createForm(container: HTMLElement, schema: PluginSettingsFormSchema): () => void;
 }
-
-/** 笔记子 API */
 export interface PluginNotesAPI {
   list(query?: NoteQuery): Promise<Note[]>;
   get(id: number): Promise<Note | null>;
@@ -578,8 +506,6 @@ export interface PluginNotesAPI {
   update(id: number, input: NoteInput): Promise<Note>;
   delete(id: number): Promise<void>;
 }
-
-/** AppAPI v1.0.0 */
 export interface PluginAppAPI {
   readonly version: typeof PLUGIN_API_VERSION;
   workspace: PluginWorkspaceAPI;
@@ -602,19 +528,13 @@ export interface PluginAppAPI {
    * 通用 invoke 桥接（Phase 1 轻量方案，供插件调用现有 Rust Command）。
    * 直接透传 Tauri invoke，不做令牌/权限校验。
    */
-  invoke: <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+  invoke?: <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
   /**
    * 监听 Tauri 全局事件（Phase 1 轻量方案）。
    * 返回取消监听函数。
    */
-  onTauriEvent: <T = unknown>(event: string, handler: (payload: T) => void) => Promise<() => void>;
+  onTauriEvent?: <T = unknown>(event: string, handler: (payload: T) => void) => Promise<() => void>;
 }
-
-// ═══════════════════════════════════════════════════════
-// 旧版兼容类型（T4 完成后可移除）
-// ═══════════════════════════════════════════════════════
-
-/** @deprecated 使用 PluginContext（无 register* 方法） */
 export interface PluginContextLegacy {
   app: PluginAppAPI;
   meta: Readonly<PluginMeta>;
@@ -1672,8 +1592,6 @@ export interface SyncV1ProgressEvent {
 
 /** 数据目录来源 */
 export type DataDirSource = "env" | "pointer" | "default";
-
-/** 当前数据目录解析结果 */
 export interface ResolvedDataDir {
   /** 框架默认 app_data_dir（OS 给的固定位置）*/
   defaultDir: string;
@@ -1856,10 +1774,6 @@ export interface CardStats {
   newCards: number;
   total: number;
 }
-
-// ─── 插件化待办（阶段 2）─────────────────────────
-
-/** 插件可见的任务过滤条件 */
 export interface PluginTaskFilter {
   categoryId?: number | null;
   status?: 'pending' | 'completed' | 'archived';
@@ -1869,8 +1783,6 @@ export interface PluginTaskFilter {
   limit?: number;
   offset?: number;
 }
-
-/** 插件可见的任务对象（脱敏，不含 sourceBatchId 等内部字段） */
 export interface PluginTaskView {
   id: number;
   title: string;
@@ -1896,8 +1808,6 @@ export interface TaskViewProps {
     update(id: number, patch: Partial<PluginTaskView>): Promise<void>;
   };
 }
-
-/** 插件创建任务入参 */
 export interface PluginCreateTaskInput {
   title: string;
   description?: string | null;
@@ -1969,8 +1879,6 @@ export interface TaskSessionDetail {
   session: TaskSession;
   phases: ExecutionPhase[];
 }
-
-/** 插件更新任务入参 */
 export interface PluginUpdateTaskInput {
   title?: string;
   description?: string;
@@ -2101,4 +2009,1090 @@ export interface CourseGraphHealth {
   version?: string | null;
   stats?: CourseGraphStats | null;
   error?: string | null;
+}
+export type PluginRuntimeKind =
+  | "legacy-js"
+  | "declarative-ui"
+  | "prompt-pack"
+  | "xingchen-agent"
+  | "xingchen-workflow"
+  | "xingchen-mcp"
+  | "mcp-connector"
+  | "ppt-extension"
+  | "learning-extension";
+export type PluginSource =
+  | "bundled"
+  | "internal"
+  | "development"
+  | "local"
+  | "marketplace";
+export type ProductType =
+  | "local-plugin"
+  | "declarative-ui"
+  | "prompt-pack"
+  | "xingchen-agent"
+  | "xingchen-workflow"
+  | "xingchen-mcp"
+  | "mcp-connector"
+  | "knowledge-template"
+  | "database-template"
+  | "file-image-agent"
+  | "ppt-master-extension"
+  | "learning-assistant-extension";
+export type PluginManifestFormat = "legacy" | "v2" | "v3";
+export interface PluginCredentialRequirement {
+  id: string;
+  label?: string | null;
+  provider?: string | null;
+  fields: string[];
+  required: boolean;
+}
+export interface PluginPromptContribution {
+  id: string;
+  title: string;
+  description?: string | null;
+}
+export interface PluginAiProviderContribution {
+  id: string;
+  label?: string | null;
+  providerType?: string | null;
+}
+export interface PluginMcpServerContribution {
+  id: string;
+  label?: string | null;
+  transport?: string | null;
+}
+export interface PluginEditorToolbarContribution {
+  id: string;
+  label: string;
+  tooltip?: string | null;
+  icon?: string | null;
+  action?: string | null;
+}
+export interface PluginIntegrity {
+  sha256?: string | null;
+}
+export interface PluginSignature {
+  status: SignatureStatus;
+  signer?: string | null;
+}
+export interface PluginCompatibility {
+  compatible: boolean;
+  appVersion: string;
+  minAppVersion: string | null;
+  reason: string | null;
+}
+export interface PluginRuntimePolicy {
+  pluginId: string;
+  runtimeKind: PluginRuntimeKind;
+  source: PluginSource;
+  canExecute: boolean;
+  rawInvokeAllowed: boolean;
+  blockedReason: string | null;
+}
+export interface PluginInstallationInfo {
+  id: number;
+  pluginId: string;
+  productId: string | null;
+  productVersionId: number | null;
+  installedVersion: string;
+  source: PluginSource;
+  enabled: boolean;
+  installPath: string;
+  contentHash: string;
+  installedAt: string;
+  updatedAt: string;
+}
+export interface PluginIntegrityCheck {
+  pluginId: string;
+  expectedHash: string;
+  actualHash: string;
+  ok: boolean;
+  message: string | null;
+}
+export interface PluginPackageInspection {
+  manifest: NormalizedPluginManifest;
+  contentHash: string;
+  compatibility: PluginCompatibility;
+  runtimePolicy: PluginRuntimePolicy;
+  permissionDiff: PermissionDiff;
+  signatureStatus: SignatureStatus;
+}
+export type PluginClassification = "feature" | "enhancement" | "hybrid";
+export type PluginScene = "global" | "learning" | "research" | "teaching";
+export type PluginExecutionMode = "append" | "replace" | "exclusive";
+export type PluginEnhancementHook =
+  | "inputProcessor"
+  | "contextProvider"
+  | "promptEnhancer"
+  | "toolProvider"
+  | "outputProcessor"
+  | "uiContribution";
+export interface PluginDeclarativeHandler {
+  kind: "declarative" | string;
+  resource: string;
+}
+export interface PluginFeatureContributionV3 {
+  /** 解析启用贡献时由宿主回填；Manifest 中无需声明。 */
+  pluginId?: string | null;
+  id: string;
+  title: string;
+  description?: string | null;
+  icon?: string | null;
+  scenes: PluginScene[];
+  capabilities: string[];
+  uiSchema?: string | null;
+  handler?: PluginDeclarativeHandler | null;
+}
+export interface PluginAgentContributionV3 {
+  id: string;
+  title: string;
+  description?: string | null;
+  scenes: PluginScene[];
+  handler?: PluginDeclarativeHandler | null;
+}
+export interface PluginToolContributionV3 {
+  id: string;
+  title: string;
+  description?: string | null;
+  inputSchema?: unknown;
+  handler?: PluginDeclarativeHandler | null;
+}
+export interface PluginEnhancementContributionV3 {
+  id: string;
+  title: string;
+  hook: PluginEnhancementHook;
+  scenes: PluginScene[];
+  features: string[];
+  priority: number;
+  mode: PluginExecutionMode;
+  runsBefore: string[];
+  runsAfter: string[];
+  handler: PluginDeclarativeHandler;
+}
+export interface PluginManifestV3 {
+  schemaVersion: 3;
+  id: string;
+  name: string;
+  version: string;
+  authorId: string;
+  description?: string | null;
+  minAppVersion?: string | null;
+  classification: PluginClassification;
+  runtimeKind: PluginRuntimeKind;
+  source: PluginSource;
+  activationEvents: string[];
+  supportedScenes: PluginScene[];
+  defaultActivation: { global: boolean; scenes: Partial<Record<PluginScene, boolean>> };
+  permissions: string[];
+  dependencies: Array<{ id: string; version?: string | null; required: boolean }>;
+  conflictsWith: Array<{ id: string; reason?: string | null }>;
+  contributes: {
+    features: PluginFeatureContributionV3[];
+    agents: PluginAgentContributionV3[];
+    commands: PluginCommandContribution[];
+    views: PluginViewContribution[];
+    tools: PluginToolContributionV3[];
+    enhancements: PluginEnhancementContributionV3[];
+    settings: boolean;
+  };
+  integrity: PluginIntegrity;
+  signature: PluginSignature;
+}
+export interface PluginArchiveInspection {
+  archivePath: string;
+  manifest: PluginManifestV3;
+  contentHash: string;
+  rootPrefix?: string | null;
+  fileCount: number;
+  uncompressedBytes: number;
+  compatibility: PluginCompatibility;
+  permissionDiff: PermissionDiff;
+  addedPermissions: string[];
+  removedPermissions: string[];
+  conflicts: string[];
+  missingDependencies: string[];
+  signatureStatus: SignatureStatus;
+  runtimePolicy: PluginRuntimePolicy;
+  warnings: string[];
+  requiresConfirmation: boolean;
+}
+export interface PluginInstallArchiveInput {
+  path: string;
+  expectedHash: string;
+  approvedPermissions: string[];
+  confirmUnsigned: boolean;
+}
+export interface PluginInstallResult {
+  pluginId: string;
+  version: string;
+  installPath: string;
+  previousVersion?: string | null;
+  contentHash: string;
+  enabled: boolean;
+}
+export interface PluginVersionInfo {
+  pluginId: string;
+  version: string;
+  installPath: string;
+  contentHash: string;
+  isCurrent: boolean;
+  signatureStatus: SignatureStatus;
+  installedAt: string;
+}
+export interface PluginActivationRule {
+  pluginId: string;
+  scopeType: "global" | "scene" | "feature";
+  scopeKey: string;
+  enabled: boolean;
+  source: string;
+}
+export interface PluginExecutionContext {
+  scene: PluginScene;
+  feature: string;
+  userRole?: "student" | "teacher" | "unknown" | null;
+  userId?: string | null;
+  workspaceId?: string | null;
+  sessionId?: string | null;
+  requestId: string;
+  input?: unknown;
+  selectedResources: string[];
+  metadata: Record<string, unknown>;
+  sessionOverrides: Record<string, boolean>;
+}
+export interface PluginExecutionLogInput {
+  pluginId: string;
+  contributionId: string;
+  hook: PluginEnhancementHook;
+  context: PluginExecutionContext;
+  status: "success" | "failed" | "skipped";
+  durationMs?: number | null;
+  errorMessage?: string | null;
+}
+export interface ResolvedEnhancementContribution {
+  pluginId: string;
+  contribution: PluginEnhancementContributionV3;
+  resourcePath: string;
+}
+export interface ResolvedPluginContributions {
+  context: PluginExecutionContext;
+  activePlugins: string[];
+  features: PluginFeatureContributionV3[];
+  agents: PluginAgentContributionV3[];
+  tools: PluginToolContributionV3[];
+  enhancements: ResolvedEnhancementContribution[];
+  warnings: string[];
+}
+export interface PluginFeatureInvokeInput {
+  pluginId: string;
+  featureId: string;
+  externalAgentId: string;
+  parameters: Record<string, unknown>;
+  filePaths: Record<string, string[]>;
+  pluginSystemContext?: string | null;
+  pluginContributionIds?: string[];
+}
+export interface PluginFeatureInvokeResult {
+  ok: boolean;
+  requestId: string | null;
+  content: string;
+  outputKind: "text" | "markdown" | "json" | "docx-base64" | "file-base64";
+  outputFiles: WorkflowGeneratedFile[];
+  progress: number | null;
+  usage: unknown;
+  mock: boolean;
+}
+export type MarketplaceProductStatus =
+  | "draft"
+  | "submitted"
+  | "under_review"
+  | "approved"
+  | "published"
+  | "pending_review"
+  | "active"
+  | "rejected"
+  | "suspended"
+  | "revoked"
+  | "delisted";
+export type MarketplaceLicenseType = "free" | "one_time" | "subscription";
+export type MarketplaceEntitlementStatus =
+  | "active"
+  | "external_authorized"
+  | "unknown"
+  | "unavailable"
+  | "expired"
+  | "revoked";
+export type AiServiceDeliveryMode = "byok" | "hosted-api" | "remote-mcp";
+export interface MarketplacePrice {
+  currency: string;
+  amount: number;
+  priceType: MarketplaceLicenseType;
+  isMock: boolean;
+}
+export interface MarketplaceEntitlement {
+  id: number;
+  productId: string;
+  entitlementType: MarketplaceLicenseType;
+  status: MarketplaceEntitlementStatus;
+  issuedAt: string;
+  expiresAt: string | null;
+  ownerUserId?: string | null;
+  orderId?: number | null;
+}
+export interface MarketplaceProductQuery {
+  keyword?: string | null;
+  productType?: ProductType | null;
+  runtimeKind?: PluginRuntimeKind | null;
+  freeOnly?: boolean | null;
+  acquiredOnly?: boolean | null;
+  installedOnly?: boolean | null;
+  byokOnly?: boolean | null;
+  status?: MarketplaceProductStatus | null;
+}
+export interface MarketplaceProductSummary {
+  id: string;
+  pluginId: string;
+  name: string;
+  developerId: string;
+  developerName: string;
+  sellerUserId?: string | null;
+  sellerNickname?: string | null;
+  description: string;
+  icon: string | null;
+  currentVersion: string;
+  packageFormat: "v2-zip" | "v3-firstwork-plugin" | string;
+  manifestSchemaVersion: number;
+  classification: PluginClassification | null;
+  supportedScenes: string[];
+  productType: ProductType;
+  runtimeKind: PluginRuntimeKind;
+  status: MarketplaceProductStatus;
+  signatureStatus: SignatureStatus;
+  source: PluginSource;
+  minAppVersion: string | null;
+  price: MarketplacePrice;
+  byokRequired: boolean;
+  deliveryMode?: AiServiceDeliveryMode | null;
+  protocol?: string | null;
+  permissions: string[];
+  permissionSummary: string[];
+  acquired: boolean;
+  installed: boolean;
+  enabled: boolean;
+  installedVersion: string | null;
+  hasUpdate: boolean;
+  updateVersion: string | null;
+  revoked: boolean;
+  riskNotes: string[];
+  mockMode: boolean;
+  selfOwned: boolean;
+}
+export interface MarketplaceProductDetail extends MarketplaceProductSummary {
+  summary?: MarketplaceProductSummary;
+  fullDescription: string;
+  changelog: string;
+  manifest: NormalizedPluginManifest;
+  credentialRequirements: PluginCredentialRequirement[];
+  configurationSchema?: unknown;
+  fileUploadNotice: string | null;
+  dataDestination: string | null;
+  licenseType: MarketplaceLicenseType;
+  entitlement: MarketplaceEntitlement | null;
+  installation: PluginInstallationInfo | null;
+  integrityStatus: string;
+  permissionDiff: PermissionDiff | null;
+  configurationChanged: boolean;
+  blockedReason: string | null;
+}
+export interface MarketplaceAcquireInput {
+  productId: string;
+  licenseType?: MarketplaceLicenseType | null;
+}
+export interface MarketplaceExternalAuthorizationInput {
+  productId: string;
+  externalReference?: string | null;
+  note?: string | null;
+}
+export interface MarketplaceServiceConfigurationInput {
+  productId: string;
+  credentialId?: string | null;
+  networkPermissionConfirmed?: boolean;
+}
+export interface MarketplaceInstallInput {
+  productId: string;
+  version?: string | null;
+  confirmPermissions?: boolean;
+}
+export interface MarketplaceUpdateInput {
+  productId: string;
+  confirmAddedPermissions?: boolean;
+}
+export interface MarketplacePermissionRejectionInput {
+  productId: string;
+  action: "install" | "update";
+}
+export interface MarketplaceActionResult {
+  ok: boolean;
+  productId: string;
+  pluginId: string | null;
+  message: string;
+  requiresPermissionConfirmation: boolean;
+  permissionDiff?: PermissionDiff | null;
+  entitlement?: MarketplaceEntitlement | null;
+  installation?: PluginInstallationInfo | null;
+}
+export interface MarketplaceUpdateInfo {
+  productId: string;
+  pluginId: string;
+  installedVersion: string | null;
+  latestVersion: string;
+  hasUpdate: boolean;
+  permissionDiff: PermissionDiff;
+  changelog: string;
+  blockedReason: string | null;
+}
+export interface MarketplaceMockTestResult {
+  ok: boolean;
+  productId: string;
+  title: string;
+  message: string;
+  mock: boolean;
+}
+export type MarketplaceMockRole = "customer" | "developer" | "admin";
+export type MarketplaceReviewStatus =
+  | "draft"
+  | "submitted"
+  | "under_review"
+  | "approved"
+  | "published"
+  | "rejected"
+  | "suspended"
+  | "delisted"
+  | "revoked";
+export type MarketplaceScanStatus = "not_scanned" | "passed" | "warning" | "failed";
+export interface MarketplaceMockSession {
+  userId: string;
+  displayName: string;
+  role: MarketplaceMockRole;
+  nickname?: string | null;
+  avatar?: string | null;
+  bio?: string | null;
+  accountStatus?: string | null;
+  developerStatus?: string | null;
+  isMock: boolean;
+  notice: string;
+  canBuy: boolean;
+  canSell: boolean;
+  canAdmin: boolean;
+}
+export interface LocalAccountProfile {
+  userId: string;
+  nickname: string;
+  avatar?: string | null;
+  bio?: string | null;
+  accountStatus: string;
+  developerStatus: string;
+  createdAt: string;
+  isMock: boolean;
+  canBuy: boolean;
+  canSell: boolean;
+  canAdmin: boolean;
+}
+export interface LocalAccountUpdateInput {
+  nickname?: string | null;
+  avatar?: string | null;
+  bio?: string | null;
+}
+export interface MarketplaceOrder {
+  id: number;
+  buyerUserId: string;
+  sellerUserId: string;
+  productId: string;
+  productName: string;
+  productVersionId?: number | null;
+  versionSnapshot?: string | null;
+  currency: string;
+  grossAmount: number;
+  platformFee: number;
+  sellerIncome: number;
+  paymentStatus: string;
+  settlementStatus: string;
+  refundStatus: string;
+  isMock: boolean;
+  createdAt: string;
+  completedAt?: string | null;
+}
+export interface MarketplaceLedgerEntry {
+  id: number;
+  entryType: string;
+  orderId?: number | null;
+  orderItemId?: number | null;
+  buyerUserId?: string | null;
+  sellerUserId?: string | null;
+  productId?: string | null;
+  amount: number;
+  currency: string;
+  isMock: boolean;
+  memo?: string | null;
+  createdAt: string;
+}
+export interface MarketplaceRefundInput {
+  orderId: number;
+  reason?: string | null;
+}
+export interface MarketplaceReviewInput {
+  orderId: number;
+  productId: string;
+  rating: number;
+  content: string;
+}
+export interface MarketplaceReviewInfo {
+  id: number;
+  orderId: number;
+  productId: string;
+  buyerUserId: string;
+  buyerNickname: string;
+  sellerUserId: string;
+  rating: number;
+  content: string;
+  status: string;
+  verifiedPurchase: boolean;
+  orderRefunded: boolean;
+  createdAt: string;
+}
+export interface DeveloperProductInput {
+  name: string;
+  description: string;
+  fullDescription?: string | null;
+  icon?: string | null;
+  productType: ProductType;
+  runtimeKind: PluginRuntimeKind;
+  category?: string | null;
+  tags?: string[];
+  byokRequired?: boolean;
+  deliveryMode?: AiServiceDeliveryMode | null;
+  protocol?: string | null;
+  serviceConfiguration?: Record<string, unknown> | null;
+  thirdPartyDependencies?: string | null;
+  fileUploadRequired?: boolean;
+  dataDestination?: string | null;
+  privacyNotice?: string | null;
+  usageGuide?: string | null;
+  licenseType: MarketplaceLicenseType;
+  priceAmount?: number;
+  supportPeriod?: string | null;
+}
+export interface DeveloperVersionInput {
+  productId: string;
+  version: string;
+  changelog?: string | null;
+}
+export interface DeveloperUploadPackageInput {
+  productId: string;
+  version: string;
+  zipPath: string;
+  changelog?: string | null;
+}
+export interface DeveloperSubmitInput {
+  productId: string;
+  version?: string | null;
+}
+export interface MarketplaceRiskFinding {
+  severity: string;
+  category: string;
+  file: string;
+  message: string;
+  redactedExcerpt?: string | null;
+}
+export interface MarketplacePackageReport {
+  ok: boolean;
+  status: MarketplaceScanStatus;
+  packageFormat: "v2-zip" | "v3-firstwork-plugin" | string;
+  manifestValid: boolean;
+  schemaVersion: number | null;
+  pluginId: string | null;
+  classification: PluginClassification | null;
+  productId: string | null;
+  version: string | null;
+  productType: ProductType | null;
+  runtimeKind: PluginRuntimeKind | null;
+  deliveryMode?: AiServiceDeliveryMode | null;
+  protocol?: string | null;
+  source: PluginSource | null;
+  fileCount: number;
+  compressedSize: number;
+  unpackedSize: number;
+  sha256: string;
+  signatureStatus: SignatureStatus;
+  permissions: string[];
+  credentialRequirements: PluginCredentialRequirement[];
+  features: string[];
+  enhancementHooks: string[];
+  supportedScenes: string[];
+  hasExecutables: boolean;
+  hasScripts: boolean;
+  hasSuspectedSecrets: boolean;
+  hasExternalUrls: boolean;
+  hasAbsolutePaths: boolean;
+  hasHighRiskPermissions: boolean;
+  compatible: boolean;
+  findings: MarketplaceRiskFinding[];
+  warnings: string[];
+  errors: string[];
+}
+export interface DeveloperProductVersion {
+  id: number;
+  version: string;
+  status: MarketplaceReviewStatus;
+  reviewStatus: MarketplaceReviewStatus;
+  scanStatus: MarketplaceScanStatus;
+  changelog: string;
+  contentHash: string;
+  packagePath: string | null;
+  packageFormat: "v2-zip" | "v3-firstwork-plugin" | string;
+  manifestSchemaVersion: number;
+  pluginId: string | null;
+  classification: PluginClassification | null;
+  approvedContentHash: string | null;
+  packageLocked: boolean;
+  createdAt: string;
+}
+export interface DeveloperProduct {
+  id: string;
+  pluginId: string;
+  name: string;
+  description: string;
+  fullDescription: string;
+  developerId: string;
+  developerName: string;
+  productType: ProductType;
+  runtimeKind: PluginRuntimeKind;
+  status: MarketplaceReviewStatus;
+  category: string;
+  tags: string[];
+  byokRequired: boolean;
+  deliveryMode?: AiServiceDeliveryMode | null;
+  protocol?: string | null;
+  serviceConfiguration?: Record<string, unknown> | null;
+  licenseType: MarketplaceLicenseType;
+  price: MarketplacePrice;
+  mockMode: boolean;
+  currentVersion: string | null;
+  versions: DeveloperProductVersion[];
+}
+export interface MarketplaceSubmission {
+  id: number;
+  productId: string;
+  productVersionId: number | null;
+  productName: string;
+  version: string | null;
+  developerId: string;
+  developerName: string;
+  status: MarketplaceReviewStatus;
+  submittedBy: string;
+  submittedAt: string;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  reviewMessage: string | null;
+  scanReport: MarketplacePackageReport | null;
+}
+export interface AdminReviewInput {
+  submissionId: number;
+  message?: string | null;
+}
+export interface AdminProductModerationInput {
+  productId: string;
+  reason: string;
+}
+export interface AdminVersionModerationInput {
+  productId: string;
+  version?: string | null;
+  reason: string;
+}
+export interface DeveloperDashboard {
+  developerId: string;
+  productCount: number;
+  externalServiceCount: number;
+  invocationCount: number;
+  invocationSuccessCount: number;
+  invocationFailedCount: number;
+  mockOrderCount: number;
+  mockAcquireCount: number;
+  mockInstallCount: number;
+  mockEnabledCount: number;
+  grossAmount: number;
+  platformFee: number;
+  developerAmount: number;
+  currency: string;
+  isMock: boolean;
+}
+export interface DeveloperEarning {
+  id: number;
+  productId: string;
+  productName: string;
+  grossAmount: number;
+  platformFee: number;
+  developerAmount: number;
+  currency: string;
+  isMock: boolean;
+  status: string;
+  createdAt: string;
+}
+export interface PluginDocumentToolbarButton {
+  pluginId: string;
+  pluginName: string;
+  id: string;
+  label: string;
+  tooltip: string;
+  icon: string;
+  action: "mock-document-summary";
+}
+export interface PluginDocumentSummaryInput {
+  pluginId: string;
+  title: string;
+  content: string;
+}
+export interface PluginDocumentSummaryInsertInput {
+  pluginId: string;
+  title: string;
+}
+export interface PluginSummaryAgentOption {
+  id: string;
+  name: string;
+  productId: string;
+  productName?: string | null;
+  provider: string;
+  protocolType: AgentProtocolType;
+  mockMode: boolean;
+  enabled: boolean;
+}
+export interface PluginDocumentSummaryConfig {
+  pluginId: string;
+  mode: "mock" | "agent";
+  externalAgentId?: string | null;
+  availableAgents: PluginSummaryAgentOption[];
+}
+export interface PluginDocumentSummaryConfigInput {
+  pluginId: string;
+  mode: "mock" | "agent";
+  externalAgentId?: string | null;
+}
+export interface PluginDocumentSummaryAgentStartInput {
+  pluginId: string;
+  title: string;
+  content: string;
+  externalAgentId?: string | null;
+  effectiveContent?: string | null;
+  pluginSystemContext?: string | null;
+  pluginContributionIds?: string[];
+}
+export interface PluginDocumentSummaryAgentStartResult {
+  pluginId: string;
+  externalAgentId: string;
+  sessionId: string;
+  requestId: string;
+  mock: boolean;
+}
+export interface PluginDocumentSummaryAgentFinalizeInput {
+  pluginId: string;
+  externalAgentId: string;
+  sessionId: string;
+  requestId: string;
+  status: "completed" | "failed" | "cancelled" | string;
+  errorCode?: string | null;
+}
+export interface PluginDocumentSummaryCancelInput {
+  pluginId: string;
+  requestId: string;
+}
+export interface PluginDocumentSummaryResult {
+  pluginId: string;
+  title: string;
+  summary: string;
+  mock: boolean;
+  providerLabel: string;
+  wordCount: number;
+  generatedAt: string;
+}
+export type CredentialType = "app_key_secret" | "bearer_token" | "api_key";
+export interface CredentialInfo {
+  id: string;
+  provider: string;
+  credentialType: CredentialType;
+  label: string;
+  ownerScope: string;
+  configured: boolean;
+  maskedHint?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt?: string | null;
+}
+export interface CredentialSecretInput {
+  appId?: string | null;
+  apiKey?: string | null;
+  apiSecret?: string | null;
+  bearerToken?: string | null;
+}
+export interface CredentialCreateInput {
+  provider: string;
+  credentialType: CredentialType;
+  label: string;
+  ownerScope?: string;
+  secrets: CredentialSecretInput;
+}
+export interface CredentialUpdateInput {
+  label?: string | null;
+  secrets?: CredentialSecretInput | null;
+  clearSecret?: boolean;
+}
+export interface CredentialUsage {
+  credentialId: string;
+  externalAgentId: string;
+  agentName: string;
+  productId: string;
+  productName: string;
+  enabled: boolean;
+}
+export type AgentAuthenticationType = "none" | "bearer" | "api_key_header" | "signed_request";
+export type AgentStreamingType = "none" | "sse" | "websocket" | "chunked_json";
+export type AgentProtocolType = "configurable" | "xingchen_workflow_v1";
+export type WorkflowInputFieldType =
+  | "string"
+  | "multiline"
+  | "integer"
+  | "number"
+  | "boolean"
+  | "select"
+  | "json"
+  | "file"
+  | "files";
+export interface WorkflowInputOption {
+  label: string;
+  value: string;
+}
+export interface WorkflowFileConfig {
+  allowedExtensions?: string[];
+  maxSizeMb?: number;
+  multiple?: boolean;
+  valueMode?: "string" | "array" | "comma" | "newline";
+}
+export interface WorkflowInputField {
+  key: string;
+  label: string;
+  type: WorkflowInputFieldType;
+  required?: boolean;
+  defaultValue?: unknown;
+  placeholder?: string;
+  description?: string;
+  options?: WorkflowInputOption[];
+  order?: number;
+  sensitive?: boolean;
+  fileConfig?: WorkflowFileConfig;
+}
+export interface WorkflowInputSchema {
+  fields: WorkflowInputField[];
+}
+export interface ExternalAgentConfig {
+  id: string;
+  installationId?: number | null;
+  productId: string;
+  productVersionId?: number | null;
+  productName?: string | null;
+  provider: string;
+  name: string;
+  endpoint: string;
+  agentId?: string | null;
+  botId?: string | null;
+  flowId?: string | null;
+  protocolType: AgentProtocolType;
+  localUid?: string | null;
+  authenticationType: AgentAuthenticationType;
+  credentialId?: string | null;
+  streamingType: AgentStreamingType;
+  requestMappingJson: string;
+  responseMappingJson: string;
+  sessionMappingJson: string;
+  errorMappingJson: string;
+  mockMode: boolean;
+  enabled: boolean;
+  unavailableReason?: string | null;
+  lastTestedAt?: string | null;
+  lastTestStatus?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface ExternalAgentInput {
+  productId: string;
+  name: string;
+  endpoint: string;
+  agentId?: string | null;
+  botId?: string | null;
+  flowId?: string | null;
+  protocolType?: AgentProtocolType;
+  localUid?: string | null;
+  authenticationType: AgentAuthenticationType;
+  credentialId?: string | null;
+  streamingType: AgentStreamingType;
+  requestMappingJson?: string | null;
+  responseMappingJson?: string | null;
+  sessionMappingJson?: string | null;
+  errorMappingJson?: string | null;
+  mockMode?: boolean;
+  enabled?: boolean;
+}
+export interface AgentTestResult {
+  ok: boolean;
+  provider: string;
+  mock: boolean;
+  message: string;
+  latencyMs: number;
+  errorCode?: string | null;
+  requestId?: string | null;
+  httpStatus?: number | null;
+}
+export interface AgentSessionInfo {
+  id: string;
+  externalAgentId: string;
+  remoteSessionId?: string | null;
+  title: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface AgentMessageInfo {
+  id: string;
+  sessionId: string;
+  role: string;
+  content: string;
+  status: string;
+  requestId?: string | null;
+  createdAt: string;
+}
+export interface AgentSessionCreateInput {
+  externalAgentId: string;
+  title?: string | null;
+}
+export interface AgentSendMessageInput {
+  sessionId: string;
+  content: string;
+  effectiveContent?: string | null;
+  pluginSystemContext?: string | null;
+  pluginContributionIds?: string[];
+  scenario?: string | null;
+  sourcePluginId?: string | null;
+  sourceFeature?: string | null;
+}
+export interface AgentSendMessageResult {
+  requestId: string;
+  sessionId: string;
+  status: string;
+  mock: boolean;
+}
+export interface AgentWorkflowInvokeInput {
+  externalAgentId: string;
+  parameters: Record<string, unknown>;
+  filePaths?: Record<string, string[]>;
+  sourcePluginId?: string | null;
+  sourceFeature?: string | null;
+  pluginSystemContext?: string | null;
+  pluginContributionIds?: string[];
+}
+export interface AgentWorkflowInvokeResult {
+  ok: boolean;
+  externalAgentId: string;
+  requestId: string;
+  remoteId?: string | null;
+  content: string;
+  progress?: number | null;
+  usage?: unknown;
+  httpStatus?: number | null;
+  code?: number | null;
+  message: string;
+  mock: boolean;
+  outputFiles?: WorkflowGeneratedFile[];
+  debugJson?: string | null;
+}
+export interface WorkflowGeneratedFile {
+  fileName: string;
+  path: string;
+  size: number;
+  contentType: string;
+}
+export interface AgentStreamEvent {
+  requestId: string;
+  sessionId: string;
+  externalAgentId: string;
+  event: "started" | "session_created" | "text_delta" | "tool_call" | "completed" | "cancelled" | "error" | string;
+  delta?: string | null;
+  message?: string | null;
+  errorCode?: string | null;
+  remoteId?: string | null;
+  seq?: number | null;
+  progress?: number | null;
+  usage?: unknown;
+  done: boolean;
+  mock: boolean;
+}
+export interface AgentUsageEvent {
+  id: number;
+  productId?: string | null;
+  externalAgentId?: string | null;
+  sessionId?: string | null;
+  requestId: string;
+  startedAt: string;
+  completedAt?: string | null;
+  durationMs?: number | null;
+  status: string;
+  providerErrorCode?: string | null;
+  estimatedInputUsage?: number | null;
+  estimatedOutputUsage?: number | null;
+  sourcePluginId?: string | null;
+  metadataJson?: string | null;
+}
+
+
+export type SignatureStatus = "unsigned" | "valid" | "invalid" | "revoked";
+
+export interface NormalizedPluginManifest {
+  format: PluginManifestFormat;
+  schemaVersion: number;
+  id: string;
+  name: string;
+  version: string;
+  authorId: string | null;
+  description: string | null;
+  icon: string | null;
+  minAppVersion: string | null;
+  productType: ProductType;
+  runtimeKind: PluginRuntimeKind;
+  source: PluginSource;
+  deliveryMode?: AiServiceDeliveryMode | null;
+  protocol?: string | null;
+  main: string | null;
+  styles: string | null;
+  permissions: string[];
+  credentialRequirements: PluginCredentialRequirement[];
+  configurationSchema?: unknown;
+  contributes: PluginContributes;
+  integrity: PluginIntegrity;
+  signature: PluginSignature;
+  legacyManifest: PluginManifest;
+}
+
+export interface PermissionDiff {
+  added: string[];
+  removed: string[];
+  unchanged: string[];
+}
+
+export interface BindableXingchenProduct {
+  id: string;
+  name: string;
+  productType: ProductType;
+  runtimeKind: PluginRuntimeKind;
+  currentVersion: string;
+  productVersionId?: number | null;
+  installationId: number;
+  enabled: boolean;
+  revoked: boolean;
 }

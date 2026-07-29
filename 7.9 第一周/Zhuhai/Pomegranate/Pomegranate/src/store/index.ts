@@ -45,7 +45,7 @@ export type ActiveView =
   | "ai"
   | "learning-assistant"
   | "prompts"
-  | "plugins"
+  | "marketplace"
   | "ppt-generation"
   | "about"
   | "trash"
@@ -422,7 +422,7 @@ export const OPTIONAL_VIEWS: readonly ActiveView[] = [
   "ai",
   "learning-assistant",
   "prompts",
-  "plugins",
+  "marketplace",
   "hidden",
 ] as const;
 

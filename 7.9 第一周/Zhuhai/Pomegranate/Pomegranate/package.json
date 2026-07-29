@@ -17,6 +17,8 @@
     "build:mcp:debug": "node scripts/build-mcp.mjs --debug",
     "build:win7": "node scripts/build-win7.mjs",
     "build:win7:debug": "node scripts/build-win7.mjs --debug",
+    "plugin:pack": "node scripts/plugin-package.mjs pack",
+    "plugin:verify": "node scripts/plugin-package.mjs verify",
     "test:account-documents": "node --experimental-strip-types --test src/lib/documents/*.test.mjs"
   },
   "dependencies": {

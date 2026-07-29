@@ -1,3 +1,4 @@
+import type { AdminProductModerationInput, AdminReviewInput, AdminVersionModerationInput, AgentMessageInfo, AgentSendMessageInput, AgentSendMessageResult, AgentSessionCreateInput, AgentSessionInfo, AgentTestResult, AgentUsageEvent, AgentWorkflowInvokeInput, AgentWorkflowInvokeResult, BindableXingchenProduct, CredentialCreateInput, CredentialInfo, CredentialUpdateInput, CredentialUsage, DeveloperDashboard, DeveloperEarning, DeveloperProduct, DeveloperProductInput, DeveloperProductVersion, DeveloperSubmitInput, DeveloperUploadPackageInput, DeveloperVersionInput, ExternalAgentConfig, ExternalAgentInput, LocalAccountProfile, LocalAccountUpdateInput, MarketplaceAcquireInput, MarketplaceActionResult, MarketplaceEntitlement, MarketplaceExternalAuthorizationInput, MarketplaceInstallInput, MarketplaceLedgerEntry, MarketplaceMockRole, MarketplaceMockSession, MarketplaceMockTestResult, MarketplaceOrder, MarketplacePackageReport, MarketplacePermissionRejectionInput, MarketplaceProductDetail, MarketplaceProductQuery, MarketplaceProductSummary, MarketplaceRefundInput, MarketplaceReviewInfo, MarketplaceReviewInput, MarketplaceReviewStatus, MarketplaceServiceConfigurationInput, MarketplaceSubmission, MarketplaceUpdateInfo, MarketplaceUpdateInput, NormalizedPluginManifest, PermissionDiff, PluginActivationRule, PluginArchiveInspection, PluginCompatibility, PluginDocumentSummaryAgentFinalizeInput, PluginDocumentSummaryAgentStartInput, PluginDocumentSummaryAgentStartResult, PluginDocumentSummaryCancelInput, PluginDocumentSummaryConfig, PluginDocumentSummaryConfigInput, PluginDocumentSummaryInput, PluginDocumentSummaryInsertInput, PluginDocumentSummaryResult, PluginDocumentToolbarButton, PluginExecutionContext, PluginExecutionLogInput, PluginFeatureInvokeInput, PluginFeatureInvokeResult, PluginInstallArchiveInput, PluginInstallResult, PluginInstallationInfo, PluginIntegrityCheck, PluginPackageInspection, PluginRuntimePolicy, PluginSummaryAgentOption, PluginVersionInfo, ResolvedPluginContributions } from "@/types";
 import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 import {
@@ -299,35 +300,57 @@ export const pptMasterApi = {
     return invoke<PptMasterGenerateResult>("ppt_master_generate_from_prompt", { input });
   },
 };
-
-/** 插件系统 API（MVP：管理元数据，不执行第三方 JS） */
-export const pluginApi = {
-  list: () => invoke<PluginInfo[]>("list_plugins"),
-  scan: () => invoke<PluginInfo[]>("scan_plugins"),
-  installFromDir: (path: string) =>
-    invoke<PluginInfo>("install_plugin_from_dir", { path }),
-  enable: (pluginId: string) => invoke<void>("enable_plugin", { pluginId }),
-  disable: (pluginId: string) => invoke<void>("disable_plugin", { pluginId }),
-  uninstall: (pluginId: string) =>
-    invoke<boolean>("uninstall_plugin", { pluginId }),
-  getManifest: (pluginId: string) =>
-    invoke<PluginManifest>("get_plugin_manifest", { pluginId }),
-  grantPermissions: (pluginId: string, permissions: string[]) =>
-    invoke<number>("grant_plugin_permissions", { pluginId, permissions }),
-  revokePermissions: (pluginId: string, permissions: string[]) =>
-    invoke<number>("revoke_plugin_permissions", { pluginId, permissions }),
-  getSettings: (pluginId: string) =>
-    invoke<Record<string, unknown>>("get_plugin_settings", { pluginId }),
-  setSettings: (pluginId: string, settings: Record<string, unknown>) =>
-    invoke<void>("set_plugin_settings", { pluginId, settings }),
-  readAsset: (pluginId: string, relativePath: string) =>
-    invoke<string>("read_plugin_asset", { pluginId, relativePath }),
-  /** T25: 获取插件审计日志 */
-  getAuditLog: (pluginId: string, limit?: number) =>
-    invoke<PluginAuditLogEntry[]>("plugin_audit_log_list", {
-      pluginId,
-      limit: limit ?? 50,
-    }),
+export const pluginApi: PluginApi = {
+  list: () => invoke("list_plugins"),
+  scan: () => invoke("scan_plugins"),
+  installFromDir: (path) => invoke("install_plugin_from_dir", { path }),
+  enable: (pluginId) => invoke("enable_plugin", { pluginId }),
+  disable: (pluginId) => invoke("disable_plugin", { pluginId }),
+  uninstall: (pluginId) => invoke("uninstall_plugin", { pluginId }),
+  getManifest: (pluginId) => invoke("get_plugin_manifest", { pluginId }),
+  grantPermissions: (pluginId, permissions) =>
+    invoke("grant_plugin_permissions", { pluginId, permissions }),
+  revokePermissions: (pluginId, permissions) =>
+    invoke("revoke_plugin_permissions", { pluginId, permissions }),
+  getSettings: (pluginId) => invoke("get_plugin_settings", { pluginId }),
+  setSettings: (pluginId, settings) => invoke("set_plugin_settings", { pluginId, settings }),
+  readAsset: (pluginId, relativePath) =>
+    invoke("read_plugin_asset", { pluginId, relativePath }),
+  getAuditLog: (pluginId, limit) => invoke("plugin_audit_log_list", { pluginId, limit }),
+  parseManifest: (path) => invoke("parse_plugin_manifest", { path }),
+  validateManifest: (path) => invoke("validate_plugin_manifest", { path }),
+  inspectPackage: (path) => invoke("inspect_plugin_package", { path }),
+  calculateIntegrity: (path) => invoke("calculate_plugin_integrity", { path }),
+  comparePermissions: (current, next) =>
+    invoke("compare_plugin_permissions", { current, next }),
+  checkCompatibility: (minAppVersion) =>
+    invoke("check_plugin_compatibility", { minAppVersion: minAppVersion ?? null }),
+  getInstallation: (pluginId) => invoke("get_plugin_installation", { pluginId }),
+  listInstallations: () => invoke("list_plugin_installations"),
+  verifyInstallation: (pluginId) => invoke("verify_plugin_installation", { pluginId }),
+  canExecuteRuntime: (pluginId) => invoke("can_execute_plugin_runtime", { pluginId }),
+  inspectArchive: (path) => invoke("plugin_inspect_archive", { path }),
+  installArchive: (input) => invoke("plugin_install_archive", { input }),
+  updateArchive: (input) => invoke("plugin_update_archive", { input }),
+  rollback: (pluginId, version) => invoke("plugin_rollback", { pluginId, version }),
+  listVersions: (pluginId) => invoke("plugin_list_versions", { pluginId }),
+  getActivationSettings: (pluginId) =>
+    invoke("plugin_get_activation_settings", { pluginId }),
+  setActivationSetting: (pluginId, scopeType, scopeKey, enabled) =>
+    invoke("plugin_set_activation_setting", { pluginId, scopeType, scopeKey, enabled }),
+  resolveEnabledContributions: (context) =>
+    invoke("plugin_resolve_enabled_contributions", { context }),
+  recordExecution: (input) => invoke("plugin_record_execution", { input }),
+  invokeXingchenFeature: (input) => invoke("plugin_feature_invoke_xingchen", { input }),
+  listDocumentSummaryToolbarButtons: () => invoke("plugin_document_summary_toolbar_buttons"),
+  mockDocumentSummary: (input) => invoke("plugin_document_mock_summary", { input }),
+  recordDocumentSummaryInsert: (input) => invoke("plugin_document_summary_insert", { input }),
+  listDocumentSummaryAgents: (pluginId) => invoke("plugin_document_summary_agents", { pluginId }),
+  getDocumentSummaryConfig: (pluginId) => invoke("plugin_document_summary_config_get", { pluginId }),
+  setDocumentSummaryConfig: (input) => invoke("plugin_document_summary_config_set", { input }),
+  startDocumentSummaryAgent: (input) => invoke("plugin_document_summary_agent_start", { input }),
+  cancelDocumentSummary: (input) => invoke("plugin_document_summary_cancel", { input }),
+  finalizeDocumentSummaryAgent: (input) => invoke("plugin_document_summary_agent_finalize", { input }),
 };
 
 /** 笔记 API */
@@ -1141,4 +1164,236 @@ export const claudeAgentApi = {
     invoke<ClaudeAgentSession>("get_claude_agent_session", { sessionId }),
   events: (sessionId: string) =>
     invoke<ClaudeAgentEvent[]>("list_claude_agent_events", { sessionId }),
+};
+interface PluginApi {
+  list(): Promise<PluginInfo[]>;
+  scan(): Promise<PluginInfo[]>;
+  installFromDir(path: string): Promise<PluginInfo>;
+  enable(pluginId: string): Promise<void>;
+  disable(pluginId: string): Promise<void>;
+  uninstall(pluginId: string): Promise<boolean>;
+  getManifest(pluginId: string): Promise<PluginManifest>;
+  grantPermissions(pluginId: string, permissions: string[]): Promise<number>;
+  revokePermissions(pluginId: string, permissions: string[]): Promise<number>;
+  getSettings(pluginId: string): Promise<Record<string, unknown>>;
+  setSettings(pluginId: string, settings: unknown): Promise<void>;
+  readAsset(pluginId: string, relativePath: string): Promise<string>;
+  getAuditLog(pluginId: string, limit?: number): Promise<PluginAuditLogEntry[]>;
+  parseManifest(path: string): Promise<NormalizedPluginManifest>;
+  validateManifest(path: string): Promise<NormalizedPluginManifest>;
+  inspectPackage(path: string): Promise<PluginPackageInspection>;
+  calculateIntegrity(path: string): Promise<string>;
+  comparePermissions(current: string[], next: string[]): Promise<PermissionDiff>;
+  checkCompatibility(minAppVersion?: string | null): Promise<PluginCompatibility>;
+  getInstallation(pluginId: string): Promise<PluginInstallationInfo | null>;
+  listInstallations(): Promise<PluginInstallationInfo[]>;
+  verifyInstallation(pluginId: string): Promise<PluginIntegrityCheck>;
+  canExecuteRuntime(pluginId: string): Promise<PluginRuntimePolicy>;
+  inspectArchive(path: string): Promise<PluginArchiveInspection>;
+  installArchive(input: PluginInstallArchiveInput): Promise<PluginInstallResult>;
+  updateArchive(input: PluginInstallArchiveInput): Promise<PluginInstallResult>;
+  rollback(pluginId: string, version: string): Promise<PluginInstallResult>;
+  listVersions(pluginId: string): Promise<PluginVersionInfo[]>;
+  getActivationSettings(pluginId: string): Promise<PluginActivationRule[]>;
+  setActivationSetting(
+    pluginId: string,
+    scopeType: "global" | "scene" | "feature",
+    scopeKey: string,
+    enabled: boolean,
+  ): Promise<void>;
+  resolveEnabledContributions(context: PluginExecutionContext): Promise<ResolvedPluginContributions>;
+  recordExecution(input: PluginExecutionLogInput): Promise<void>;
+  invokeXingchenFeature(input: PluginFeatureInvokeInput): Promise<PluginFeatureInvokeResult>;
+  listDocumentSummaryToolbarButtons(): Promise<PluginDocumentToolbarButton[]>;
+  mockDocumentSummary(input: PluginDocumentSummaryInput): Promise<PluginDocumentSummaryResult>;
+  recordDocumentSummaryInsert(input: PluginDocumentSummaryInsertInput): Promise<void>;
+  listDocumentSummaryAgents(pluginId: string): Promise<PluginSummaryAgentOption[]>;
+  getDocumentSummaryConfig(pluginId: string): Promise<PluginDocumentSummaryConfig>;
+  setDocumentSummaryConfig(input: PluginDocumentSummaryConfigInput): Promise<PluginDocumentSummaryConfig>;
+  startDocumentSummaryAgent(input: PluginDocumentSummaryAgentStartInput): Promise<PluginDocumentSummaryAgentStartResult>;
+  cancelDocumentSummary(input: PluginDocumentSummaryCancelInput): Promise<void>;
+  finalizeDocumentSummaryAgent(input: PluginDocumentSummaryAgentFinalizeInput): Promise<void>;
+}
+interface MarketplaceApi {
+  listAccounts(): Promise<LocalAccountProfile[]>;
+  switchAccount(userId: string): Promise<MarketplaceMockSession>;
+  updateAccount(input: LocalAccountUpdateInput): Promise<MarketplaceMockSession>;
+  applyDeveloper(): Promise<MarketplaceMockSession>;
+  listProducts(query?: MarketplaceProductQuery): Promise<MarketplaceProductSummary[]>;
+  searchProducts(query: MarketplaceProductQuery): Promise<MarketplaceProductSummary[]>;
+  getProduct(productId: string): Promise<MarketplaceProductDetail>;
+  getProductVersion(productId: string, version?: string | null): Promise<NormalizedPluginManifest>;
+  acquireProduct(input: MarketplaceAcquireInput): Promise<MarketplaceActionResult>;
+  bindExternalAuthorization(input: MarketplaceExternalAuthorizationInput): Promise<MarketplaceActionResult>;
+  listEntitlements(): Promise<MarketplaceEntitlement[]>;
+  installProduct(input: MarketplaceInstallInput): Promise<MarketplaceActionResult>;
+  updateProduct(input: MarketplaceUpdateInput): Promise<MarketplaceActionResult>;
+  uninstallProduct(productId: string): Promise<MarketplaceActionResult>;
+  enableProduct(productId: string): Promise<MarketplaceActionResult>;
+  disableProduct(productId: string): Promise<MarketplaceActionResult>;
+  recordPermissionRejection(input: MarketplacePermissionRejectionInput): Promise<MarketplaceActionResult>;
+  configureService(input: MarketplaceServiceConfigurationInput): Promise<MarketplaceActionResult>;
+  listInstalled(): Promise<MarketplaceProductSummary[]>;
+  checkUpdates(): Promise<MarketplaceUpdateInfo[]>;
+  verifyInstallation(productId: string): Promise<MarketplaceActionResult>;
+  devRevokeProductVersion(productId: string, version?: string | null): Promise<MarketplaceActionResult>;
+  devRestoreProductVersion(productId: string, version?: string | null): Promise<MarketplaceActionResult>;
+  mockTestProduct(productId: string): Promise<MarketplaceMockTestResult>;
+  getMockSession(): Promise<MarketplaceMockSession>;
+  switchMockRole(role: MarketplaceMockRole): Promise<MarketplaceMockSession>;
+  listOrders(): Promise<MarketplaceOrder[]>;
+  listLedger(): Promise<MarketplaceLedgerEntry[]>;
+  requestRefund(input: MarketplaceRefundInput): Promise<MarketplaceActionResult>;
+  listReviews(productId: string): Promise<MarketplaceReviewInfo[]>;
+  submitReview(input: MarketplaceReviewInput): Promise<MarketplaceReviewInfo>;
+}
+interface DeveloperApi {
+  listProducts(): Promise<DeveloperProduct[]>;
+  createProduct(input: DeveloperProductInput): Promise<DeveloperProduct>;
+  updateProduct(productId: string, input: DeveloperProductInput): Promise<DeveloperProduct>;
+  createVersion(input: DeveloperVersionInput): Promise<DeveloperProductVersion>;
+  uploadPackage(input: DeveloperUploadPackageInput): Promise<MarketplacePackageReport>;
+  getPackageReport(productId: string, version: string): Promise<MarketplacePackageReport>;
+  submitProduct(input: DeveloperSubmitInput): Promise<MarketplaceActionResult>;
+  submitVersion(input: DeveloperSubmitInput): Promise<MarketplaceActionResult>;
+  listEarnings(): Promise<DeveloperEarning[]>;
+  getDashboard(): Promise<DeveloperDashboard>;
+}
+interface AdminMarketplaceApi {
+  listSubmissions(status?: MarketplaceReviewStatus | null): Promise<MarketplaceSubmission[]>;
+  getSubmission(submissionId: number): Promise<MarketplaceSubmission>;
+  startReview(input: AdminReviewInput): Promise<MarketplaceActionResult>;
+  approveSubmission(input: AdminReviewInput): Promise<MarketplaceActionResult>;
+  rejectSubmission(input: AdminReviewInput): Promise<MarketplaceActionResult>;
+  suspendProduct(input: AdminProductModerationInput): Promise<MarketplaceActionResult>;
+  restoreProduct(input: AdminProductModerationInput): Promise<MarketplaceActionResult>;
+  delistProduct(input: AdminProductModerationInput): Promise<MarketplaceActionResult>;
+  revokeVersion(input: AdminVersionModerationInput): Promise<MarketplaceActionResult>;
+}
+interface CredentialApi {
+  list(): Promise<CredentialInfo[]>;
+  create(input: CredentialCreateInput): Promise<CredentialInfo>;
+  update(id: string, input: CredentialUpdateInput): Promise<CredentialInfo>;
+  delete(id: string, force?: boolean): Promise<void>;
+  getUsage(id: string): Promise<CredentialUsage[]>;
+}
+interface ExternalAgentApi {
+  list(): Promise<ExternalAgentConfig[]>;
+  listBindableProducts(): Promise<BindableXingchenProduct[]>;
+  create(input: ExternalAgentInput): Promise<ExternalAgentConfig>;
+  update(id: string, input: ExternalAgentInput): Promise<ExternalAgentConfig>;
+  delete(id: string): Promise<void>;
+  testConnection(id: string): Promise<AgentTestResult>;
+  healthCheck(id: string): Promise<AgentTestResult>;
+  listSessions(externalAgentId?: string | null): Promise<AgentSessionInfo[]>;
+  createSession(input: AgentSessionCreateInput): Promise<AgentSessionInfo>;
+  deleteSession(id: string): Promise<void>;
+  listMessages(sessionId: string): Promise<AgentMessageInfo[]>;
+  sendMessage(input: AgentSendMessageInput): Promise<AgentSendMessageResult>;
+  finalizePluginOutput(
+    sessionId: string,
+    requestId: string,
+    expectedOutput: string,
+    finalOutput: string,
+  ): Promise<void>;
+  invokeWorkflow(input: AgentWorkflowInvokeInput): Promise<AgentWorkflowInvokeResult>;
+  cancelRequest(requestId: string): Promise<void>;
+  listUsage(externalAgentId?: string | null): Promise<AgentUsageEvent[]>;
+  clearUsage(externalAgentId?: string | null): Promise<void>;
+}
+export const marketplaceApi: MarketplaceApi = {
+  listAccounts: () => invoke("marketplace_list_accounts"),
+  switchAccount: (userId) => invoke("marketplace_switch_account", { userId }),
+  updateAccount: (input) => invoke("marketplace_update_account", { input }),
+  applyDeveloper: () => invoke("marketplace_apply_developer"),
+  listProducts: (query) => invoke("marketplace_list_products", { query: query ?? null }),
+  searchProducts: (query) => invoke("marketplace_search_products", { query }),
+  getProduct: (productId) => invoke("marketplace_get_product", { productId }),
+  getProductVersion: (productId, version = null) =>
+    invoke("marketplace_get_product_version", { productId, version }),
+  acquireProduct: (input) => invoke("marketplace_acquire_product", { input }),
+  bindExternalAuthorization: (input) =>
+    invoke("marketplace_bind_external_authorization", { input }),
+  listEntitlements: () => invoke("marketplace_list_entitlements"),
+  installProduct: (input) => invoke("marketplace_install_product", { input }),
+  updateProduct: (input) => invoke("marketplace_update_product", { input }),
+  uninstallProduct: (productId) => invoke("marketplace_uninstall_product", { productId }),
+  enableProduct: (productId) => invoke("marketplace_enable_product", { productId }),
+  disableProduct: (productId) => invoke("marketplace_disable_product", { productId }),
+  recordPermissionRejection: (input) => invoke("marketplace_record_permission_rejection", { input }),
+  configureService: (input) => invoke("marketplace_configure_service", { input }),
+  listInstalled: () => invoke("marketplace_list_installed"),
+  checkUpdates: () => invoke("marketplace_check_updates"),
+  verifyInstallation: (productId) => invoke("marketplace_verify_installation", { productId }),
+  devRevokeProductVersion: (productId, version = null) =>
+    invoke("marketplace_dev_revoke_product_version", { productId, version }),
+  devRestoreProductVersion: (productId, version = null) =>
+    invoke("marketplace_dev_restore_product_version", { productId, version }),
+  mockTestProduct: (productId) => invoke("marketplace_mock_test_product", { productId }),
+  getMockSession: () => invoke("marketplace_get_mock_session"),
+  switchMockRole: (role) => invoke("marketplace_switch_mock_role", { role }),
+  listOrders: () => invoke("marketplace_list_orders"),
+  listLedger: () => invoke("marketplace_list_ledger"),
+  requestRefund: (input) => invoke("marketplace_request_refund", { input }),
+  listReviews: (productId) => invoke("marketplace_list_reviews", { productId }),
+  submitReview: (input) => invoke("marketplace_submit_review", { input }),
+};
+export const developerApi: DeveloperApi = {
+  listProducts: () => invoke("developer_list_products"),
+  createProduct: (input) => invoke("developer_create_product", { input }),
+  updateProduct: (productId, input) => invoke("developer_update_product", { productId, input }),
+  createVersion: (input) => invoke("developer_create_version", { input }),
+  uploadPackage: (input) => invoke("developer_upload_package", { input }),
+  getPackageReport: (productId, version) =>
+    invoke("developer_get_package_report", { productId, version }),
+  submitProduct: (input) => invoke("developer_submit_product", { input }),
+  submitVersion: (input) => invoke("developer_submit_version", { input }),
+  listEarnings: () => invoke("developer_list_earnings"),
+  getDashboard: () => invoke("developer_get_dashboard"),
+};
+export const adminMarketplaceApi: AdminMarketplaceApi = {
+  listSubmissions: (status = null) => invoke("admin_list_submissions", { status }),
+  getSubmission: (submissionId) => invoke("admin_get_submission", { submissionId }),
+  startReview: (input) => invoke("admin_start_review", { input }),
+  approveSubmission: (input) => invoke("admin_approve_submission", { input }),
+  rejectSubmission: (input) => invoke("admin_reject_submission", { input }),
+  suspendProduct: (input) => invoke("admin_suspend_product", { input }),
+  restoreProduct: (input) => invoke("admin_restore_product", { input }),
+  delistProduct: (input) => invoke("admin_delist_product", { input }),
+  revokeVersion: (input) => invoke("admin_revoke_version", { input }),
+};
+export const credentialApi: CredentialApi = {
+  list: () => invoke("credential_list"),
+  create: (input) => invoke("credential_create", { input }),
+  update: (id, input) => invoke("credential_update", { id, input }),
+  delete: (id, force = false) => invoke("credential_delete", { id, force }),
+  getUsage: (id) => invoke("credential_get_usage", { id }),
+};
+export const externalAgentApi: ExternalAgentApi = {
+  list: () => invoke("external_agent_list"),
+  listBindableProducts: () => invoke("external_agent_list_bindable_products"),
+  create: (input) => invoke("external_agent_create", { input }),
+  update: (id, input) => invoke("external_agent_update", { id, input }),
+  delete: (id) => invoke("external_agent_delete", { id }),
+  testConnection: (id) => invoke("external_agent_test_connection", { id }),
+  healthCheck: (id) => invoke("external_agent_health_check", { id }),
+  listSessions: (externalAgentId = null) =>
+    invoke("agent_session_list", { externalAgentId }),
+  createSession: (input) => invoke("agent_session_create", { input }),
+  deleteSession: (id) => invoke("agent_session_delete", { id }),
+  listMessages: (sessionId) => invoke("agent_message_list", { sessionId }),
+  sendMessage: (input) => invoke("agent_send_message", { input }),
+  finalizePluginOutput: (sessionId, requestId, expectedOutput, finalOutput) =>
+    invoke("agent_finalize_plugin_output", {
+      sessionId,
+      requestId,
+      expectedOutput,
+      finalOutput,
+    }),
+  invokeWorkflow: (input) => invoke("agent_workflow_invoke", { input }),
+  cancelRequest: (requestId) => invoke("agent_cancel_request", { requestId }),
+  listUsage: (externalAgentId = null) =>
+    invoke("agent_usage_list", { externalAgentId }),
+  clearUsage: (externalAgentId = null) =>
+    invoke("agent_usage_clear", { externalAgentId }),
 };

@@ -33,6 +33,158 @@ pub struct PluginViewContribution {
     pub title: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PluginRuntimeKind {
+    LegacyJs,
+    DeclarativeUi,
+    PromptPack,
+    XingchenAgent,
+    XingchenWorkflow,
+    XingchenMcp,
+    McpConnector,
+    PptExtension,
+    LearningExtension,
+}
+
+impl Default for PluginRuntimeKind {
+    fn default() -> Self {
+        Self::LegacyJs
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PluginSource {
+    Bundled,
+    Internal,
+    Development,
+    Local,
+    Marketplace,
+}
+
+impl Default for PluginSource {
+    fn default() -> Self {
+        Self::Local
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProductType {
+    LocalPlugin,
+    DeclarativeUi,
+    PromptPack,
+    XingchenAgent,
+    XingchenWorkflow,
+    XingchenMcp,
+    McpConnector,
+    KnowledgeTemplate,
+    DatabaseTemplate,
+    FileImageAgent,
+    PptMasterExtension,
+    LearningAssistantExtension,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AiServiceDeliveryMode {
+    Byok,
+    HostedApi,
+    RemoteMcp,
+}
+
+impl Default for ProductType {
+    fn default() -> Self {
+        Self::LocalPlugin
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SignatureStatus {
+    Unsigned,
+    Valid,
+    Invalid,
+    Revoked,
+}
+
+impl Default for SignatureStatus {
+    fn default() -> Self {
+        Self::Unsigned
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginManifestFormat {
+    Legacy,
+    V2,
+    V3,
+}
+
+impl Default for PluginManifestFormat {
+    fn default() -> Self {
+        Self::Legacy
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCredentialRequirement {
+    pub id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub fields: Vec<String>,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginPromptContribution {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginAiProviderContribution {
+    pub id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub provider_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginMcpServerContribution {
+    pub id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub transport: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginEditorToolbarContribution {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub tooltip: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub action: Option<String>,
+}
+
 /// 插件声明的扩展点
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,9 +192,167 @@ pub struct PluginContributes {
     #[serde(default)]
     pub commands: Vec<PluginCommandContribution>,
     #[serde(default)]
+    pub views: Vec<PluginViewContribution>,
+    #[serde(default)]
     pub sidebar_views: Vec<PluginViewContribution>,
     #[serde(default)]
+    pub prompts: Vec<PluginPromptContribution>,
+    #[serde(default)]
+    pub ai_providers: Vec<PluginAiProviderContribution>,
+    #[serde(default)]
+    pub mcp_servers: Vec<PluginMcpServerContribution>,
+    #[serde(default)]
+    pub editor_toolbar: Vec<PluginEditorToolbarContribution>,
+    #[serde(default)]
     pub settings: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginIntegrity {
+    #[serde(default)]
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSignature {
+    #[serde(default)]
+    pub status: SignatureStatus,
+    #[serde(default)]
+    pub signer: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceManifest {
+    pub schema_version: u32,
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub author_id: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub min_app_version: Option<String>,
+    pub product_type: ProductType,
+    pub runtime_kind: PluginRuntimeKind,
+    pub source: PluginSource,
+    #[serde(default)]
+    pub delivery_mode: Option<AiServiceDeliveryMode>,
+    #[serde(default)]
+    pub protocol: Option<String>,
+    #[serde(default)]
+    pub main: Option<String>,
+    #[serde(default)]
+    pub styles: Option<String>,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    #[serde(default)]
+    pub credential_requirements: Vec<PluginCredentialRequirement>,
+    #[serde(default)]
+    pub configuration_schema: Option<serde_json::Value>,
+    #[serde(default)]
+    pub contributes: PluginContributes,
+    #[serde(default)]
+    pub integrity: PluginIntegrity,
+    #[serde(default)]
+    pub signature: PluginSignature,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NormalizedPluginManifest {
+    pub format: PluginManifestFormat,
+    pub schema_version: u32,
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub author_id: Option<String>,
+    pub description: Option<String>,
+    pub icon: Option<String>,
+    pub min_app_version: Option<String>,
+    pub product_type: ProductType,
+    pub runtime_kind: PluginRuntimeKind,
+    pub source: PluginSource,
+    pub delivery_mode: Option<AiServiceDeliveryMode>,
+    pub protocol: Option<String>,
+    pub main: Option<String>,
+    pub styles: Option<String>,
+    pub permissions: Vec<String>,
+    pub credential_requirements: Vec<PluginCredentialRequirement>,
+    pub configuration_schema: Option<serde_json::Value>,
+    pub contributes: PluginContributes,
+    pub integrity: PluginIntegrity,
+    pub signature: PluginSignature,
+    pub legacy_manifest: PluginManifest,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionDiff {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    pub unchanged: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCompatibility {
+    pub compatible: bool,
+    pub app_version: String,
+    pub min_app_version: Option<String>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRuntimePolicy {
+    pub plugin_id: String,
+    pub runtime_kind: PluginRuntimeKind,
+    pub source: PluginSource,
+    pub can_execute: bool,
+    pub raw_invoke_allowed: bool,
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginInstallationInfo {
+    pub id: i64,
+    pub plugin_id: String,
+    pub product_id: Option<String>,
+    pub product_version_id: Option<i64>,
+    pub installed_version: String,
+    pub source: PluginSource,
+    pub enabled: bool,
+    pub install_path: String,
+    pub content_hash: String,
+    pub installed_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginIntegrityCheck {
+    pub plugin_id: String,
+    pub expected_hash: String,
+    pub actual_hash: String,
+    pub ok: bool,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginPackageInspection {
+    pub manifest: NormalizedPluginManifest,
+    pub content_hash: String,
+    pub compatibility: PluginCompatibility,
+    pub runtime_policy: PluginRuntimePolicy,
+    pub permission_diff: PermissionDiff,
+    pub signature_status: SignatureStatus,
 }
 
 /// 插件 manifest（plugin.json）
@@ -87,8 +397,19 @@ pub struct PluginInfo {
     pub manifest: PluginManifest,
     pub installed_at: String,
     pub updated_at: String,
-    /// T26: main.js 的 SHA-256 哈希，用于完整性校验
+    /// SHA-256 hash of the installed plugin package contents.
     pub content_hash: String,
+    pub manifest_format: PluginManifestFormat,
+    pub schema_version: u32,
+    pub product_type: ProductType,
+    pub runtime_kind: PluginRuntimeKind,
+    pub source: PluginSource,
+    pub signature_status: SignatureStatus,
+    pub integrity_status: String,
+    pub can_execute: bool,
+    pub blocked_reason: Option<String>,
+    pub raw_invoke_allowed: bool,
+    pub installation: Option<PluginInstallationInfo>,
 }
 
 /// T25: 插件审计日志条目
@@ -100,6 +421,1218 @@ pub struct PluginAuditLogEntry {
     pub operation: String,
     pub target: Option<String>,
     pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDocumentToolbarButton {
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub id: String,
+    pub label: String,
+    pub tooltip: String,
+    pub icon: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDocumentSummaryInput {
+    pub plugin_id: String,
+    pub title: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDocumentSummaryInsertInput {
+    pub plugin_id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSummaryAgentOption {
+    pub id: String,
+    pub name: String,
+    pub product_id: String,
+    pub product_name: Option<String>,
+    pub provider: String,
+    pub protocol_type: AgentProtocolType,
+    pub mock_mode: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDocumentSummaryConfig {
+    pub plugin_id: String,
+    pub mode: String,
+    pub external_agent_id: Option<String>,
+    pub available_agents: Vec<PluginSummaryAgentOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDocumentSummaryConfigInput {
+    pub plugin_id: String,
+    pub mode: String,
+    pub external_agent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDocumentSummaryAgentStartInput {
+    pub plugin_id: String,
+    pub title: String,
+    pub content: String,
+    pub external_agent_id: Option<String>,
+    #[serde(default)]
+    pub effective_content: Option<String>,
+    #[serde(default)]
+    pub plugin_system_context: Option<String>,
+    #[serde(default)]
+    pub plugin_contribution_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDocumentSummaryAgentStartResult {
+    pub plugin_id: String,
+    pub external_agent_id: String,
+    pub session_id: String,
+    pub request_id: String,
+    pub mock: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDocumentSummaryAgentFinalizeInput {
+    pub plugin_id: String,
+    pub external_agent_id: String,
+    pub session_id: String,
+    pub request_id: String,
+    pub status: String,
+    #[serde(default)]
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDocumentSummaryCancelInput {
+    pub plugin_id: String,
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDocumentSummaryResult {
+    pub plugin_id: String,
+    pub title: String,
+    pub summary: String,
+    pub mock: bool,
+    pub provider_label: String,
+    pub word_count: usize,
+    pub generated_at: String,
+}
+
+// ─── Local AI Marketplace MVP ────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketplaceProductStatus {
+    Draft,
+    Submitted,
+    UnderReview,
+    Approved,
+    Published,
+    PendingReview,
+    Active,
+    Rejected,
+    Suspended,
+    Revoked,
+    Delisted,
+}
+
+impl Default for MarketplaceProductStatus {
+    fn default() -> Self {
+        Self::Active
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketplaceLicenseType {
+    Free,
+    OneTime,
+    Subscription,
+}
+
+impl Default for MarketplaceLicenseType {
+    fn default() -> Self {
+        Self::Free
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketplaceEntitlementStatus {
+    Active,
+    ExternalAuthorized,
+    Unknown,
+    Unavailable,
+    Expired,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplacePrice {
+    pub currency: String,
+    /// Amount is stored in cents for CNY display in this local mock market.
+    pub amount: i64,
+    pub price_type: MarketplaceLicenseType,
+    pub is_mock: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceEntitlement {
+    pub id: i64,
+    pub product_id: String,
+    pub entitlement_type: MarketplaceLicenseType,
+    pub status: MarketplaceEntitlementStatus,
+    pub issued_at: String,
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub owner_user_id: Option<String>,
+    #[serde(default)]
+    pub order_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceProductQuery {
+    #[serde(default)]
+    pub keyword: Option<String>,
+    #[serde(default)]
+    pub product_type: Option<ProductType>,
+    #[serde(default)]
+    pub runtime_kind: Option<PluginRuntimeKind>,
+    #[serde(default)]
+    pub free_only: Option<bool>,
+    #[serde(default)]
+    pub acquired_only: Option<bool>,
+    #[serde(default)]
+    pub installed_only: Option<bool>,
+    #[serde(default)]
+    pub byok_only: Option<bool>,
+    #[serde(default)]
+    pub status: Option<MarketplaceProductStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceProductSummary {
+    pub id: String,
+    pub plugin_id: String,
+    pub name: String,
+    pub developer_id: String,
+    pub developer_name: String,
+    #[serde(default)]
+    pub seller_user_id: Option<String>,
+    #[serde(default)]
+    pub seller_nickname: Option<String>,
+    pub description: String,
+    pub icon: Option<String>,
+    pub current_version: String,
+    pub package_format: String,
+    pub manifest_schema_version: u32,
+    pub classification: Option<PluginClassification>,
+    pub supported_scenes: Vec<String>,
+    pub product_type: ProductType,
+    pub runtime_kind: PluginRuntimeKind,
+    pub status: MarketplaceProductStatus,
+    pub signature_status: SignatureStatus,
+    pub source: PluginSource,
+    pub min_app_version: Option<String>,
+    pub price: MarketplacePrice,
+    pub byok_required: bool,
+    pub delivery_mode: Option<AiServiceDeliveryMode>,
+    pub protocol: Option<String>,
+    pub permissions: Vec<String>,
+    pub permission_summary: Vec<String>,
+    pub acquired: bool,
+    pub installed: bool,
+    pub enabled: bool,
+    pub installed_version: Option<String>,
+    pub has_update: bool,
+    pub update_version: Option<String>,
+    pub revoked: bool,
+    pub risk_notes: Vec<String>,
+    pub mock_mode: bool,
+    #[serde(default)]
+    pub self_owned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceProductDetail {
+    #[serde(flatten)]
+    pub summary: MarketplaceProductSummary,
+    pub full_description: String,
+    pub changelog: String,
+    pub manifest: NormalizedPluginManifest,
+    pub credential_requirements: Vec<PluginCredentialRequirement>,
+    pub configuration_schema: Option<serde_json::Value>,
+    pub file_upload_notice: Option<String>,
+    pub data_destination: Option<String>,
+    pub license_type: MarketplaceLicenseType,
+    pub entitlement: Option<MarketplaceEntitlement>,
+    pub installation: Option<PluginInstallationInfo>,
+    pub integrity_status: String,
+    pub permission_diff: Option<PermissionDiff>,
+    pub configuration_changed: bool,
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceAcquireInput {
+    pub product_id: String,
+    #[serde(default)]
+    pub license_type: Option<MarketplaceLicenseType>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceExternalAuthorizationInput {
+    pub product_id: String,
+    #[serde(default)]
+    pub external_reference: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceInstallInput {
+    pub product_id: String,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub confirm_permissions: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceUpdateInput {
+    pub product_id: String,
+    #[serde(default)]
+    pub confirm_added_permissions: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplacePermissionRejectionInput {
+    pub product_id: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceServiceConfigurationInput {
+    pub product_id: String,
+    #[serde(default)]
+    pub credential_id: Option<String>,
+    #[serde(default)]
+    pub network_permission_confirmed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceActionResult {
+    pub ok: bool,
+    pub product_id: String,
+    pub plugin_id: Option<String>,
+    pub message: String,
+    #[serde(default)]
+    pub requires_permission_confirmation: bool,
+    #[serde(default)]
+    pub permission_diff: Option<PermissionDiff>,
+    #[serde(default)]
+    pub entitlement: Option<MarketplaceEntitlement>,
+    #[serde(default)]
+    pub installation: Option<PluginInstallationInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceUpdateInfo {
+    pub product_id: String,
+    pub plugin_id: String,
+    pub installed_version: Option<String>,
+    pub latest_version: String,
+    pub has_update: bool,
+    pub permission_diff: PermissionDiff,
+    pub changelog: String,
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceMockTestResult {
+    pub ok: bool,
+    pub product_id: String,
+    pub title: String,
+    pub message: String,
+    pub mock: bool,
+}
+
+// ─── Marketplace Supply Side MVP ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketplaceMockRole {
+    Customer,
+    Developer,
+    Admin,
+}
+
+impl Default for MarketplaceMockRole {
+    fn default() -> Self {
+        Self::Customer
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceMockSession {
+    pub user_id: String,
+    pub display_name: String,
+    pub role: MarketplaceMockRole,
+    pub is_mock: bool,
+    pub notice: String,
+    #[serde(default)]
+    pub nickname: Option<String>,
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub bio: Option<String>,
+    #[serde(default)]
+    pub account_status: Option<String>,
+    #[serde(default)]
+    pub developer_status: Option<String>,
+    #[serde(default)]
+    pub can_buy: bool,
+    #[serde(default)]
+    pub can_sell: bool,
+    #[serde(default)]
+    pub can_admin: bool,
+}
+
+impl Default for MarketplaceMockSession {
+    fn default() -> Self {
+        Self {
+            user_id: "local-demo-user".into(),
+            display_name: "本地演示用户".into(),
+            role: MarketplaceMockRole::Customer,
+            is_mock: true,
+            notice: "本地演示角色，不代表真实登录".into(),
+            nickname: Some("普通买家".into()),
+            avatar: None,
+            bio: Some("本地演示普通买家账号。".into()),
+            account_status: Some("active".into()),
+            developer_status: Some("none".into()),
+            can_buy: true,
+            can_sell: true,
+            can_admin: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAccountProfile {
+    pub user_id: String,
+    pub nickname: String,
+    pub avatar: Option<String>,
+    pub bio: Option<String>,
+    pub account_status: String,
+    pub developer_status: String,
+    pub created_at: String,
+    pub is_mock: bool,
+    pub can_buy: bool,
+    pub can_sell: bool,
+    pub can_admin: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAccountUpdateInput {
+    #[serde(default)]
+    pub nickname: Option<String>,
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub bio: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceOrder {
+    pub id: i64,
+    pub buyer_user_id: String,
+    pub seller_user_id: String,
+    pub product_id: String,
+    pub product_name: String,
+    pub product_version_id: Option<i64>,
+    pub version_snapshot: Option<String>,
+    pub currency: String,
+    pub gross_amount: i64,
+    pub platform_fee: i64,
+    pub seller_income: i64,
+    pub payment_status: String,
+    pub settlement_status: String,
+    pub refund_status: String,
+    pub is_mock: bool,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceLedgerEntry {
+    pub id: i64,
+    pub entry_type: String,
+    pub order_id: Option<i64>,
+    pub order_item_id: Option<i64>,
+    pub buyer_user_id: Option<String>,
+    pub seller_user_id: Option<String>,
+    pub product_id: Option<String>,
+    pub amount: i64,
+    pub currency: String,
+    pub is_mock: bool,
+    pub memo: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceRefundInput {
+    pub order_id: i64,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceReviewInput {
+    pub order_id: i64,
+    pub product_id: String,
+    pub rating: i64,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceReviewInfo {
+    pub id: i64,
+    pub order_id: i64,
+    pub product_id: String,
+    pub buyer_user_id: String,
+    pub buyer_nickname: String,
+    pub seller_user_id: String,
+    pub rating: i64,
+    pub content: String,
+    pub status: String,
+    pub verified_purchase: bool,
+    pub order_refunded: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketplaceReviewStatus {
+    Draft,
+    Submitted,
+    UnderReview,
+    Approved,
+    Published,
+    Rejected,
+    Suspended,
+    Delisted,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MarketplaceScanStatus {
+    NotScanned,
+    Passed,
+    Warning,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeveloperProductInput {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub full_description: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    pub product_type: ProductType,
+    pub runtime_kind: PluginRuntimeKind,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub byok_required: bool,
+    #[serde(default)]
+    pub delivery_mode: Option<AiServiceDeliveryMode>,
+    #[serde(default)]
+    pub protocol: Option<String>,
+    #[serde(default)]
+    pub service_configuration: Option<serde_json::Value>,
+    #[serde(default)]
+    pub third_party_dependencies: Option<String>,
+    #[serde(default)]
+    pub file_upload_required: bool,
+    #[serde(default)]
+    pub data_destination: Option<String>,
+    #[serde(default)]
+    pub privacy_notice: Option<String>,
+    #[serde(default)]
+    pub usage_guide: Option<String>,
+    pub license_type: MarketplaceLicenseType,
+    #[serde(default)]
+    pub price_amount: i64,
+    #[serde(default)]
+    pub support_period: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeveloperVersionInput {
+    pub product_id: String,
+    pub version: String,
+    #[serde(default)]
+    pub changelog: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeveloperUploadPackageInput {
+    pub product_id: String,
+    pub version: String,
+    pub zip_path: String,
+    #[serde(default)]
+    pub changelog: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeveloperSubmitInput {
+    pub product_id: String,
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceRiskFinding {
+    pub severity: String,
+    pub category: String,
+    pub file: String,
+    pub message: String,
+    #[serde(default)]
+    pub redacted_excerpt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplacePackageReport {
+    pub ok: bool,
+    pub status: MarketplaceScanStatus,
+    /// `v2-zip` or `v3-firstwork-plugin`; callers must not infer this from a renamed file.
+    #[serde(default = "default_marketplace_package_format")]
+    pub package_format: String,
+    pub manifest_valid: bool,
+    pub schema_version: Option<u32>,
+    #[serde(default)]
+    pub plugin_id: Option<String>,
+    #[serde(default)]
+    pub classification: Option<PluginClassification>,
+    pub product_id: Option<String>,
+    pub version: Option<String>,
+    pub product_type: Option<ProductType>,
+    pub runtime_kind: Option<PluginRuntimeKind>,
+    pub delivery_mode: Option<AiServiceDeliveryMode>,
+    pub protocol: Option<String>,
+    pub source: Option<PluginSource>,
+    pub file_count: u64,
+    pub compressed_size: u64,
+    pub unpacked_size: u64,
+    pub sha256: String,
+    pub signature_status: SignatureStatus,
+    pub permissions: Vec<String>,
+    pub credential_requirements: Vec<PluginCredentialRequirement>,
+    #[serde(default)]
+    pub features: Vec<String>,
+    #[serde(default)]
+    pub enhancement_hooks: Vec<String>,
+    #[serde(default)]
+    pub supported_scenes: Vec<String>,
+    pub has_executables: bool,
+    pub has_scripts: bool,
+    pub has_suspected_secrets: bool,
+    pub has_external_urls: bool,
+    pub has_absolute_paths: bool,
+    pub has_high_risk_permissions: bool,
+    pub compatible: bool,
+    pub findings: Vec<MarketplaceRiskFinding>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+fn default_marketplace_package_format() -> String {
+    "v2-zip".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeveloperProductVersion {
+    pub id: i64,
+    pub version: String,
+    pub status: MarketplaceReviewStatus,
+    pub review_status: MarketplaceReviewStatus,
+    pub scan_status: MarketplaceScanStatus,
+    pub changelog: String,
+    pub content_hash: String,
+    pub package_path: Option<String>,
+    pub package_format: String,
+    pub manifest_schema_version: u32,
+    pub plugin_id: Option<String>,
+    pub classification: Option<PluginClassification>,
+    pub approved_content_hash: Option<String>,
+    pub package_locked: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeveloperProduct {
+    pub id: String,
+    pub plugin_id: String,
+    pub name: String,
+    pub description: String,
+    pub full_description: String,
+    pub developer_id: String,
+    pub developer_name: String,
+    pub product_type: ProductType,
+    pub runtime_kind: PluginRuntimeKind,
+    pub status: MarketplaceReviewStatus,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub byok_required: bool,
+    pub delivery_mode: Option<AiServiceDeliveryMode>,
+    pub protocol: Option<String>,
+    pub service_configuration: Option<serde_json::Value>,
+    pub license_type: MarketplaceLicenseType,
+    pub price: MarketplacePrice,
+    pub mock_mode: bool,
+    pub current_version: Option<String>,
+    pub versions: Vec<DeveloperProductVersion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketplaceSubmission {
+    pub id: i64,
+    pub product_id: String,
+    pub product_version_id: Option<i64>,
+    pub product_name: String,
+    pub version: Option<String>,
+    pub developer_id: String,
+    pub developer_name: String,
+    pub status: MarketplaceReviewStatus,
+    pub submitted_by: String,
+    pub submitted_at: String,
+    pub reviewed_by: Option<String>,
+    pub reviewed_at: Option<String>,
+    pub review_message: Option<String>,
+    pub scan_report: Option<MarketplacePackageReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminReviewInput {
+    pub submission_id: i64,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminProductModerationInput {
+    pub product_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminVersionModerationInput {
+    pub product_id: String,
+    #[serde(default)]
+    pub version: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeveloperDashboard {
+    pub developer_id: String,
+    pub product_count: i64,
+    pub external_service_count: i64,
+    pub invocation_count: i64,
+    pub invocation_success_count: i64,
+    pub invocation_failed_count: i64,
+    pub mock_order_count: i64,
+    pub mock_acquire_count: i64,
+    pub mock_install_count: i64,
+    pub mock_enabled_count: i64,
+    pub gross_amount: i64,
+    pub platform_fee: i64,
+    pub developer_amount: i64,
+    pub currency: String,
+    pub is_mock: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeveloperEarning {
+    pub id: i64,
+    pub product_id: String,
+    pub product_name: String,
+    pub gross_amount: i64,
+    pub platform_fee: i64,
+    pub developer_amount: i64,
+    pub currency: String,
+    pub is_mock: bool,
+    pub status: String,
+    pub created_at: String,
+}
+
+// ─── Secure BYOK credentials and Xingchen agent runtime ─────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialType {
+    AppKeySecret,
+    BearerToken,
+    ApiKey,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialInfo {
+    pub id: String,
+    pub provider: String,
+    pub credential_type: CredentialType,
+    pub label: String,
+    pub owner_scope: String,
+    pub configured: bool,
+    pub masked_hint: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialSecretInput {
+    #[serde(default)]
+    pub app_id: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub api_secret: Option<String>,
+    #[serde(default)]
+    pub bearer_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialCreateInput {
+    pub provider: String,
+    pub credential_type: CredentialType,
+    pub label: String,
+    #[serde(default = "default_owner_scope")]
+    pub owner_scope: String,
+    pub secrets: CredentialSecretInput,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialUpdateInput {
+    pub label: Option<String>,
+    #[serde(default)]
+    pub secrets: Option<CredentialSecretInput>,
+    #[serde(default)]
+    pub clear_secret: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialUsage {
+    pub credential_id: String,
+    pub external_agent_id: String,
+    pub agent_name: String,
+    pub product_id: String,
+    pub product_name: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindableXingchenProduct {
+    pub id: String,
+    pub name: String,
+    pub product_type: ProductType,
+    pub runtime_kind: PluginRuntimeKind,
+    pub current_version: String,
+    pub product_version_id: Option<i64>,
+    pub installation_id: i64,
+    pub enabled: bool,
+    pub revoked: bool,
+}
+
+fn default_owner_scope() -> String {
+    "local-user".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentAuthenticationType {
+    None,
+    Bearer,
+    ApiKeyHeader,
+    SignedRequest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStreamingType {
+    None,
+    Sse,
+    Websocket,
+    ChunkedJson,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentProtocolType {
+    Configurable,
+    XingchenWorkflowV1,
+}
+
+impl Default for AgentProtocolType {
+    fn default() -> Self {
+        Self::Configurable
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowInputFieldType {
+    String,
+    Multiline,
+    Integer,
+    Number,
+    Boolean,
+    Select,
+    Json,
+    File,
+    Files,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowInputOption {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowFileConfig {
+    #[serde(default)]
+    pub allowed_extensions: Vec<String>,
+    #[serde(default)]
+    pub max_size_mb: Option<u64>,
+    #[serde(default)]
+    pub multiple: Option<bool>,
+    #[serde(default)]
+    pub value_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowInputField {
+    pub key: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub field_type: WorkflowInputFieldType,
+    #[serde(default)]
+    pub required: Option<bool>,
+    #[serde(default)]
+    pub default_value: Option<serde_json::Value>,
+    #[serde(default)]
+    pub placeholder: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub options: Vec<WorkflowInputOption>,
+    #[serde(default)]
+    pub order: Option<i64>,
+    #[serde(default)]
+    pub sensitive: Option<bool>,
+    #[serde(default)]
+    pub file_config: Option<WorkflowFileConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentWorkflowInvokeInput {
+    pub external_agent_id: String,
+    #[serde(default)]
+    pub parameters: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    pub file_paths: std::collections::BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub source_plugin_id: Option<String>,
+    #[serde(default)]
+    pub source_feature: Option<String>,
+    #[serde(default)]
+    pub plugin_system_context: Option<String>,
+    #[serde(default)]
+    pub plugin_contribution_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentWorkflowInvokeResult {
+    pub ok: bool,
+    pub external_agent_id: String,
+    pub request_id: String,
+    #[serde(default)]
+    pub remote_id: Option<String>,
+    pub content: String,
+    #[serde(default)]
+    pub progress: Option<f64>,
+    #[serde(default)]
+    pub usage: Option<serde_json::Value>,
+    #[serde(default)]
+    pub http_status: Option<u16>,
+    #[serde(default)]
+    pub code: Option<i64>,
+    pub message: String,
+    pub mock: bool,
+    #[serde(default)]
+    pub output_files: Vec<WorkflowGeneratedFile>,
+    #[serde(default)]
+    pub debug_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowGeneratedFile {
+    pub file_name: String,
+    pub path: String,
+    pub size: u64,
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentConfig {
+    pub id: String,
+    pub installation_id: Option<i64>,
+    pub product_id: String,
+    pub product_version_id: Option<i64>,
+    pub product_name: Option<String>,
+    pub provider: String,
+    pub name: String,
+    pub endpoint: String,
+    pub agent_id: Option<String>,
+    pub bot_id: Option<String>,
+    pub flow_id: Option<String>,
+    pub protocol_type: AgentProtocolType,
+    pub local_uid: Option<String>,
+    pub authentication_type: AgentAuthenticationType,
+    pub credential_id: Option<String>,
+    pub streaming_type: AgentStreamingType,
+    pub request_mapping_json: String,
+    pub response_mapping_json: String,
+    pub session_mapping_json: String,
+    pub error_mapping_json: String,
+    pub mock_mode: bool,
+    pub enabled: bool,
+    pub unavailable_reason: Option<String>,
+    pub last_tested_at: Option<String>,
+    pub last_test_status: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentInput {
+    pub product_id: String,
+    pub name: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub bot_id: Option<String>,
+    #[serde(default)]
+    pub flow_id: Option<String>,
+    #[serde(default)]
+    pub protocol_type: AgentProtocolType,
+    #[serde(default)]
+    pub local_uid: Option<String>,
+    pub authentication_type: AgentAuthenticationType,
+    #[serde(default)]
+    pub credential_id: Option<String>,
+    pub streaming_type: AgentStreamingType,
+    #[serde(default)]
+    pub request_mapping_json: Option<String>,
+    #[serde(default)]
+    pub response_mapping_json: Option<String>,
+    #[serde(default)]
+    pub session_mapping_json: Option<String>,
+    #[serde(default)]
+    pub error_mapping_json: Option<String>,
+    #[serde(default)]
+    pub mock_mode: Option<bool>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTestResult {
+    pub ok: bool,
+    pub provider: String,
+    pub mock: bool,
+    pub message: String,
+    pub latency_ms: u64,
+    pub error_code: Option<String>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub http_status: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionInfo {
+    pub id: String,
+    pub external_agent_id: String,
+    pub remote_session_id: Option<String>,
+    pub title: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMessageInfo {
+    pub id: String,
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
+    pub status: String,
+    pub request_id: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionCreateInput {
+    pub external_agent_id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSendMessageInput {
+    pub session_id: String,
+    pub content: String,
+    #[serde(default)]
+    pub effective_content: Option<String>,
+    #[serde(default)]
+    pub plugin_system_context: Option<String>,
+    #[serde(default)]
+    pub plugin_contribution_ids: Vec<String>,
+    #[serde(default)]
+    pub scenario: Option<String>,
+    #[serde(default)]
+    pub source_plugin_id: Option<String>,
+    #[serde(default)]
+    pub source_feature: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSendMessageResult {
+    pub request_id: String,
+    pub session_id: String,
+    pub status: String,
+    pub mock: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStreamEvent {
+    pub request_id: String,
+    pub session_id: String,
+    pub external_agent_id: String,
+    pub event: String,
+    pub delta: Option<String>,
+    pub message: Option<String>,
+    pub error_code: Option<String>,
+    pub remote_id: Option<String>,
+    pub seq: Option<i64>,
+    pub progress: Option<f64>,
+    pub usage: Option<serde_json::Value>,
+    pub done: bool,
+    pub mock: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUsageEvent {
+    pub id: i64,
+    pub product_id: Option<String>,
+    pub external_agent_id: Option<String>,
+    pub session_id: Option<String>,
+    pub request_id: String,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub status: String,
+    pub provider_error_code: Option<String>,
+    pub estimated_input_usage: Option<i64>,
+    pub estimated_output_usage: Option<i64>,
+    pub source_plugin_id: Option<String>,
+    pub metadata_json: Option<String>,
 }
 
 /// 插件 AI 对话输入
@@ -128,6 +1661,90 @@ pub struct PluginAiTokenPayload {
     pub full_text: Option<String>,
     pub done: bool,
     pub error: Option<String>,
+}
+
+// ─── Planning with Files ─────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlanningSessionKind {
+    Ai,
+    Agent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanningFileView {
+    pub name: String,
+    pub content: String,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanningWorkspace {
+    pub plugin_id: String,
+    pub plugin_ready: bool,
+    pub enabled: bool,
+    pub auto_apply: bool,
+    pub session_kind: PlanningSessionKind,
+    pub session_id: String,
+    pub workspace_path: String,
+    pub files: Vec<PlanningFileView>,
+    pub pending_update: Option<String>,
+    pub current_stage: Option<String>,
+    pub progress_percent: u8,
+    pub blockers: Vec<String>,
+    pub last_updated_at: Option<String>,
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanningSessionInput {
+    pub session_kind: PlanningSessionKind,
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanningSetEnabledInput {
+    pub session_kind: PlanningSessionKind,
+    pub session_id: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanningSaveFileInput {
+    pub session_kind: PlanningSessionKind,
+    pub session_id: String,
+    pub file_name: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanningApplyUpdateInput {
+    pub session_kind: PlanningSessionKind,
+    pub session_id: String,
+    pub accept: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanningClearInput {
+    pub session_kind: PlanningSessionKind,
+    pub session_id: String,
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanningExportInput {
+    pub session_kind: PlanningSessionKind,
+    pub session_id: String,
+    pub target_dir: String,
 }
 
 /// 插件可见的 AI 模型信息（不暴露 api_key）
@@ -1144,11 +2761,7 @@ pub struct TaskSuggestion {
     /// `rename = "remindBefore"`：序列化和反序列化都用 `remindBefore` —— 与现有
     /// AI prompt（plan_today / draft_note）和前端 TS `TaskSuggestion.remindBefore` 对齐。
     /// `alias = "remindBeforeMinutes"` 兼容旧版本可能输出的 camelCase 字段名。
-    #[serde(
-        default,
-        rename = "remindBefore",
-        alias = "remindBeforeMinutes"
-    )]
+    #[serde(default, rename = "remindBefore", alias = "remindBeforeMinutes")]
     pub remind_before_minutes: Option<i32>,
     /// AI 给出的推荐理由（可选，用于 UI 折叠展示）
     pub reason: Option<String>,
@@ -1899,3 +3512,5 @@ pub struct ClaudeAgentEvent {
     pub content: String,
     pub created_at: String,
 }
+pub mod plugin_platform;
+pub use plugin_platform::*;

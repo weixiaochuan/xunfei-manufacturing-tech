@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::error::AppError;
 
 /// 当前 Schema 版本
-pub const SCHEMA_VERSION: i32 = 42;
+pub const SCHEMA_VERSION: i32 = 55;
 
 /// 获取数据库版本
 pub fn get_version(conn: &Connection) -> Result<i32, AppError> {
@@ -72,6 +72,19 @@ pub fn migrate(conn: &Connection) -> Result<(), AppError> {
             39 => migrate_v39_to_v40(conn)?,
             40 => migrate_v40_to_v41(conn)?,
             41 => migrate_v41_to_v42(conn)?,
+            42 => migrate_v42_to_v43(conn)?,
+            43 => migrate_v43_to_v44(conn)?,
+            44 => migrate_v44_to_v45(conn)?,
+            45 => migrate_v45_to_v46(conn)?,
+            46 => migrate_v46_to_v47(conn)?,
+            47 => migrate_v47_to_v48(conn)?,
+            48 => migrate_v48_to_v49(conn)?,
+            49 => migrate_v49_to_v50(conn)?,
+            50 => migrate_v50_to_v51(conn)?,
+            51 => migrate_v51_to_v52(conn)?,
+            52 => migrate_v52_to_v53(conn)?,
+            53 => migrate_v53_to_v54(conn)?,
+            54 => migrate_v54_to_v55(conn)?,
             _ => {
                 return Err(AppError::Custom(format!("未知的数据库版本: {}", version)));
             }
@@ -1516,9 +1529,7 @@ fn migrate_v36_to_v37(conn: &Connection) -> Result<(), AppError> {
 
 /// v37 → v38: 插件完整性校验 — plugins 表加 content_hash 列
 fn migrate_v37_to_v38(conn: &Connection) -> Result<(), AppError> {
-    conn.execute_batch(
-        "ALTER TABLE plugins ADD COLUMN content_hash TEXT NOT NULL DEFAULT '';",
-    )?;
+    conn.execute_batch("ALTER TABLE plugins ADD COLUMN content_hash TEXT NOT NULL DEFAULT '';")?;
     set_version(conn, 38)?;
     Ok(())
 }
@@ -1671,4 +1682,1672 @@ fn migrate_v41_to_v42(conn: &Connection) -> Result<(), AppError> {
 
     set_version(conn, 42)?;
     Ok(())
+}
+
+/// v42 -> v43: unified plugin product, installation and entitlement foundation.
+fn migrate_v42_to_v43(conn: &Connection) -> Result<(), AppError> {
+    log::info!("数据库迁移: v42 -> v43 (插件商品、安装和授权基础模型)");
+
+    let plugin_cols = list_columns(conn, "plugins")?;
+    if !plugin_cols.iter().any(|c| c == "manifest_format") {
+        conn.execute_batch(
+            "ALTER TABLE plugins ADD COLUMN manifest_format TEXT NOT NULL DEFAULT 'legacy';",
+        )?;
+    }
+    if !plugin_cols.iter().any(|c| c == "schema_version") {
+        conn.execute_batch(
+            "ALTER TABLE plugins ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1;",
+        )?;
+    }
+    if !plugin_cols.iter().any(|c| c == "product_type") {
+        conn.execute_batch(
+            "ALTER TABLE plugins ADD COLUMN product_type TEXT NOT NULL DEFAULT 'local-plugin';",
+        )?;
+    }
+    if !plugin_cols.iter().any(|c| c == "runtime_kind") {
+        conn.execute_batch(
+            "ALTER TABLE plugins ADD COLUMN runtime_kind TEXT NOT NULL DEFAULT 'legacy-js';",
+        )?;
+    }
+    if !plugin_cols.iter().any(|c| c == "source") {
+        conn.execute_batch(
+            "ALTER TABLE plugins ADD COLUMN source TEXT NOT NULL DEFAULT 'development';",
+        )?;
+    }
+    if !plugin_cols.iter().any(|c| c == "signature_status") {
+        conn.execute_batch(
+            "ALTER TABLE plugins ADD COLUMN signature_status TEXT NOT NULL DEFAULT 'unsigned';",
+        )?;
+    }
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS products (
+            id              TEXT PRIMARY KEY,
+            developer_id    TEXT NOT NULL,
+            name            TEXT NOT NULL,
+            description     TEXT,
+            product_type    TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'draft',
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+
+        CREATE TABLE IF NOT EXISTS product_versions (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id          TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            version             TEXT NOT NULL,
+            manifest_json       TEXT NOT NULL,
+            runtime_kind        TEXT NOT NULL,
+            source              TEXT NOT NULL,
+            content_hash        TEXT NOT NULL DEFAULT '',
+            signature_status    TEXT NOT NULL DEFAULT 'unsigned',
+            min_app_version     TEXT,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE(product_id, version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_product_versions_product ON product_versions(product_id);
+
+        CREATE TABLE IF NOT EXISTS product_permissions (
+            product_version_id   INTEGER NOT NULL REFERENCES product_versions(id) ON DELETE CASCADE,
+            permission           TEXT NOT NULL,
+            required             INTEGER NOT NULL DEFAULT 1,
+            reason               TEXT,
+            PRIMARY KEY(product_version_id, permission)
+        );
+
+        CREATE TABLE IF NOT EXISTS plugin_installations (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            plugin_id           TEXT NOT NULL UNIQUE REFERENCES plugins(id) ON DELETE CASCADE,
+            product_id          TEXT REFERENCES products(id) ON DELETE SET NULL,
+            product_version_id  INTEGER REFERENCES product_versions(id) ON DELETE SET NULL,
+            installed_version   TEXT NOT NULL,
+            source              TEXT NOT NULL,
+            enabled             INTEGER NOT NULL DEFAULT 0,
+            install_path        TEXT NOT NULL,
+            content_hash        TEXT NOT NULL DEFAULT '',
+            installed_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at          TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_plugin_installations_product ON plugin_installations(product_id);
+        CREATE INDEX IF NOT EXISTS idx_plugin_installations_enabled ON plugin_installations(enabled);
+
+        CREATE TABLE IF NOT EXISTS entitlements (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id          TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            entitlement_type    TEXT NOT NULL,
+            status              TEXT NOT NULL,
+            issued_at           TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            expires_at          TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_entitlements_product_status ON entitlements(product_id, status);
+
+        INSERT OR IGNORE INTO products
+            (id, developer_id, name, description, product_type, status, created_at, updated_at)
+        SELECT
+            id,
+            COALESCE(NULLIF(author, ''), 'legacy'),
+            name,
+            description,
+            product_type,
+            status,
+            installed_at,
+            updated_at
+        FROM plugins;
+
+        INSERT OR IGNORE INTO product_versions
+            (product_id, version, manifest_json, runtime_kind, source, content_hash,
+             signature_status, min_app_version, created_at)
+        SELECT
+            id,
+            version,
+            manifest_json,
+            runtime_kind,
+            source,
+            content_hash,
+            signature_status,
+            min_app_version,
+            installed_at
+        FROM plugins;
+
+        INSERT OR IGNORE INTO product_permissions
+            (product_version_id, permission, required, reason)
+        SELECT
+            pv.id,
+            pp.permission,
+            1,
+            NULL
+        FROM plugin_permissions pp
+        JOIN plugins p ON p.id = pp.plugin_id
+        JOIN product_versions pv ON pv.product_id = p.id AND pv.version = p.version;
+
+        INSERT OR IGNORE INTO plugin_installations
+            (plugin_id, product_id, product_version_id, installed_version, source, enabled,
+             install_path, content_hash, installed_at, updated_at)
+        SELECT
+            p.id,
+            p.id,
+            pv.id,
+            p.version,
+            p.source,
+            p.enabled,
+            p.path,
+            p.content_hash,
+            p.installed_at,
+            p.updated_at
+        FROM plugins p
+        LEFT JOIN product_versions pv ON pv.product_id = p.id AND pv.version = p.version;
+
+        INSERT OR IGNORE INTO entitlements
+            (product_id, entitlement_type, status, issued_at, expires_at)
+        SELECT id, 'free', 'active', installed_at, NULL FROM plugins;
+        "#,
+    )?;
+
+    set_version(conn, 43)?;
+    Ok(())
+}
+
+/// v43 -> v44: local mock AI marketplace commerce and managed package assets.
+fn migrate_v43_to_v44(conn: &Connection) -> Result<(), AppError> {
+    log::info!("数据库迁移: v43 -> v44 (local mock AI marketplace)");
+
+    let product_cols = list_columns(conn, "products")?;
+    if !product_cols.iter().any(|c| c == "plugin_id") {
+        conn.execute_batch("ALTER TABLE products ADD COLUMN plugin_id TEXT;")?;
+        conn.execute(
+            "UPDATE products SET plugin_id = id WHERE plugin_id IS NULL",
+            [],
+        )?;
+    }
+    if !product_cols.iter().any(|c| c == "developer_name") {
+        conn.execute_batch("ALTER TABLE products ADD COLUMN developer_name TEXT NOT NULL DEFAULT 'Unknown Developer';")?;
+    }
+    if !product_cols.iter().any(|c| c == "icon") {
+        conn.execute_batch("ALTER TABLE products ADD COLUMN icon TEXT;")?;
+    }
+    if !product_cols.iter().any(|c| c == "license_type") {
+        conn.execute_batch(
+            "ALTER TABLE products ADD COLUMN license_type TEXT NOT NULL DEFAULT 'free';",
+        )?;
+    }
+    if !product_cols.iter().any(|c| c == "byok_required") {
+        conn.execute_batch(
+            "ALTER TABLE products ADD COLUMN byok_required INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !product_cols.iter().any(|c| c == "mock_mode") {
+        conn.execute_batch(
+            "ALTER TABLE products ADD COLUMN mock_mode INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !product_cols.iter().any(|c| c == "data_destination") {
+        conn.execute_batch("ALTER TABLE products ADD COLUMN data_destination TEXT;")?;
+    }
+    if !product_cols.iter().any(|c| c == "file_upload_notice") {
+        conn.execute_batch("ALTER TABLE products ADD COLUMN file_upload_notice TEXT;")?;
+    }
+    if !product_cols.iter().any(|c| c == "risk_notes_json") {
+        conn.execute_batch(
+            "ALTER TABLE products ADD COLUMN risk_notes_json TEXT NOT NULL DEFAULT '[]';",
+        )?;
+    }
+
+    let version_cols = list_columns(conn, "product_versions")?;
+    if !version_cols.iter().any(|c| c == "status") {
+        conn.execute_batch(
+            "ALTER TABLE product_versions ADD COLUMN status TEXT NOT NULL DEFAULT 'active';",
+        )?;
+    }
+    if !version_cols.iter().any(|c| c == "changelog") {
+        conn.execute_batch(
+            "ALTER TABLE product_versions ADD COLUMN changelog TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+    if !version_cols.iter().any(|c| c == "package_path") {
+        conn.execute_batch("ALTER TABLE product_versions ADD COLUMN package_path TEXT;")?;
+    }
+    if !version_cols.iter().any(|c| c == "previous_version") {
+        conn.execute_batch("ALTER TABLE product_versions ADD COLUMN previous_version TEXT;")?;
+    }
+
+    let installation_cols = list_columns(conn, "plugin_installations")?;
+    if !installation_cols.iter().any(|c| c == "status") {
+        conn.execute_batch(
+            "ALTER TABLE plugin_installations ADD COLUMN status TEXT NOT NULL DEFAULT 'installed';",
+        )?;
+    }
+    if !installation_cols
+        .iter()
+        .any(|c| c == "previous_install_path")
+    {
+        conn.execute_batch(
+            "ALTER TABLE plugin_installations ADD COLUMN previous_install_path TEXT;",
+        )?;
+    }
+
+    let entitlement_cols = list_columns(conn, "entitlements")?;
+    if !entitlement_cols.iter().any(|c| c == "local_user_id") {
+        conn.execute_batch("ALTER TABLE entitlements ADD COLUMN local_user_id TEXT NOT NULL DEFAULT 'local-demo-user';")?;
+    }
+    conn.execute(
+        "UPDATE entitlements SET local_user_id = 'local-demo-user' WHERE local_user_id IS NULL OR local_user_id = ''",
+        [],
+    )?;
+    conn.execute_batch(
+        r#"
+        DELETE FROM entitlements
+        WHERE id NOT IN (
+            SELECT MAX(id)
+            FROM entitlements
+            WHERE status IN ('active', 'expired')
+            GROUP BY local_user_id, product_id
+            UNION
+            SELECT id
+            FROM entitlements
+            WHERE status NOT IN ('active', 'expired')
+        );
+        "#,
+    )?;
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS prices (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id      TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            currency        TEXT NOT NULL DEFAULT 'CNY',
+            amount          INTEGER NOT NULL DEFAULT 0,
+            price_type      TEXT NOT NULL DEFAULT 'free',
+            is_mock         INTEGER NOT NULL DEFAULT 1,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE(product_id, price_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_prices_product ON prices(product_id);
+
+        CREATE TABLE IF NOT EXISTS orders (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            local_user_id   TEXT NOT NULL,
+            status          TEXT NOT NULL,
+            currency        TEXT NOT NULL DEFAULT 'CNY',
+            total_amount    INTEGER NOT NULL DEFAULT 0,
+            is_mock         INTEGER NOT NULL DEFAULT 1,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            completed_at    TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_orders_local_user ON orders(local_user_id, status);
+
+        CREATE TABLE IF NOT EXISTS order_items (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id            INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+            product_id          TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            product_version_id  INTEGER REFERENCES product_versions(id) ON DELETE SET NULL,
+            amount              INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_order_items_product ON order_items(product_id);
+
+        CREATE TABLE IF NOT EXISTS product_assets (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_version_id  INTEGER NOT NULL REFERENCES product_versions(id) ON DELETE CASCADE,
+            asset_type          TEXT NOT NULL,
+            local_path          TEXT NOT NULL,
+            content_hash        TEXT NOT NULL DEFAULT '',
+            size                INTEGER NOT NULL DEFAULT 0,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE(product_version_id, asset_type)
+        );
+
+        CREATE TABLE IF NOT EXISTS marketplace_prompt_templates (
+            product_id          TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            template_id         INTEGER NOT NULL REFERENCES prompt_templates(id) ON DELETE CASCADE,
+            template_key        TEXT NOT NULL,
+            content_hash        TEXT NOT NULL,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            PRIMARY KEY(product_id, template_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_marketplace_prompt_product ON marketplace_prompt_templates(product_id);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_entitlements_user_product
+            ON entitlements(local_user_id, product_id)
+            WHERE status IN ('active', 'expired');
+        CREATE INDEX IF NOT EXISTS idx_product_versions_status
+            ON product_versions(product_id, status);
+        CREATE INDEX IF NOT EXISTS idx_products_status_type
+            ON products(status, product_type);
+        "#,
+    )?;
+
+    set_version(conn, 44)?;
+    Ok(())
+}
+
+/// v44 -> v45: developer center, review workflow and mock revenue ledger.
+fn migrate_v44_to_v45(conn: &Connection) -> Result<(), AppError> {
+    log::info!("数据库迁移: v44 -> v45 (developer review marketplace)");
+
+    let product_cols = list_columns(conn, "products")?;
+    if !product_cols.iter().any(|c| c == "category") {
+        conn.execute_batch(
+            "ALTER TABLE products ADD COLUMN category TEXT NOT NULL DEFAULT 'general';",
+        )?;
+    }
+    if !product_cols.iter().any(|c| c == "tags_json") {
+        conn.execute_batch(
+            "ALTER TABLE products ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';",
+        )?;
+    }
+    if !product_cols.iter().any(|c| c == "privacy_notice") {
+        conn.execute_batch("ALTER TABLE products ADD COLUMN privacy_notice TEXT;")?;
+    }
+    if !product_cols.iter().any(|c| c == "usage_guide") {
+        conn.execute_batch("ALTER TABLE products ADD COLUMN usage_guide TEXT;")?;
+    }
+    if !product_cols.iter().any(|c| c == "third_party_dependencies") {
+        conn.execute_batch("ALTER TABLE products ADD COLUMN third_party_dependencies TEXT;")?;
+    }
+    if !product_cols.iter().any(|c| c == "file_upload_required") {
+        conn.execute_batch(
+            "ALTER TABLE products ADD COLUMN file_upload_required INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !product_cols.iter().any(|c| c == "support_period") {
+        conn.execute_batch("ALTER TABLE products ADD COLUMN support_period TEXT;")?;
+    }
+    if !product_cols.iter().any(|c| c == "review_status") {
+        conn.execute_batch(
+            "ALTER TABLE products ADD COLUMN review_status TEXT NOT NULL DEFAULT 'approved';",
+        )?;
+    }
+    if !product_cols.iter().any(|c| c == "runtime_kind") {
+        conn.execute_batch(
+            "ALTER TABLE products ADD COLUMN runtime_kind TEXT NOT NULL DEFAULT 'declarative-ui';",
+        )?;
+    }
+    if !product_cols.iter().any(|c| c == "distribution_channel") {
+        conn.execute_batch("ALTER TABLE products ADD COLUMN distribution_channel TEXT NOT NULL DEFAULT 'local-demo';")?;
+    }
+    if !product_cols.iter().any(|c| c == "full_description") {
+        conn.execute_batch("ALTER TABLE products ADD COLUMN full_description TEXT;")?;
+        conn.execute(
+            "UPDATE products SET full_description = description WHERE full_description IS NULL",
+            [],
+        )?;
+    }
+
+    let version_cols = list_columns(conn, "product_versions")?;
+    if !version_cols.iter().any(|c| c == "review_status") {
+        conn.execute_batch("ALTER TABLE product_versions ADD COLUMN review_status TEXT NOT NULL DEFAULT 'approved';")?;
+    }
+    if !version_cols.iter().any(|c| c == "distribution_channel") {
+        conn.execute_batch("ALTER TABLE product_versions ADD COLUMN distribution_channel TEXT NOT NULL DEFAULT 'local-demo';")?;
+    }
+    if !version_cols.iter().any(|c| c == "scan_report_json") {
+        conn.execute_batch("ALTER TABLE product_versions ADD COLUMN scan_report_json TEXT;")?;
+    }
+    if !version_cols.iter().any(|c| c == "scan_status") {
+        conn.execute_batch("ALTER TABLE product_versions ADD COLUMN scan_status TEXT NOT NULL DEFAULT 'not_scanned';")?;
+    }
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS users (
+            id              TEXT PRIMARY KEY,
+            display_name    TEXT NOT NULL,
+            role            TEXT NOT NULL,
+            is_mock         INTEGER NOT NULL DEFAULT 1,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+
+        CREATE TABLE IF NOT EXISTS developer_profiles (
+            user_id             TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            developer_name      TEXT NOT NULL,
+            description         TEXT,
+            verification_status TEXT NOT NULL DEFAULT 'local_demo',
+            created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at          TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+
+        CREATE TABLE IF NOT EXISTS product_submissions (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id          TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            product_version_id  INTEGER REFERENCES product_versions(id) ON DELETE CASCADE,
+            submitted_by        TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            status              TEXT NOT NULL,
+            submitted_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            reviewed_by         TEXT REFERENCES users(id) ON DELETE SET NULL,
+            reviewed_at         TEXT,
+            review_message      TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_product_submissions_status
+            ON product_submissions(status, submitted_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_product_submissions_product
+            ON product_submissions(product_id, product_version_id);
+
+        CREATE TABLE IF NOT EXISTS product_review_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            submission_id   INTEGER REFERENCES product_submissions(id) ON DELETE CASCADE,
+            actor_id        TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            action          TEXT NOT NULL,
+            from_status     TEXT,
+            to_status       TEXT,
+            message         TEXT,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_product_review_events_submission
+            ON product_review_events(submission_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS developer_earnings (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            developer_id        TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            order_item_id       INTEGER NOT NULL UNIQUE REFERENCES order_items(id) ON DELETE CASCADE,
+            gross_amount        INTEGER NOT NULL DEFAULT 0,
+            platform_fee        INTEGER NOT NULL DEFAULT 0,
+            developer_amount    INTEGER NOT NULL DEFAULT 0,
+            currency            TEXT NOT NULL DEFAULT 'CNY',
+            is_mock             INTEGER NOT NULL DEFAULT 1,
+            status              TEXT NOT NULL DEFAULT 'pending',
+            created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_developer_earnings_developer
+            ON developer_earnings(developer_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS marketplace_audit_logs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_id        TEXT NOT NULL,
+            actor_role      TEXT NOT NULL,
+            action          TEXT NOT NULL,
+            target_type     TEXT NOT NULL,
+            target_id       TEXT NOT NULL,
+            details_json    TEXT NOT NULL DEFAULT '{}',
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_marketplace_audit_target
+            ON marketplace_audit_logs(target_type, target_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_marketplace_audit_actor
+            ON marketplace_audit_logs(actor_id, created_at DESC);
+
+        INSERT OR IGNORE INTO users (id, display_name, role, is_mock)
+        VALUES
+            ('local-demo-user', '本地演示用户', 'customer', 1),
+            ('local-demo-developer', '本地演示开发者', 'developer', 1),
+            ('local-demo-admin', '本地演示管理员', 'admin', 1),
+            ('official-demo-developer', 'firstwork 官方演示', 'developer', 1);
+
+        INSERT OR IGNORE INTO developer_profiles
+            (user_id, developer_name, description, verification_status)
+        VALUES
+            ('local-demo-developer', '本地演示开发者', '仅用于 firstwork 本地市场 MVP，不代表真实认证。', 'local_demo'),
+            ('official-demo-developer', 'firstwork 官方演示', '内置演示商品开发者。', 'local_demo');
+        "#,
+    )?;
+
+    set_version(conn, 45)?;
+    Ok(())
+}
+
+fn migrate_v45_to_v46(conn: &Connection) -> Result<(), AppError> {
+    log::info!("数据库迁移: v45 -> v46");
+
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS credentials (
+            id                  TEXT PRIMARY KEY,
+            provider            TEXT NOT NULL,
+            credential_type     TEXT NOT NULL,
+            label               TEXT NOT NULL,
+            owner_scope         TEXT NOT NULL DEFAULT 'local-user',
+            secret_reference    TEXT NOT NULL,
+            configured          INTEGER NOT NULL DEFAULT 0,
+            masked_hint         TEXT,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            last_used_at        TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_credentials_provider
+            ON credentials(provider, credential_type);
+
+        CREATE TABLE IF NOT EXISTS external_agents (
+            id                      TEXT PRIMARY KEY,
+            installation_id          INTEGER REFERENCES plugin_installations(id) ON DELETE SET NULL,
+            product_id              TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            product_version_id       INTEGER REFERENCES product_versions(id) ON DELETE SET NULL,
+            provider                TEXT NOT NULL,
+            name                    TEXT NOT NULL,
+            endpoint                TEXT NOT NULL,
+            agent_id                TEXT,
+            bot_id                  TEXT,
+            flow_id                 TEXT,
+            authentication_type     TEXT NOT NULL DEFAULT 'none',
+            credential_id           TEXT REFERENCES credentials(id) ON DELETE RESTRICT,
+            streaming_type          TEXT NOT NULL DEFAULT 'none',
+            request_mapping_json    TEXT NOT NULL DEFAULT '{}',
+            response_mapping_json   TEXT NOT NULL DEFAULT '{}',
+            session_mapping_json    TEXT NOT NULL DEFAULT '{}',
+            error_mapping_json      TEXT NOT NULL DEFAULT '{}',
+            mock_mode               INTEGER NOT NULL DEFAULT 1,
+            enabled                 INTEGER NOT NULL DEFAULT 1,
+            unavailable_reason      TEXT,
+            last_tested_at          TEXT,
+            last_test_status        TEXT,
+            created_at              TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at              TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_external_agents_product
+            ON external_agents(product_id, enabled);
+        CREATE INDEX IF NOT EXISTS idx_external_agents_credential
+            ON external_agents(credential_id);
+
+        CREATE TABLE IF NOT EXISTS agent_sessions (
+            id                  TEXT PRIMARY KEY,
+            external_agent_id   TEXT NOT NULL REFERENCES external_agents(id) ON DELETE CASCADE,
+            remote_session_id   TEXT,
+            title               TEXT NOT NULL,
+            status              TEXT NOT NULL DEFAULT 'active',
+            created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at          TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent
+            ON agent_sessions(external_agent_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS agent_messages (
+            id              TEXT PRIMARY KEY,
+            session_id      TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+            role            TEXT NOT NULL,
+            content         TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'completed',
+            request_id      TEXT,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_messages_session
+            ON agent_messages(session_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS usage_events (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id              TEXT,
+            external_agent_id       TEXT,
+            session_id              TEXT,
+            request_id              TEXT NOT NULL,
+            started_at              TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            completed_at            TEXT,
+            duration_ms             INTEGER,
+            status                  TEXT NOT NULL,
+            provider_error_code     TEXT,
+            estimated_input_usage   INTEGER,
+            estimated_output_usage  INTEGER,
+            metadata_json           TEXT NOT NULL DEFAULT '{}',
+            FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE SET NULL,
+            FOREIGN KEY(external_agent_id) REFERENCES external_agents(id) ON DELETE SET NULL,
+            FOREIGN KEY(session_id) REFERENCES agent_sessions(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_usage_events_agent
+            ON usage_events(external_agent_id, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_usage_events_session
+            ON usage_events(session_id, started_at DESC);
+        ",
+    )?;
+
+    set_version(conn, 46)?;
+    Ok(())
+}
+
+fn migrate_v46_to_v47(conn: &Connection) -> Result<(), AppError> {
+    log::info!("数据库迁移: v46 -> v47 (xingchen workflow protocol)");
+
+    let external_agent_cols = list_columns(conn, "external_agents")?;
+    if !external_agent_cols.iter().any(|c| c == "protocol_type") {
+        conn.execute_batch(
+            "ALTER TABLE external_agents ADD COLUMN protocol_type TEXT NOT NULL DEFAULT 'configurable';",
+        )?;
+    }
+    if !external_agent_cols.iter().any(|c| c == "local_uid") {
+        conn.execute_batch("ALTER TABLE external_agents ADD COLUMN local_uid TEXT;")?;
+    }
+
+    conn.execute_batch(
+        r#"
+        INSERT OR IGNORE INTO product_permissions
+            (product_version_id, permission, required, reason)
+        SELECT pv.id, 'agents.invoke', 1, 'Allow installed Xingchen products to invoke configured agents'
+        FROM product_versions pv
+        JOIN products p ON p.id = pv.product_id
+        WHERE p.product_type IN ('xingchen-agent', 'xingchen-workflow');
+
+        INSERT OR IGNORE INTO product_permissions
+            (product_version_id, permission, required, reason)
+        SELECT pv.id, 'network.xingchen', 1, 'Allow outbound calls to approved Xingchen endpoints'
+        FROM product_versions pv
+        JOIN products p ON p.id = pv.product_id
+        WHERE p.product_type IN ('xingchen-agent', 'xingchen-workflow');
+
+        INSERT OR IGNORE INTO product_permissions
+            (product_version_id, permission, required, reason)
+        SELECT pv.id, 'credentials.use', 1, 'Allow backend-only use of selected BYOK credential'
+        FROM product_versions pv
+        JOIN products p ON p.id = pv.product_id
+        WHERE p.product_type IN ('xingchen-agent', 'xingchen-workflow');
+        "#,
+    )?;
+
+    set_version(conn, 47)?;
+    Ok(())
+}
+
+fn migrate_v47_to_v48(conn: &Connection) -> Result<(), AppError> {
+    log::info!("database migration: v47 -> v48 (secure legacy AI/ASR credentials)");
+
+    let ai_model_cols = list_columns(conn, "ai_models")?;
+    if !ai_model_cols.iter().any(|c| c == "credential_id") {
+        conn.execute_batch(
+            "ALTER TABLE ai_models ADD COLUMN credential_id TEXT REFERENCES credentials(id) ON DELETE SET NULL;",
+        )?;
+    }
+    if !ai_model_cols
+        .iter()
+        .any(|c| c == "credential_migration_status")
+    {
+        conn.execute_batch(
+            "ALTER TABLE ai_models ADD COLUMN credential_migration_status TEXT NOT NULL DEFAULT 'pending';",
+        )?;
+    }
+
+    conn.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_ai_models_credential
+            ON ai_models(credential_id);
+        INSERT OR IGNORE INTO app_config (key, value)
+            VALUES ('asr.credential_migration_status', 'pending');
+        ",
+    )?;
+
+    set_version(conn, 48)?;
+    Ok(())
+}
+
+/// v48 -> v49: Planning with Files 会话级状态。
+fn migrate_v48_to_v49(conn: &Connection) -> Result<(), AppError> {
+    log::info!("database migration: v48 -> v49 (planning with files)");
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS planning_sessions (
+            session_key         TEXT PRIMARY KEY,
+            session_kind        TEXT NOT NULL,
+            session_id          TEXT NOT NULL,
+            enabled             INTEGER NOT NULL DEFAULT 0,
+            auto_apply          INTEGER NOT NULL DEFAULT 0,
+            pending_update_json TEXT,
+            last_updated_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_planning_sessions_kind_id
+            ON planning_sessions(session_kind, session_id);
+        ",
+    )?;
+    set_version(conn, 49)?;
+    Ok(())
+}
+
+/// v49 -> v50: personal account commerce ownership, ledgers and reviews.
+fn migrate_v49_to_v50(conn: &Connection) -> Result<(), AppError> {
+    log::info!("database migration: v49 -> v50 (personal account commerce)");
+
+    let user_cols = list_columns(conn, "users")?;
+    if !user_cols.iter().any(|c| c == "nickname") {
+        conn.execute_batch("ALTER TABLE users ADD COLUMN nickname TEXT;")?;
+        conn.execute(
+            "UPDATE users SET nickname = display_name WHERE nickname IS NULL",
+            [],
+        )?;
+    }
+    if !user_cols.iter().any(|c| c == "avatar") {
+        conn.execute_batch("ALTER TABLE users ADD COLUMN avatar TEXT;")?;
+    }
+    if !user_cols.iter().any(|c| c == "bio") {
+        conn.execute_batch("ALTER TABLE users ADD COLUMN bio TEXT;")?;
+    }
+    if !user_cols.iter().any(|c| c == "account_status") {
+        conn.execute_batch(
+            "ALTER TABLE users ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active';",
+        )?;
+    }
+    if !user_cols.iter().any(|c| c == "developer_status") {
+        conn.execute_batch(
+            "ALTER TABLE users ADD COLUMN developer_status TEXT NOT NULL DEFAULT 'none';",
+        )?;
+        conn.execute(
+            "UPDATE users SET developer_status = CASE WHEN role IN ('developer','admin') THEN 'approved' ELSE 'none' END",
+            [],
+        )?;
+    }
+
+    let product_cols = list_columns(conn, "products")?;
+    if !product_cols.iter().any(|c| c == "seller_user_id") {
+        conn.execute_batch("ALTER TABLE products ADD COLUMN seller_user_id TEXT;")?;
+        conn.execute(
+            "UPDATE products SET seller_user_id = COALESCE(NULLIF(developer_id, ''), 'official-demo-developer') WHERE seller_user_id IS NULL",
+            [],
+        )?;
+    }
+
+    let order_cols = list_columns(conn, "orders")?;
+    if !order_cols.iter().any(|c| c == "buyer_user_id") {
+        conn.execute_batch("ALTER TABLE orders ADD COLUMN buyer_user_id TEXT;")?;
+        conn.execute(
+            "UPDATE orders SET buyer_user_id = COALESCE(NULLIF(local_user_id, ''), 'local-demo-buyer') WHERE buyer_user_id IS NULL",
+            [],
+        )?;
+    }
+    if !order_cols.iter().any(|c| c == "seller_user_id") {
+        conn.execute_batch("ALTER TABLE orders ADD COLUMN seller_user_id TEXT;")?;
+    }
+    if !order_cols.iter().any(|c| c == "payment_status") {
+        conn.execute_batch(
+            "ALTER TABLE orders ADD COLUMN payment_status TEXT NOT NULL DEFAULT 'paid';",
+        )?;
+    }
+    if !order_cols.iter().any(|c| c == "settlement_status") {
+        conn.execute_batch(
+            "ALTER TABLE orders ADD COLUMN settlement_status TEXT NOT NULL DEFAULT 'settled';",
+        )?;
+    }
+    if !order_cols.iter().any(|c| c == "refund_status") {
+        conn.execute_batch(
+            "ALTER TABLE orders ADD COLUMN refund_status TEXT NOT NULL DEFAULT 'none';",
+        )?;
+    }
+    if !order_cols.iter().any(|c| c == "gross_amount") {
+        conn.execute_batch(
+            "ALTER TABLE orders ADD COLUMN gross_amount INTEGER NOT NULL DEFAULT 0;",
+        )?;
+        conn.execute(
+            "UPDATE orders SET gross_amount = total_amount WHERE gross_amount = 0",
+            [],
+        )?;
+    }
+    if !order_cols.iter().any(|c| c == "platform_fee") {
+        conn.execute_batch(
+            "ALTER TABLE orders ADD COLUMN platform_fee INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !order_cols.iter().any(|c| c == "seller_income") {
+        conn.execute_batch(
+            "ALTER TABLE orders ADD COLUMN seller_income INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+
+    let item_cols = list_columns(conn, "order_items")?;
+    if !item_cols.iter().any(|c| c == "seller_user_id") {
+        conn.execute_batch("ALTER TABLE order_items ADD COLUMN seller_user_id TEXT;")?;
+    }
+    if !item_cols.iter().any(|c| c == "currency") {
+        conn.execute_batch(
+            "ALTER TABLE order_items ADD COLUMN currency TEXT NOT NULL DEFAULT 'CNY';",
+        )?;
+    }
+    if !item_cols.iter().any(|c| c == "gross_amount") {
+        conn.execute_batch(
+            "ALTER TABLE order_items ADD COLUMN gross_amount INTEGER NOT NULL DEFAULT 0;",
+        )?;
+        conn.execute(
+            "UPDATE order_items SET gross_amount = amount WHERE gross_amount = 0",
+            [],
+        )?;
+    }
+    if !item_cols.iter().any(|c| c == "platform_fee") {
+        conn.execute_batch(
+            "ALTER TABLE order_items ADD COLUMN platform_fee INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !item_cols.iter().any(|c| c == "seller_income") {
+        conn.execute_batch(
+            "ALTER TABLE order_items ADD COLUMN seller_income INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+    if !item_cols.iter().any(|c| c == "price_snapshot_json") {
+        conn.execute_batch(
+            "ALTER TABLE order_items ADD COLUMN price_snapshot_json TEXT NOT NULL DEFAULT '{}';",
+        )?;
+    }
+    if !item_cols.iter().any(|c| c == "version_snapshot") {
+        conn.execute_batch("ALTER TABLE order_items ADD COLUMN version_snapshot TEXT;")?;
+    }
+
+    let entitlement_cols = list_columns(conn, "entitlements")?;
+    if !entitlement_cols.iter().any(|c| c == "owner_user_id") {
+        conn.execute_batch("ALTER TABLE entitlements ADD COLUMN owner_user_id TEXT;")?;
+        conn.execute(
+            "UPDATE entitlements SET owner_user_id = COALESCE(NULLIF(local_user_id, ''), 'local-demo-buyer') WHERE owner_user_id IS NULL",
+            [],
+        )?;
+    }
+    if !entitlement_cols.iter().any(|c| c == "order_id") {
+        conn.execute_batch("ALTER TABLE entitlements ADD COLUMN order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL;")?;
+    }
+    if !entitlement_cols.iter().any(|c| c == "order_item_id") {
+        conn.execute_batch("ALTER TABLE entitlements ADD COLUMN order_item_id INTEGER REFERENCES order_items(id) ON DELETE SET NULL;")?;
+    }
+    if !entitlement_cols.iter().any(|c| c == "revoked_at") {
+        conn.execute_batch("ALTER TABLE entitlements ADD COLUMN revoked_at TEXT;")?;
+    }
+    if !entitlement_cols.iter().any(|c| c == "revoked_reason") {
+        conn.execute_batch("ALTER TABLE entitlements ADD COLUMN revoked_reason TEXT;")?;
+    }
+
+    conn.execute_batch(
+        r#"
+        UPDATE products SET seller_user_id = 'official-demo-developer'
+        WHERE seller_user_id IS NULL OR seller_user_id = '' OR seller_user_id = 'legacy';
+
+        UPDATE order_items
+        SET seller_user_id = (
+            SELECT COALESCE(p.seller_user_id, p.developer_id, 'official-demo-developer')
+            FROM products p WHERE p.id = order_items.product_id
+        )
+        WHERE seller_user_id IS NULL OR seller_user_id = '';
+
+        UPDATE order_items
+        SET version_snapshot = (
+            SELECT version FROM product_versions pv WHERE pv.id = order_items.product_version_id
+        )
+        WHERE version_snapshot IS NULL;
+
+        UPDATE order_items
+        SET price_snapshot_json = json_object(
+            'currency', currency,
+            'amount', gross_amount,
+            'isMock', 1
+        )
+        WHERE price_snapshot_json IS NULL OR price_snapshot_json = '{}';
+
+        UPDATE orders
+        SET seller_user_id = (
+            SELECT seller_user_id FROM order_items oi WHERE oi.order_id = orders.id LIMIT 1
+        )
+        WHERE seller_user_id IS NULL OR seller_user_id = '';
+        "#,
+    )?;
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS commerce_ledger_entries (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_type      TEXT NOT NULL,
+            order_id        INTEGER REFERENCES orders(id) ON DELETE SET NULL,
+            order_item_id   INTEGER REFERENCES order_items(id) ON DELETE SET NULL,
+            buyer_user_id   TEXT,
+            seller_user_id  TEXT,
+            product_id      TEXT,
+            amount          INTEGER NOT NULL,
+            currency        TEXT NOT NULL DEFAULT 'CNY',
+            is_mock         INTEGER NOT NULL DEFAULT 1,
+            memo            TEXT,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_commerce_ledger_order
+            ON commerce_ledger_entries(order_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_commerce_ledger_seller
+            ON commerce_ledger_entries(seller_user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_commerce_ledger_buyer
+            ON commerce_ledger_entries(buyer_user_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS product_reviews (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id        INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+            product_id      TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            buyer_user_id   TEXT NOT NULL,
+            seller_user_id  TEXT NOT NULL,
+            rating          INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+            content         TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'visible',
+            hidden_by       TEXT,
+            hidden_reason   TEXT,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE(order_id, product_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_product_reviews_product
+            ON product_reviews(product_id, status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_product_reviews_buyer
+            ON product_reviews(buyer_user_id, created_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_products_seller
+            ON products(seller_user_id, status);
+        CREATE INDEX IF NOT EXISTS idx_orders_buyer_status
+            ON orders(buyer_user_id, payment_status, refund_status);
+        CREATE INDEX IF NOT EXISTS idx_orders_seller_status
+            ON orders(seller_user_id, payment_status, refund_status);
+        CREATE INDEX IF NOT EXISTS idx_entitlements_owner_product
+            ON entitlements(owner_user_id, product_id, status);
+        "#,
+    )?;
+
+    conn.execute_batch(
+        r#"
+        INSERT OR IGNORE INTO users
+            (id, display_name, role, is_mock, nickname, avatar, bio, account_status, developer_status)
+        VALUES
+            ('local-demo-buyer', '普通买家', 'customer', 1, '普通买家', NULL, '本地演示普通买家账号。', 'active', 'none'),
+            ('local-demo-creator', '个人创作者', 'developer', 1, '个人创作者', NULL, '本地演示个人创作者，可购买也可销售。', 'active', 'approved'),
+            ('local-demo-admin', '管理员', 'admin', 1, '管理员', NULL, '本地演示管理员账号。', 'active', 'approved'),
+            ('official-demo-developer', 'firstwork 官方演示', 'developer', 1, 'firstwork 官方演示', NULL, '内置官方演示商品创作者。', 'active', 'approved');
+
+        INSERT OR IGNORE INTO developer_profiles
+            (user_id, developer_name, description, verification_status)
+        VALUES
+            ('local-demo-creator', '个人创作者', '本地演示个人商店。', 'local_demo'),
+            ('official-demo-developer', 'firstwork 官方演示', '内置演示商品开发者。', 'local_demo');
+        "#,
+    )?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO users
+            (id, display_name, role, is_mock, nickname, avatar, bio, account_status, developer_status)
+         VALUES
+            ('firstwork-official', 'firstwork 官方', 'developer', 1, 'firstwork 官方', NULL,
+             '内置官方演示商品创作者。', 'active', 'approved')",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO developer_profiles
+            (user_id, developer_name, description, verification_status)
+         VALUES
+            ('firstwork-official', 'firstwork 官方', '内置演示商品开发者。', 'local_demo')",
+        [],
+    )?;
+
+    set_version(conn, 50)?;
+    Ok(())
+}
+
+/// v50 -> v51: Manifest v3、版本化安装、分层启用和受控执行日志。
+fn migrate_v50_to_v51(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS plugin_versions (
+            plugin_id        TEXT NOT NULL,
+            version          TEXT NOT NULL,
+            install_path     TEXT NOT NULL,
+            manifest_json    TEXT NOT NULL,
+            content_hash     TEXT NOT NULL,
+            permissions_json TEXT NOT NULL DEFAULT '[]',
+            signature_status TEXT NOT NULL DEFAULT 'unsigned',
+            is_current       INTEGER NOT NULL DEFAULT 0 CHECK(is_current IN (0, 1)),
+            installed_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            PRIMARY KEY(plugin_id, version)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_versions_one_current
+            ON plugin_versions(plugin_id) WHERE is_current = 1;
+        CREATE INDEX IF NOT EXISTS idx_plugin_versions_installed
+            ON plugin_versions(plugin_id, installed_at DESC);
+
+        CREATE TABLE IF NOT EXISTS plugin_activation_settings (
+            plugin_id    TEXT NOT NULL,
+            scope_type   TEXT NOT NULL CHECK(scope_type IN ('global','scene','feature')),
+            scope_key    TEXT NOT NULL DEFAULT '',
+            enabled      INTEGER NOT NULL CHECK(enabled IN (0, 1)),
+            updated_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            PRIMARY KEY(plugin_id, scope_type, scope_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_plugin_activation_scope
+            ON plugin_activation_settings(scope_type, scope_key, enabled);
+
+        CREATE TABLE IF NOT EXISTS plugin_execution_logs (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            plugin_id        TEXT NOT NULL,
+            contribution_id  TEXT,
+            hook             TEXT,
+            scene            TEXT NOT NULL,
+            feature          TEXT NOT NULL,
+            request_id       TEXT NOT NULL,
+            status           TEXT NOT NULL,
+            duration_ms      INTEGER,
+            error_message    TEXT,
+            created_at       TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_plugin_execution_request
+            ON plugin_execution_logs(request_id, id);
+        CREATE INDEX IF NOT EXISTS idx_plugin_execution_plugin
+            ON plugin_execution_logs(plugin_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS plugin_install_history (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            plugin_id        TEXT NOT NULL,
+            operation        TEXT NOT NULL,
+            from_version     TEXT,
+            to_version       TEXT,
+            content_hash     TEXT,
+            status           TEXT NOT NULL,
+            error_message    TEXT,
+            created_at       TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_plugin_install_history_plugin
+            ON plugin_install_history(plugin_id, created_at DESC);
+        "#,
+    )?;
+    set_version(conn, 51)?;
+    Ok(())
+}
+
+/// v51 -> v52: lock reviewed marketplace packages to a concrete format, manifest and hash.
+fn migrate_v51_to_v52(conn: &Connection) -> Result<(), AppError> {
+    log::info!("database migration: v51 -> v52 (manifest v3 marketplace bridge)");
+    let columns = list_columns(conn, "product_versions")?;
+    if !columns.iter().any(|column| column == "package_format") {
+        conn.execute_batch(
+            "ALTER TABLE product_versions ADD COLUMN package_format TEXT NOT NULL DEFAULT 'v2-zip';",
+        )?;
+    }
+    if !columns
+        .iter()
+        .any(|column| column == "manifest_schema_version")
+    {
+        conn.execute_batch(
+            "ALTER TABLE product_versions ADD COLUMN manifest_schema_version INTEGER NOT NULL DEFAULT 2;",
+        )?;
+    }
+    if !columns.iter().any(|column| column == "plugin_id") {
+        conn.execute_batch("ALTER TABLE product_versions ADD COLUMN plugin_id TEXT;")?;
+        conn.execute(
+            "UPDATE product_versions
+             SET plugin_id = (SELECT COALESCE(products.plugin_id, products.id)
+                              FROM products WHERE products.id = product_versions.product_id)
+             WHERE plugin_id IS NULL",
+            [],
+        )?;
+    }
+    if !columns.iter().any(|column| column == "classification") {
+        conn.execute_batch("ALTER TABLE product_versions ADD COLUMN classification TEXT;")?;
+    }
+    if !columns
+        .iter()
+        .any(|column| column == "approved_content_hash")
+    {
+        conn.execute_batch("ALTER TABLE product_versions ADD COLUMN approved_content_hash TEXT;")?;
+    }
+    if !columns.iter().any(|column| column == "package_locked") {
+        conn.execute_batch(
+            "ALTER TABLE product_versions ADD COLUMN package_locked INTEGER NOT NULL DEFAULT 0 CHECK(package_locked IN (0, 1));",
+        )?;
+    }
+    if !columns.iter().any(|column| column == "approved_at") {
+        conn.execute_batch("ALTER TABLE product_versions ADD COLUMN approved_at TEXT;")?;
+    }
+    conn.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_product_versions_package_identity
+            ON product_versions(plugin_id, version, package_format);
+        CREATE INDEX IF NOT EXISTS idx_product_versions_review_installable
+            ON product_versions(product_id, review_status, package_locked);
+        "#,
+    )?;
+    set_version(conn, 52)?;
+    Ok(())
+}
+
+/// v52 -> v53: register learning assistant document sources without changing user content.
+fn migrate_v52_to_v53(conn: &Connection) -> Result<(), AppError> {
+    log::info!("database migration: v52 -> v53 (learning assistant document sources)");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS document_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            display_name TEXT NOT NULL,
+            original_file_name TEXT NOT NULL,
+            stored_relative_path TEXT NOT NULL UNIQUE,
+            file_extension TEXT NOT NULL,
+            mime_type TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL,
+            source_module TEXT NOT NULL,
+            is_builtin INTEGER NOT NULL DEFAULT 0 CHECK(is_builtin IN (0, 1)),
+            is_enabled INTEGER NOT NULL DEFAULT 1 CHECK(is_enabled IN (0, 1)),
+            file_size INTEGER NOT NULL DEFAULT 0,
+            checksum TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_document_sources_identity
+            ON document_sources(source_module, category, original_file_name, checksum);
+        CREATE INDEX IF NOT EXISTS idx_document_sources_category
+            ON document_sources(category, source_module, is_enabled);
+        "#,
+    )?;
+    set_version(conn, 53)?;
+    Ok(())
+}
+
+/// v53 -> v54: cache parsed document text for the unified learning document tree.
+fn migrate_v53_to_v54(conn: &Connection) -> Result<(), AppError> {
+    log::info!("database migration: v53 -> v54 (learning document parse cache)");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS document_parse_cache (
+            document_id        INTEGER PRIMARY KEY,
+            parse_status       TEXT NOT NULL DEFAULT 'parsing',
+            parsed_text        TEXT NOT NULL DEFAULT '',
+            parse_message      TEXT NOT NULL DEFAULT '',
+            parsed_at          TEXT,
+            source_modified_at INTEGER NOT NULL DEFAULT 0,
+            content_hash       TEXT NOT NULL DEFAULT '',
+            parser_version     TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_document_parse_cache_status
+            ON document_parse_cache(parse_status);
+        "#,
+    )?;
+    set_version(conn, 54)?;
+    Ok(())
+}
+
+/// v54 -> v55: store AI course graph analyses and reviewed relation suggestions.
+fn migrate_v54_to_v55(conn: &Connection) -> Result<(), AppError> {
+    log::info!("database migration: v54 -> v55 (course graph AI suggestions)");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS course_graph_ai_analyses (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            node_id              TEXT NOT NULL,
+            node_name            TEXT NOT NULL,
+            source_kind          TEXT NOT NULL,
+            source_revision      TEXT NOT NULL,
+            definition           TEXT NOT NULL,
+            summary              TEXT NOT NULL,
+            aliases_json         TEXT NOT NULL DEFAULT '[]',
+            prerequisites_json   TEXT NOT NULL DEFAULT '[]',
+            applications_json    TEXT NOT NULL DEFAULT '[]',
+            misconceptions_json  TEXT NOT NULL DEFAULT '[]',
+            model_id             INTEGER NOT NULL,
+            raw_response         TEXT NOT NULL,
+            created_at           TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at           TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE(node_id, source_kind)
+        );
+
+        CREATE TABLE IF NOT EXISTS course_graph_ai_relations (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_node_id    TEXT NOT NULL,
+            source_node_name  TEXT NOT NULL,
+            target_node_id    TEXT NOT NULL,
+            target_node_name  TEXT NOT NULL,
+            relation_type     TEXT NOT NULL,
+            reason            TEXT NOT NULL,
+            confidence        REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+            status            TEXT NOT NULL DEFAULT 'pending'
+                              CHECK(status IN ('pending', 'accepted', 'rejected')),
+            source_kind       TEXT NOT NULL,
+            source_revision   TEXT NOT NULL,
+            model_id          INTEGER NOT NULL,
+            created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            UNIQUE(source_node_id, target_node_id, relation_type, source_kind)
+        );
+        CREATE INDEX IF NOT EXISTS idx_course_graph_ai_relations_source_status
+            ON course_graph_ai_relations(source_node_id, status, confidence DESC);
+        CREATE INDEX IF NOT EXISTS idx_course_graph_ai_relations_target_status
+            ON course_graph_ai_relations(target_node_id, status);
+        "#,
+    )?;
+    set_version(conn, 55)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod week4_plugin_integration_tests {
+    use super::*;
+    use crate::database::Database;
+    use crate::models::MarketplaceProductQuery;
+    use crate::services::marketplace::MarketplaceService;
+    use crate::services::plugins::PluginService;
+    use rusqlite::params;
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    use uuid::Uuid;
+
+    type Migration = fn(&Connection) -> Result<(), AppError>;
+
+    fn migrate_fixture_to_v42(conn: &Connection) -> Result<(), AppError> {
+        let migrations: [Migration; 42] = [
+            migrate_v0_to_v1,
+            migrate_v1_to_v2,
+            migrate_v2_to_v3,
+            migrate_v3_to_v4,
+            migrate_v4_to_v5,
+            migrate_v5_to_v6,
+            migrate_v6_to_v7,
+            migrate_v7_to_v8,
+            migrate_v8_to_v9,
+            migrate_v9_to_v10,
+            migrate_v10_to_v11,
+            migrate_v11_to_v12,
+            migrate_v12_to_v13,
+            migrate_v13_to_v14,
+            migrate_v14_to_v15,
+            migrate_v15_to_v16,
+            migrate_v16_to_v17,
+            migrate_v17_to_v18,
+            migrate_v18_to_v19,
+            migrate_v19_to_v20,
+            migrate_v20_to_v21,
+            migrate_v21_to_v22,
+            migrate_v22_to_v23,
+            migrate_v23_to_v24,
+            migrate_v24_to_v25,
+            migrate_v25_to_v26,
+            migrate_v26_to_v27,
+            migrate_v27_to_v28,
+            migrate_v28_to_v29,
+            migrate_v29_to_v30,
+            migrate_v30_to_v31,
+            migrate_v31_to_v32,
+            migrate_v32_to_v33,
+            migrate_v33_to_v34,
+            migrate_v34_to_v35,
+            migrate_v35_to_v36,
+            migrate_v36_to_v37,
+            migrate_v37_to_v38,
+            migrate_v38_to_v39,
+            migrate_v39_to_v40,
+            migrate_v40_to_v41,
+            migrate_v41_to_v42,
+        ];
+        for migration in migrations {
+            migration(conn)?;
+        }
+        assert_eq!(get_version(conn)?, 42);
+        Ok(())
+    }
+
+    fn seed_v42_representative_data(conn: &Connection) -> Result<(), AppError> {
+        conn.execute(
+            "INSERT OR REPLACE INTO app_config (key, value) VALUES (?1, ?2)",
+            params!["account.last_platform_user_id", "platform-user-v42"],
+        )?;
+        conn.execute(
+            "INSERT INTO folders (id, name, parent_id, sort_order) VALUES (?1, ?2, NULL, ?3)",
+            params![4201_i64, "账号业务资料", 7_i64],
+        )?;
+        conn.execute(
+            "INSERT INTO notes (id, title, content, folder_id) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                4202_i64,
+                "v42 保留笔记",
+                "不可被市场迁移覆盖的正文",
+                4201_i64
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO tasks (id, title, description, priority, important, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                4203_i64,
+                "v42 账号业务待办",
+                "用于验证本地业务数据保留",
+                2_i64,
+                1_i64,
+                0_i64
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO plugins
+                (id, name, version, description, author, path, main, manifest_json,
+                 enabled, status, content_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                "com.pomegranate.test.v42",
+                "v42 旧插件",
+                "0.9.0",
+                "升级数据保留夹具",
+                "fixture-author",
+                "C:/isolated-test/plugins/com.pomegranate.test.v42",
+                "main.js",
+                r#"{"id":"com.pomegranate.test.v42","name":"v42 旧插件","version":"0.9.0","main":"main.js","permissions":["notes.read"]}"#,
+                1_i64,
+                "installed",
+                "fixture-content-hash"
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO plugin_permissions (plugin_id, permission, granted)
+             VALUES (?1, ?2, ?3)",
+            params!["com.pomegranate.test.v42", "notes.read", 1_i64],
+        )?;
+        conn.execute(
+            "INSERT INTO plugin_settings (plugin_id, key, value)
+             VALUES (?1, ?2, ?3)",
+            params![
+                "com.pomegranate.test.v42",
+                "plugin:com.pomegranate.test.v42:mode",
+                r#""preserve-me""#
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn assert_v42_data_preserved(conn: &Connection) -> Result<(), AppError> {
+        let account_marker: String = conn.query_row(
+            "SELECT value FROM app_config WHERE key = ?1",
+            ["account.last_platform_user_id"],
+            |row| row.get(0),
+        )?;
+        assert_eq!(account_marker, "platform-user-v42");
+
+        let note: (String, String, i64) = conn.query_row(
+            "SELECT title, content, folder_id FROM notes WHERE id = ?1",
+            [4202_i64],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(
+            note,
+            (
+                "v42 保留笔记".into(),
+                "不可被市场迁移覆盖的正文".into(),
+                4201_i64
+            )
+        );
+        let folder_name: String =
+            conn.query_row("SELECT name FROM folders WHERE id = ?1", [note.2], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(folder_name, "账号业务资料");
+
+        let task: (String, i64, i64) = conn.query_row(
+            "SELECT title, important, status FROM tasks WHERE id = ?1",
+            [4203_i64],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(task, ("v42 账号业务待办".into(), 1_i64, 0_i64));
+
+        let plugin: (String, String, i64, String, String) = conn.query_row(
+            "SELECT name, version, enabled, path, content_hash FROM plugins WHERE id = ?1",
+            ["com.pomegranate.test.v42"],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        assert_eq!(
+            plugin,
+            (
+                "v42 旧插件".into(),
+                "0.9.0".into(),
+                1_i64,
+                "C:/isolated-test/plugins/com.pomegranate.test.v42".into(),
+                "fixture-content-hash".into()
+            )
+        );
+        let setting: String = conn.query_row(
+            "SELECT value FROM plugin_settings WHERE plugin_id = ?1 AND key = ?2",
+            params![
+                "com.pomegranate.test.v42",
+                "plugin:com.pomegranate.test.v42:mode"
+            ],
+            |row| row.get(0),
+        )?;
+        assert_eq!(setting, r#""preserve-me""#);
+        let granted: i64 = conn.query_row(
+            "SELECT granted FROM plugin_permissions WHERE plugin_id = ?1 AND permission = ?2",
+            params!["com.pomegranate.test.v42", "notes.read"],
+            |row| row.get(0),
+        )?;
+        assert_eq!(granted, 1);
+        Ok(())
+    }
+
+    fn assert_week4_schema_objects(conn: &Connection) -> Result<(), AppError> {
+        for table in [
+            "products",
+            "product_versions",
+            "plugin_installations",
+            "entitlements",
+            "orders",
+            "credentials",
+            "external_agents",
+            "plugin_versions",
+            "plugin_activation_settings",
+            "plugin_execution_logs",
+        ] {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 1, "缺少或重复数据库表：{table}");
+        }
+        for index in [
+            "idx_product_versions_product",
+            "idx_credentials_provider",
+            "idx_external_agents_product",
+            "idx_plugin_versions_one_current",
+            "idx_product_versions_review_installable",
+        ] {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [index],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 1, "缺少或重复数据库索引：{index}");
+        }
+
+        for table in ["plugins", "products", "product_versions", "external_agents"] {
+            let columns = list_columns(conn, table)?;
+            let unique: HashSet<_> = columns.iter().collect();
+            assert_eq!(columns.len(), unique.len(), "存在重复列：{table}");
+        }
+        Ok(())
+    }
+
+    fn assert_migrated_plugin_relations(conn: &Connection) -> Result<(), AppError> {
+        let product: (String, String) = conn.query_row(
+            "SELECT id, plugin_id FROM products WHERE id = ?1",
+            ["com.pomegranate.test.v42"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(
+            product,
+            (
+                "com.pomegranate.test.v42".into(),
+                "com.pomegranate.test.v42".into()
+            )
+        );
+
+        let version_id: i64 = conn.query_row(
+            "SELECT id FROM product_versions WHERE product_id = ?1 AND version = ?2",
+            params!["com.pomegranate.test.v42", "0.9.0"],
+            |row| row.get(0),
+        )?;
+        let installation: (String, i64, String, i64) = conn.query_row(
+            "SELECT product_id, product_version_id, installed_version, enabled
+             FROM plugin_installations WHERE plugin_id = ?1",
+            ["com.pomegranate.test.v42"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(
+            installation,
+            (
+                "com.pomegranate.test.v42".into(),
+                version_id,
+                "0.9.0".into(),
+                1_i64
+            )
+        );
+        Ok(())
+    }
+
+    fn assert_services_read_migrated_data(conn: Connection) -> Result<(), AppError> {
+        let db = Database {
+            conn: Mutex::new(conn),
+        };
+        let plugins = PluginService::list(&db)?;
+        let legacy = plugins
+            .iter()
+            .find(|plugin| plugin.id == "com.pomegranate.test.v42")
+            .ok_or_else(|| AppError::NotFound("迁移后的旧插件无法由 PluginService 读取".into()))?;
+        assert!(legacy.enabled);
+        assert_eq!(legacy.version, "0.9.0");
+
+        let settings = PluginService::get_settings(&db, "com.pomegranate.test.v42")?;
+        assert_eq!(
+            settings.get("plugin:com.pomegranate.test.v42:mode"),
+            Some(&serde_json::Value::String("preserve-me".into()))
+        );
+
+        let temp_root =
+            std::env::temp_dir().join(format!("pomegranate-week4-migration-{}", Uuid::new_v4()));
+        let query = MarketplaceProductQuery {
+            keyword: None,
+            product_type: None,
+            runtime_kind: None,
+            free_only: None,
+            acquired_only: None,
+            installed_only: None,
+            byok_only: None,
+            status: None,
+        };
+        let products = MarketplaceService::list_products(&db, &temp_root, query);
+        let cleanup = if temp_root.exists() {
+            std::fs::remove_dir_all(&temp_root)
+        } else {
+            Ok(())
+        };
+        let products = products?;
+        cleanup?;
+        assert!(
+            !products.is_empty(),
+            "MarketplaceService 应能读取 Week4 初始化写入的市场商品"
+        );
+        assert!(
+            !products
+                .iter()
+                .any(|product| product.id == "com.pomegranate.test.v42"),
+            "旧本地插件不应以公开市场商品身份暴露"
+        );
+        Ok(())
+    }
+
+    fn create_partial_v43_products_table(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE products (
+                id              TEXT PRIMARY KEY,
+                developer_id    TEXT NOT NULL,
+                name            TEXT NOT NULL,
+                description     TEXT,
+                product_type    TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'draft',
+                created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+            CREATE TRIGGER week4_abort_product_seed
+            BEFORE INSERT ON products
+            BEGIN
+                SELECT RAISE(ABORT, 'week4 injected migration failure');
+            END;
+            "#,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn initializes_plugin_marketplace_schema_without_account_regression() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        migrate(&conn)?;
+
+        let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        assert_eq!(version, SCHEMA_VERSION);
+
+        // 同时检查插件市场新增表与账号核心表，防止定向合并遗漏任一侧迁移。
+        for table in [
+            "plugins",
+            "plugin_versions",
+            "products",
+            "orders",
+            "credentials",
+            "external_agents",
+            "users",
+        ] {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 1, "缺少数据库表：{table}");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn upgrades_real_v42_fixture_to_v55_without_losing_data() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        migrate_fixture_to_v42(&conn)?;
+        seed_v42_representative_data(&conn)?;
+
+        migrate(&conn)?;
+
+        assert_eq!(get_version(&conn)?, 55);
+        assert_v42_data_preserved(&conn)?;
+        assert_week4_schema_objects(&conn)?;
+        assert_migrated_plugin_relations(&conn)?;
+        assert_services_read_migrated_data(conn)?;
+        Ok(())
+    }
+
+    #[test]
+    fn retries_v42_after_partial_v43_ddl_without_data_loss() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+        migrate_fixture_to_v42(&conn)?;
+        seed_v42_representative_data(&conn)?;
+        create_partial_v43_products_table(&conn)?;
+
+        let first_failure = match migrate(&conn) {
+            Ok(()) => panic!("故障注入应使首次迁移失败"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            first_failure.contains("week4 injected migration failure"),
+            "首次失败并非来自预期注入点: {first_failure}"
+        );
+        assert_eq!(get_version(&conn)?, 42, "迁移失败后不得推进 user_version");
+        assert_v42_data_preserved(&conn)?;
+        assert!(
+            list_columns(&conn, "plugins")?
+                .iter()
+                .any(|column| column == "manifest_format"),
+            "首次失败前应已形成可重复的部分 v43 DDL 状态"
+        );
+        for table in [
+            "products",
+            "product_versions",
+            "product_permissions",
+            "plugin_installations",
+            "entitlements",
+        ] {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 1, "失败后应保留已创建的部分 v43 DDL: {table}");
+        }
+        let partial_product_rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM products", [], |row| row.get(0))?;
+        assert_eq!(
+            partial_product_rows, 0,
+            "注入失败发生在首条商品写入前，不应留下半条商品数据"
+        );
+
+        conn.execute_batch("DROP TRIGGER week4_abort_product_seed;")?;
+        migrate(&conn)?;
+
+        assert_eq!(get_version(&conn)?, 55);
+        assert_v42_data_preserved(&conn)?;
+        assert_week4_schema_objects(&conn)?;
+        assert_migrated_plugin_relations(&conn)?;
+        assert_services_read_migrated_data(conn)?;
+        Ok(())
+    }
 }

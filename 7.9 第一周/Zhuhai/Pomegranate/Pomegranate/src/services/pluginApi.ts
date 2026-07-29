@@ -28,6 +28,7 @@ import type {
   PluginEditorAPI,
   PluginAiAPI,
   PluginAiTokenPayload,
+  PluginInfo,
   PluginTaskView,
 } from "@/types";
 import { PluginManager } from "@/services/pluginManager";
@@ -61,10 +62,11 @@ function preCheck(pluginId: string, perm: string): void {
  * @param manager   PluginManager 实例（用于 commands/sidebar/panelViews 注册）
  */
 export function createAppAPI(
-  pluginId: string,
+  info: PluginInfo,
   token: string,
   manager: PluginManager,
 ): PluginAppAPI {
+  const pluginId = info.id;
   // ─── notes 子 API ───────────────────────────
   const notes: PluginNotesAPI = {
     list: async (query) => {
@@ -425,7 +427,7 @@ export function createAppAPI(
     return () => { unlisten(); };
   };
 
-  return {
+  const api: PluginAppAPI = {
     version: PLUGIN_API_VERSION,
     workspace,
     notes,
@@ -440,7 +442,12 @@ export function createAppAPI(
     ribbon,
     editor,
     ai,
-    invoke: rawInvoke,
-    onTauriEvent: rawOnTauriEvent,
   };
+
+  if (info.rawInvokeAllowed && info.canExecute && info.runtimeKind === "legacy-js") {
+    api.invoke = rawInvoke;
+    api.onTauriEvent = rawOnTauriEvent;
+  }
+
+  return api;
 }

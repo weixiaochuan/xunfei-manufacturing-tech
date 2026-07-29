@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 3,
+  "id": "com.firstwork.declarative-writer",
+  "name": "声明式写作工坊",
+  "version": "1.0.0",
+  "authorId": "firstwork-examples",
+  "description": "无需外部 API、无需脚本的通用写作功能插件。",
+  "minAppVersion": "1.8.0",
+  "classification": "feature",
+  "runtimeKind": "declarative-ui",
+  "source": "local",
+  "activationEvents": ["onFeature:structured-writer"],
+  "supportedScenes": ["global", "learning", "research"],
+  "defaultActivation": {
+    "global": true,
+    "scenes": { "learning": true, "research": true, "teaching": false }
+  },
+  "permissions": [],
+  "dependencies": {},
+  "conflictsWith": [],
+  "contributes": {
+    "features": [
+      {
+        "id": "structured-writer",
+        "title": "结构化写作",
+        "description": "将主题、受众和要点整理为 Markdown 文稿。",
+        "scenes": ["global", "learning", "research"],
+        "capabilities": ["feature", "view"],
+        "uiSchema": "ui/feature.json"
+      }
+    ],
+    "agents": [],
+    "commands": [],
+    "views": [],
+    "tools": [],
+    "enhancements": [],
+    "settings": false
+  },
+  "integrity": { "sha256": null },
+  "signature": { "status": "unsigned", "signer": null }
+}

@@ -1,12 +1,13 @@
 pub mod ai;
 pub mod asr;
 pub mod asset_path;
+pub mod attachment;
 pub mod cards;
 pub mod claude_agent;
-pub mod attachment;
 pub mod config;
 pub mod converter;
 pub mod course_graph;
+pub mod credentials;
 pub mod crypto;
 pub mod daily;
 pub mod data_dir;
@@ -34,8 +35,10 @@ pub mod import_video_attachments;
 pub mod learning_assistant;
 pub mod learning_kb;
 pub mod links;
-pub mod markdown;
 pub mod local_learning_plan;
+pub mod markdown;
+pub mod marketplace;
+pub mod marketplace_supply;
 // 外部 MCP server 子进程管理仅桌面端：rmcp transport-child-process 在桌面端 dependencies
 // 移动端 fork/spawn 受限，砍掉外部 MCP，仅保留 in-memory 内置 server（kb-core）
 #[cfg(desktop)]
@@ -43,9 +46,11 @@ pub mod mcp_client;
 pub mod note;
 pub mod orphan_scan;
 pub mod pdf;
-pub mod plugin_token;
+pub mod plugin_platform;
 pub mod plugin_rate_limit;
+pub mod plugin_token;
 // 插件系统：元数据管理、manifest 校验、安装/卸载
+pub mod planning;
 pub mod plugins;
 pub mod ppt_master;
 // 笔记 pop-out 窗口仅桌面端（移动端改 Modal）
@@ -77,3 +82,4 @@ pub mod vault;
 pub mod video;
 pub mod web_clip;
 pub mod webdav;
+pub mod xingchen_agent;

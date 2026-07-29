@@ -85,7 +85,7 @@ const MAIN_GROUPS: ActivityItem[][] = [
     { view: "ai", route: "/ai", label: "AI 问答", icon: <Bot size={18} /> },
     { view: "learning-assistant", route: "/learning-assistant", label: "AI 助学", icon: <GraduationCap size={18} /> },
     { view: "prompts", route: "/prompts", label: "提示词", icon: <Sparkles size={18} /> },
-    { view: "plugins", route: "/plugins", label: "插件", icon: <Plug size={18} /> },
+    { view: "marketplace", route: "/marketplace", label: "AI 应用市场", icon: <Plug size={18} /> },
   ],
 ];
 
@@ -110,7 +110,8 @@ const ROUTE_TO_VIEW: Array<[string, ActiveView]> = [
   ["/ai", "ai"],
   ["/learning-assistant", "learning-assistant"],
   ["/prompts", "prompts"],
-  ["/plugins", "plugins"],
+  ["/marketplace", "marketplace"],
+  ["/plugins", "marketplace"],
   ["/hidden", "hidden"],
   ["/trash", "trash"],
   ["/about", "about"],

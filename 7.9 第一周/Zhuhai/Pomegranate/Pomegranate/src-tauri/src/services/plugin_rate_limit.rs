@@ -45,7 +45,13 @@ impl PluginRateLimiter {
 
     /// 检查插件写操作是否超限。未超限 → Ok(()); 超限 → Err(AppError::Custom(...))
     pub fn check_write(&self, plugin_id: &str) -> Result<(), AppError> {
-        self.check_window(plugin_id, "write", self.max_per_second, 1, "插件写入速率超限")
+        self.check_window(
+            plugin_id,
+            "write",
+            self.max_per_second,
+            1,
+            "插件写入速率超限",
+        )
     }
 
     /// 检查插件 AI 调用是否超限：每插件每分钟最多 10 次。
