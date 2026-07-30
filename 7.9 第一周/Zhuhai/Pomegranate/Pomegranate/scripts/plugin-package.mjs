@@ -5,6 +5,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
 import {
+  isV3PermissionRuntimeAllowed,
   loadCapabilityRegistry,
   validateCapabilityRegistry,
   v3RequestableCapabilities,
@@ -145,7 +146,7 @@ function validateUiSchema(name, data) {
   }
 }
 
-function validateManifest(manifest, files) {
+export function validateManifest(manifest, files) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) fail("manifest.json 必须是对象");
   if (manifest.schemaVersion !== 3) fail("打包工具只接受 Manifest v3");
   if (!files.has("README.md")) fail("正式插件包必须包含 README.md");
@@ -161,8 +162,13 @@ function validateManifest(manifest, files) {
   if (!["declarative-ui", "prompt-pack", "xingchen-agent", "xingchen-workflow"].includes(manifest.runtimeKind)) {
     fail("正式插件包只允许声明式、Prompt 或受控星辰运行时");
   }
-  for (const permission of manifest.permissions ?? []) {
+  const permissions = manifest.permissions ?? [];
+  if (new Set(permissions).size !== permissions.length) fail("Manifest 权限列表包含重复项");
+  for (const permission of permissions) {
     if (!ALLOWED_PERMISSIONS.has(permission)) fail(`Manifest 申请了不存在的权限：${permission}`);
+    if (!isV3PermissionRuntimeAllowed(permission, manifest.runtimeKind, CAPABILITY_REGISTRY)) {
+      fail(`Manifest 权限 ${permission} 不允许用于 runtimeKind ${manifest.runtimeKind}`);
+    }
   }
   const contributes = manifest.contributes ?? {};
   const hasFeatures = (contributes.features ?? []).length > 0;
@@ -172,8 +178,34 @@ function validateManifest(manifest, files) {
   if (manifest.classification === "hybrid" && (!hasFeatures || !hasEnhancements)) {
     fail("hybrid 插件必须同时声明 features 和 enhancements");
   }
+  if (manifest.classification === "feature" && hasEnhancements) {
+    fail("classification=feature 不得声明 enhancement contribution");
+  }
+  if (manifest.classification === "enhancement" && hasFeatures) {
+    fail("classification=enhancement 不得声明 feature contribution");
+  }
+  const runtimeClassificationAllowed =
+    (manifest.runtimeKind === "declarative-ui" && manifest.classification === "feature")
+    || (manifest.runtimeKind === "prompt-pack" && manifest.classification === "enhancement")
+    || (["xingchen-agent", "xingchen-workflow"].includes(manifest.runtimeKind)
+      && ["feature", "hybrid"].includes(manifest.classification));
+  if (!runtimeClassificationAllowed) {
+    fail(`runtimeKind ${manifest.runtimeKind} 与 classification/contribution 组合不兼容`);
+  }
+  if (hasEnhancements && !permissions.includes("ai.context.augment")) {
+    fail("包含 enhancement contribution 的 Manifest 必须声明 ai.context.augment");
+  }
+  if (hasFeatures && ["xingchen-agent", "xingchen-workflow"].includes(manifest.runtimeKind)) {
+    for (const required of ["credentials.use", "agents.invoke", "network.xingchen", "ai.invoke"]) {
+      if (!permissions.includes(required)) fail(`Xingchen feature 缺少必需权限 ${required}`);
+    }
+  }
   const resources = [];
   for (const feature of contributes.features ?? []) {
+    if ((feature.capabilities ?? []).includes("file.docx.output")
+      && !permissions.includes("files.writeSelected")) {
+      fail("feature capability file.docx.output 必须声明 files.writeSelected");
+    }
     if (!feature.uiSchema) fail(`feature 贡献点 ${feature.id ?? "<unknown>"} 必须声明 uiSchema`);
     resources.push(feature.uiSchema);
     const schemaName = safePath(String(feature.uiSchema));

@@ -13,6 +13,8 @@ const REQUIRED_FIELDS = [
 ];
 const STATUSES = new Set(["active", "restricted", "reserved", "blocked", "legacy", "deprecated"]);
 const REQUESTABLE_STATUSES = new Set(["active", "restricted"]);
+export const V3_PERMISSION_RUNTIME_COMPATIBILITY_EXCEPTIONS =
+  Object.freeze(["tasks.read", "tasks.write", "mcp.connect"]);
 
 export function loadCapabilityRegistry(path = REGISTRY_PATH) {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -66,6 +68,12 @@ export function v3RequestableCapabilities(registry) {
   return registry.capabilities.filter((item) => REQUESTABLE_STATUSES.has(item.status));
 }
 
+export function isV3PermissionRuntimeAllowed(permission, runtimeKind, registry) {
+  if (V3_PERMISSION_RUNTIME_COMPATIBILITY_EXCEPTIONS.includes(permission)) return true;
+  const capability = v3RequestableCapabilities(registry).find((item) => item.id === permission);
+  return Boolean(capability?.runtimeKinds.includes(runtimeKind));
+}
+
 export function assertV3Permissions(permissions, registry) {
   const allowed = new Set(v3RequestableCapabilities(registry).map((item) => item.id));
   for (const permission of permissions) {
@@ -110,10 +118,15 @@ function renderTypeScript(registry) {
 
 function renderRust(registry) {
   const rustArray = (name, items) => `pub(crate) const ${name}: &[&str] = &[\n${items.map((item) => `    ${JSON.stringify(item.id)},`).join("\n")}\n];\n`;
+  const runtimeMap = v3RequestableCapabilities(registry)
+    .map((item) => `    (${JSON.stringify(item.id)}, &[${item.runtimeKinds.map((kind) => JSON.stringify(kind)).join(", ")}]),`)
+    .join("\n");
   return `// 此文件由 scripts/plugin-capabilities.mjs 生成，请勿手工修改。\n`
     + rustArray("VALID_PERMISSIONS", registry.capabilities)
     + "\n"
-    + rustArray("V3_MANIFEST_PERMISSIONS", v3RequestableCapabilities(registry));
+    + rustArray("V3_MANIFEST_PERMISSIONS", v3RequestableCapabilities(registry))
+    + "\n"
+    + `pub(crate) const V3_PERMISSION_RUNTIME_KINDS: &[(&str, &[&str])] = &[\n${runtimeMap}\n];\n`;
 }
 
 export function generatedFiles(registry) {

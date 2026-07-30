@@ -989,6 +989,16 @@ fn validate_manifest(manifest: &PluginManifestV3) -> Result<(), AppError> {
                 permission
             )));
         }
+        if !crate::services::plugin_capabilities::is_v3_permission_runtime_allowed(
+            permission,
+            runtime_kind_name(&manifest.runtime_kind),
+        ) {
+            return Err(AppError::InvalidInput(format!(
+                "Manifest 权限 {} 不允许用于 runtimeKind {}",
+                permission,
+                runtime_kind_name(&manifest.runtime_kind)
+            )));
+        }
     }
     let mut ids = HashSet::new();
     for id in manifest
@@ -1057,6 +1067,7 @@ fn validate_manifest(manifest: &PluginManifestV3) -> Result<(), AppError> {
         }
         _ => {}
     }
+    validate_v3_capability_combination(manifest, has_features, has_enhancements)?;
 
     for feature in &manifest.contributes.features {
         if feature.ui_schema.is_none() {
@@ -1083,6 +1094,93 @@ fn validate_manifest(manifest: &PluginManifestV3) -> Result<(), AppError> {
         validate_declarative_handler(&enhancement.id, &enhancement.handler)?;
     }
     Ok(())
+}
+
+fn validate_v3_capability_combination(
+    manifest: &PluginManifestV3,
+    has_features: bool,
+    has_enhancements: bool,
+) -> Result<(), AppError> {
+    use crate::models::PluginClassification;
+
+    match manifest.classification {
+        PluginClassification::Feature if has_enhancements => {
+            return Err(AppError::InvalidInput(
+                "classification=feature 不得声明 enhancement contribution".into(),
+            ));
+        }
+        PluginClassification::Enhancement if has_features => {
+            return Err(AppError::InvalidInput(
+                "classification=enhancement 不得声明 feature contribution".into(),
+            ));
+        }
+        _ => {}
+    }
+    let runtime = runtime_kind_name(&manifest.runtime_kind);
+    if !matches!(
+        (runtime, &manifest.classification),
+        ("declarative-ui", PluginClassification::Feature)
+            | ("prompt-pack", PluginClassification::Enhancement)
+            | (
+                "xingchen-agent" | "xingchen-workflow",
+                PluginClassification::Feature | PluginClassification::Hybrid
+            )
+    ) {
+        return Err(AppError::InvalidInput(format!(
+            "runtimeKind {} 与 classification/contribution 组合不兼容",
+            runtime
+        )));
+    }
+    let permissions = manifest
+        .permissions
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    if has_enhancements && !permissions.contains("ai.context.augment") {
+        return Err(AppError::InvalidInput(
+            "包含 enhancement contribution 的 Manifest 必须声明 ai.context.augment".into(),
+        ));
+    }
+    if has_features && matches!(runtime, "xingchen-agent" | "xingchen-workflow") {
+        for required in [
+            "credentials.use",
+            "agents.invoke",
+            "network.xingchen",
+            "ai.invoke",
+        ] {
+            if !permissions.contains(required) {
+                return Err(AppError::InvalidInput(format!(
+                    "Xingchen feature 缺少必需权限 {}",
+                    required
+                )));
+            }
+        }
+    }
+    if manifest.contributes.features.iter().any(|feature| {
+        feature
+            .capabilities
+            .contains(&crate::models::PluginCapability::FileDocxOutput)
+    }) && !permissions.contains("files.writeSelected")
+    {
+        return Err(AppError::InvalidInput(
+            "feature capability file.docx.output 必须声明 files.writeSelected".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn runtime_kind_name(runtime_kind: &PluginRuntimeKind) -> &'static str {
+    match runtime_kind {
+        PluginRuntimeKind::LegacyJs => "legacy-js",
+        PluginRuntimeKind::DeclarativeUi => "declarative-ui",
+        PluginRuntimeKind::PromptPack => "prompt-pack",
+        PluginRuntimeKind::XingchenAgent => "xingchen-agent",
+        PluginRuntimeKind::XingchenWorkflow => "xingchen-workflow",
+        PluginRuntimeKind::XingchenMcp => "xingchen-mcp",
+        PluginRuntimeKind::McpConnector => "mcp-connector",
+        PluginRuntimeKind::PptExtension => "ppt-extension",
+        PluginRuntimeKind::LearningExtension => "learning-extension",
+    }
 }
 
 fn validate_declarative_handler(
@@ -1790,7 +1888,7 @@ mod tests {
     }
 
     fn manifest_for(classification: &str, runtime_kind: &str) -> PluginManifestV3 {
-        serde_json::from_value(serde_json::json!({
+        let mut manifest: PluginManifestV3 = serde_json::from_value(serde_json::json!({
             "schemaVersion": 3,
             "id": "com.firstwork.platform-test",
             "name": "Platform Test",
@@ -1817,7 +1915,25 @@ mod tests {
                 }]
             }
         }))
-        .expect("parse test manifest")
+        .expect("parse test manifest");
+        if matches!(classification, "enhancement" | "hybrid") {
+            manifest.permissions.push("ai.context.augment".into());
+        }
+        if matches!(runtime_kind, "xingchen-agent" | "xingchen-workflow")
+            && matches!(classification, "feature" | "hybrid")
+        {
+            manifest.permissions.extend(
+                [
+                    "credentials.use",
+                    "agents.invoke",
+                    "network.xingchen",
+                    "ai.invoke",
+                ]
+                .into_iter()
+                .map(str::to_string),
+            );
+        }
+        manifest
     }
 
     fn execution_context() -> PluginExecutionContext {
@@ -2335,6 +2451,95 @@ mod tests {
         let mut incomplete_hybrid = hybrid.clone();
         incomplete_hybrid.contributes.features.clear();
         assert!(validate_manifest(&incomplete_hybrid).is_err());
+    }
+
+    #[test]
+    fn validates_frozen_runtime_classification_matrix() {
+        for runtime in ["xingchen-agent", "xingchen-workflow"] {
+            let feature = manifest_for("feature", runtime);
+            let mut feature_only = feature.clone();
+            feature_only.contributes.enhancements.clear();
+            assert!(
+                validate_manifest(&feature_only).is_ok(),
+                "{runtime} feature"
+            );
+
+            let hybrid = manifest_for("hybrid", runtime);
+            assert!(validate_manifest(&hybrid).is_ok(), "{runtime} hybrid");
+
+            let mut pure_enhancement = manifest_for("enhancement", runtime);
+            pure_enhancement.contributes.features.clear();
+            assert!(
+                validate_manifest(&pure_enhancement).is_err(),
+                "{runtime} pure enhancement"
+            );
+        }
+        for (classification, runtime) in [
+            ("enhancement", "declarative-ui"),
+            ("hybrid", "declarative-ui"),
+            ("feature", "prompt-pack"),
+            ("hybrid", "prompt-pack"),
+        ] {
+            assert!(
+                validate_manifest(&manifest_for(classification, runtime)).is_err(),
+                "{runtime} {classification}"
+            );
+        }
+        let feature_with_enhancement = manifest_for("feature", "xingchen-workflow");
+        assert!(validate_manifest(&feature_with_enhancement).is_err());
+        let mut enhancement_with_feature = manifest_for("enhancement", "prompt-pack");
+        assert!(validate_manifest(&enhancement_with_feature).is_err());
+        enhancement_with_feature.contributes.features.clear();
+        assert!(validate_manifest(&enhancement_with_feature).is_ok());
+    }
+
+    #[test]
+    fn requires_enhancement_xingchen_and_file_output_permissions() {
+        let mut hybrid = manifest_for("hybrid", "xingchen-workflow");
+        hybrid
+            .permissions
+            .retain(|permission| permission != "ai.context.augment");
+        assert!(validate_manifest(&hybrid).is_err());
+
+        for runtime in ["xingchen-agent", "xingchen-workflow"] {
+            for missing in [
+                "credentials.use",
+                "agents.invoke",
+                "network.xingchen",
+                "ai.invoke",
+            ] {
+                let mut manifest = manifest_for("feature", runtime);
+                manifest.contributes.enhancements.clear();
+                manifest
+                    .permissions
+                    .retain(|permission| permission != missing);
+                assert!(validate_manifest(&manifest).is_err(), "{runtime} {missing}");
+            }
+        }
+
+        let mut output = manifest_for("feature", "xingchen-workflow");
+        output.contributes.enhancements.clear();
+        output.contributes.features[0]
+            .capabilities
+            .push(crate::models::PluginCapability::FileDocxOutput);
+        assert!(validate_manifest(&output).is_err());
+        output.permissions.push("files.writeSelected".into());
+        assert!(validate_manifest(&output).is_ok());
+    }
+
+    #[test]
+    fn rejects_permission_runtime_mismatch_but_keeps_three_compatibility_exceptions() {
+        let mut manifest = manifest_for("feature", "declarative-ui");
+        manifest.contributes.enhancements.clear();
+        manifest.permissions = vec!["planning.files.write".into()];
+        assert!(validate_manifest(&manifest).is_err());
+
+        for permission in ["tasks.read", "tasks.write", "mcp.connect"] {
+            manifest.permissions = vec![permission.into()];
+            assert!(validate_manifest(&manifest).is_ok(), "{permission}");
+        }
+        manifest.permissions = vec!["tasks.read".into(), "tasks.read".into()];
+        assert!(validate_manifest(&manifest).is_err());
     }
 
     #[test]

@@ -66,3 +66,26 @@ pub(crate) const V3_MANIFEST_PERMISSIONS: &[&str] = &[
     "network.xingchen",
     "agents.invoke",
 ];
+
+pub(crate) const V3_PERMISSION_RUNTIME_KINDS: &[(&str, &[&str])] = &[
+    ("document.read", &["declarative-ui", "xingchen-agent", "xingchen-workflow"]),
+    ("document.write", &["declarative-ui", "xingchen-agent", "xingchen-workflow"]),
+    ("tasks.read", &["legacy-js"]),
+    ("tasks.write", &["legacy-js"]),
+    ("ai.invoke", &["declarative-ui", "xingchen-agent", "xingchen-workflow"]),
+    ("ai.context.read", &["prompt-pack"]),
+    ("ai.context.augment", &["prompt-pack", "declarative-ui", "xingchen-agent", "xingchen-workflow"]),
+    ("ai.session.read", &["prompt-pack"]),
+    ("ui.editor.toolbar", &["declarative-ui"]),
+    ("ui.chat.toolbar", &["prompt-pack"]),
+    ("ui.chat.panel", &["prompt-pack"]),
+    ("planning.files.read", &["prompt-pack"]),
+    ("planning.files.write", &["prompt-pack"]),
+    ("network.request", &["xingchen-agent", "xingchen-workflow", "mcp-connector"]),
+    ("files.writeSelected", &["xingchen-agent", "xingchen-workflow"]),
+    ("prompts.register", &["prompt-pack"]),
+    ("mcp.connect", &["mcp-connector"]),
+    ("credentials.use", &["xingchen-agent", "xingchen-workflow", "mcp-connector"]),
+    ("network.xingchen", &["xingchen-agent", "xingchen-workflow"]),
+    ("agents.invoke", &["xingchen-agent", "xingchen-workflow"]),
+];
