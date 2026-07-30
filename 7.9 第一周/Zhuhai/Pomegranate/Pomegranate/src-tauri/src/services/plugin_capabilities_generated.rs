@@ -89,3 +89,30 @@ pub(crate) const V3_PERMISSION_RUNTIME_KINDS: &[(&str, &[&str])] = &[
     ("network.xingchen", &["xingchen-agent", "xingchen-workflow"]),
     ("agents.invoke", &["xingchen-agent", "xingchen-workflow"]),
 ];
+
+pub(crate) const V3_PERMISSION_RUNTIME_COMPATIBILITY_EXCEPTIONS: &[&str] = &["tasks.read", "tasks.write", "mcp.connect"];
+
+pub(crate) const V3_CLASSIFICATION_CONTRIBUTION_RULES: &[(&str, &[&str], &[&str])] = &[
+    ("feature", &["feature"], &["enhancement"]),
+    ("enhancement", &["enhancement"], &["feature"]),
+    ("hybrid", &["feature", "enhancement"], &[]),
+];
+
+pub(crate) const V3_RUNTIME_CLASSIFICATION_RULES: &[(&str, &[&str])] = &[
+    ("declarative-ui", &["feature"]),
+    ("prompt-pack", &["enhancement"]),
+    ("xingchen-agent", &["feature", "hybrid"]),
+    ("xingchen-workflow", &["feature", "hybrid"]),
+];
+
+pub(crate) const V3_CONTRIBUTION_REQUIRED_PERMISSIONS: &[(&str, &[&str])] = &[
+    ("enhancement", &["ai.context.augment"]),
+];
+
+pub(crate) const V3_RUNTIME_CONTRIBUTION_REQUIRED_PERMISSIONS: &[(&[&str], &str, &[&str])] = &[
+    (&["xingchen-agent", "xingchen-workflow"], "feature", &["credentials.use", "agents.invoke", "network.xingchen", "ai.invoke"]),
+];
+
+pub(crate) const V3_FEATURE_CAPABILITY_REQUIRED_PERMISSIONS: &[(&str, &[&str])] = &[
+    ("file.docx.output", &["files.writeSelected"]),
+];

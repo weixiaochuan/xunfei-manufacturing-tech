@@ -88,6 +88,67 @@ test("打包器拒绝缺失的组合权限和重复权限", () => {
   assert.throws(() => validateManifest(duplicate, combinationFiles()), /重复/);
 });
 
+test("打包器保留同源化前的具体拒绝文案", () => {
+  const featureMissing = combinationManifest("feature", "declarative-ui");
+  featureMissing.contributes.features = [];
+  assert.throws(
+    () => validateManifest(featureMissing, combinationFiles()),
+    /feature 插件必须声明 features/,
+  );
+
+  const enhancementMissing = combinationManifest("enhancement", "prompt-pack");
+  enhancementMissing.contributes.enhancements = [];
+  enhancementMissing.permissions = [];
+  assert.throws(
+    () => validateManifest(enhancementMissing, combinationFiles()),
+    /enhancement 插件必须声明 enhancements/,
+  );
+
+  const hybridMissing = combinationManifest("hybrid", "xingchen-workflow");
+  hybridMissing.contributes.enhancements = [];
+  hybridMissing.permissions = fixedXingchenPermissions;
+  assert.throws(
+    () => validateManifest(hybridMissing, combinationFiles()),
+    /hybrid 插件必须同时声明 features 和 enhancements/,
+  );
+
+  const featureWithEnhancement = combinationManifest("hybrid", "xingchen-workflow");
+  featureWithEnhancement.classification = "feature";
+  assert.throws(
+    () => validateManifest(featureWithEnhancement, combinationFiles()),
+    /classification=feature 不得声明 enhancement contribution/,
+  );
+
+  const enhancementWithFeature = combinationManifest("hybrid", "prompt-pack");
+  enhancementWithFeature.classification = "enhancement";
+  assert.throws(
+    () => validateManifest(enhancementWithFeature, combinationFiles()),
+    /classification=enhancement 不得声明 feature contribution/,
+  );
+
+  const enhancementPermission = combinationManifest("enhancement", "prompt-pack");
+  enhancementPermission.permissions = [];
+  assert.throws(
+    () => validateManifest(enhancementPermission, combinationFiles()),
+    /包含 enhancement contribution 的 Manifest 必须声明 ai\.context\.augment/,
+  );
+
+  const xingchenPermission = combinationManifest("feature", "xingchen-agent");
+  xingchenPermission.permissions = xingchenPermission.permissions
+    .filter((permission) => permission !== "credentials.use");
+  assert.throws(
+    () => validateManifest(xingchenPermission, combinationFiles()),
+    /Xingchen feature 缺少必需权限 credentials\.use/,
+  );
+
+  const filePermission = combinationManifest("feature", "xingchen-workflow");
+  filePermission.contributes.features[0].capabilities.push("file.docx.output");
+  assert.throws(
+    () => validateManifest(filePermission, combinationFiles()),
+    /feature capability file\.docx\.output 必须声明 files\.writeSelected/,
+  );
+});
+
 test("file.docx.output 必须配套 files.writeSelected", () => {
   const value = combinationManifest("feature", "xingchen-workflow");
   value.contributes.features[0].capabilities.push("file.docx.output");

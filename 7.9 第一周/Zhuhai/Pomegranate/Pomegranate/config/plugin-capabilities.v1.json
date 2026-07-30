@@ -1,49 +1,3961 @@
 {
   "schemaVersion": 1,
   "registryVersion": "1.0.0",
-  "allowedStatuses": ["active", "restricted", "reserved", "blocked", "legacy", "deprecated"],
+  "allowedStatuses": [
+    "active",
+    "restricted",
+    "reserved",
+    "blocked",
+    "legacy",
+    "deprecated"
+  ],
+  "v3Policy": {
+    "classifications": [
+      "feature",
+      "enhancement",
+      "hybrid"
+    ],
+    "runtimeKinds": [
+      "declarative-ui",
+      "prompt-pack",
+      "xingchen-agent",
+      "xingchen-workflow"
+    ],
+    "contributionTypes": [
+      "feature",
+      "enhancement"
+    ],
+    "featureCapabilities": [
+      "file.docx.output"
+    ],
+    "runtimePermissionCompatibilityExceptions": [
+      "tasks.read",
+      "tasks.write",
+      "mcp.connect"
+    ],
+    "classificationContributionRules": [
+      {
+        "classification": "feature",
+        "requiredContributions": [
+          "feature"
+        ],
+        "forbiddenContributions": [
+          "enhancement"
+        ]
+      },
+      {
+        "classification": "enhancement",
+        "requiredContributions": [
+          "enhancement"
+        ],
+        "forbiddenContributions": [
+          "feature"
+        ]
+      },
+      {
+        "classification": "hybrid",
+        "requiredContributions": [
+          "feature",
+          "enhancement"
+        ],
+        "forbiddenContributions": []
+      }
+    ],
+    "runtimeClassificationRules": [
+      {
+        "runtimeKind": "declarative-ui",
+        "classifications": [
+          "feature"
+        ]
+      },
+      {
+        "runtimeKind": "prompt-pack",
+        "classifications": [
+          "enhancement"
+        ]
+      },
+      {
+        "runtimeKind": "xingchen-agent",
+        "classifications": [
+          "feature",
+          "hybrid"
+        ]
+      },
+      {
+        "runtimeKind": "xingchen-workflow",
+        "classifications": [
+          "feature",
+          "hybrid"
+        ]
+      }
+    ],
+    "contributionRequiredPermissions": [
+      {
+        "contribution": "enhancement",
+        "permissions": [
+          "ai.context.augment"
+        ]
+      }
+    ],
+    "runtimeContributionRequiredPermissions": [
+      {
+        "runtimeKinds": [
+          "xingchen-agent",
+          "xingchen-workflow"
+        ],
+        "contribution": "feature",
+        "permissions": [
+          "credentials.use",
+          "agents.invoke",
+          "network.xingchen",
+          "ai.invoke"
+        ]
+      }
+    ],
+    "featureCapabilityRequiredPermissions": [
+      {
+        "featureCapability": "file.docx.output",
+        "permissions": [
+          "files.writeSelected"
+        ]
+      }
+    ]
+  },
   "capabilities": [
-    {"id":"notes.read","semanticVersion":"1.0.0","status":"reserved","legacyAliases":["notes:read"],"titleKey":"plugin.capability.notes.read.title","descriptionKey":"plugin.capability.notes.read.description","title":"读取笔记","description":"读取宿主管理的笔记；点式 v3 宿主门禁尚未接入。","riskLevel":"high","dataClasses":["notes"],"operations":["read"],"scopeType":"plugin","runtimeKinds":["declarative-ui","prompt-pack","xingchen-agent","xingchen-workflow"],"pluginSources":["bundled","internal","development","local","marketplace"],"hostCapability":null,"enforcementPoint":[],"requiredChecks":[],"auditPolicy":"none","disableBehavior":"reserved-no-runtime","updateBehavior":"reconfirm-if-activated","rollbackBehavior":"restore-version-policy","owner":"plugin-platform","testCases":["registry:reserved-not-v3-requestable"]},
-    {"id":"notes.write","semanticVersion":"1.0.0","status":"reserved","legacyAliases":["notes:write"],"titleKey":"plugin.capability.notes.write.title","descriptionKey":"plugin.capability.notes.write.description","title":"修改笔记","description":"修改宿主管理的笔记；点式 v3 宿主门禁尚未接入。","riskLevel":"critical","dataClasses":["notes"],"operations":["write"],"scopeType":"plugin","runtimeKinds":["declarative-ui","prompt-pack","xingchen-agent","xingchen-workflow"],"pluginSources":["bundled","internal","development","local","marketplace"],"hostCapability":null,"enforcementPoint":[],"requiredChecks":[],"auditPolicy":"none","disableBehavior":"reserved-no-runtime","updateBehavior":"reconfirm-if-activated","rollbackBehavior":"restore-version-policy","owner":"plugin-platform","testCases":["registry:reserved-not-v3-requestable"]},
-    {"id":"document.read","semanticVersion":"1.0.0","status":"restricted","legacyAliases":["editor:read"],"titleKey":"plugin.capability.document.read.title","descriptionKey":"plugin.capability.document.read.description","title":"读取当前文档","description":"读取当前文档内容；当前仅文档摘要宿主路径实施门禁。","riskLevel":"high","dataClasses":["document"],"operations":["read"],"scopeType":"current-document","runtimeKinds":["declarative-ui","xingchen-agent","xingchen-workflow"],"pluginSources":["bundled","internal","development","local","marketplace"],"hostCapability":"document-summary","enforcementPoint":["PluginService::document_summary_permissions_granted"],"requiredChecks":["pluginExists","enabled","installedStatus","userGrant"],"auditPolicy":"allow-deny","disableBehavior":"deny-on-next-host-call","updateBehavior":"reconfirm-added-and-rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"plugins","testCases":["rust:document-summary-permissions"]},
-    {"id":"document.write","semanticVersion":"1.0.0","status":"restricted","legacyAliases":["editor:write"],"titleKey":"plugin.capability.document.write.title","descriptionKey":"plugin.capability.document.write.description","title":"写入当前文档","description":"向当前文档写入插件结果；当前仅文档摘要宿主路径实施门禁。","riskLevel":"critical","dataClasses":["document"],"operations":["write"],"scopeType":"current-document","runtimeKinds":["declarative-ui","xingchen-agent","xingchen-workflow"],"pluginSources":["bundled","internal","development","local","marketplace"],"hostCapability":"document-summary","enforcementPoint":["PluginService::document_summary_permissions_granted"],"requiredChecks":["pluginExists","enabled","installedStatus","userGrant"],"auditPolicy":"allow-deny","disableBehavior":"deny-on-next-host-call","updateBehavior":"reconfirm-added-and-rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"plugins","testCases":["rust:document-summary-permissions"]},
-    {"id":"tasks.read","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.tasks.read.title","descriptionKey":"plugin.capability.tasks.read.description","title":"读取待办","description":"通过受控插件代理读取待办。","riskLevel":"medium","dataClasses":["tasks"],"operations":["read"],"scopeType":"plugin","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":"plugin-task-proxy","enforcementPoint":["plugin_proxy::verify","plugin_proxy_tasks_list","plugin_proxy_tasks_get"],"requiredChecks":["token","userGrant"],"auditPolicy":"allow","disableBehavior":"frontend-revokes-token","updateBehavior":"rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"plugin-proxy","testCases":["rust:plugin-proxy-permission"]},
-    {"id":"tasks.write","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.tasks.write.title","descriptionKey":"plugin.capability.tasks.write.description","title":"修改待办","description":"通过受控插件代理创建、更新、完成或删除待办。","riskLevel":"high","dataClasses":["tasks"],"operations":["write"],"scopeType":"plugin","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":"plugin-task-proxy","enforcementPoint":["plugin_proxy::verify","plugin_proxy_tasks_create","plugin_proxy_tasks_update","plugin_proxy_tasks_complete","plugin_proxy_tasks_delete"],"requiredChecks":["token","userGrant","rateLimit"],"auditPolicy":"allow","disableBehavior":"frontend-revokes-token","updateBehavior":"rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"plugin-proxy","testCases":["rust:plugin-proxy-permission","rust:plugin-rate-limit"]},
-    {"id":"ai.invoke","semanticVersion":"1.0.0","status":"restricted","legacyAliases":["ai:chat"],"titleKey":"plugin.capability.ai.invoke.title","descriptionKey":"plugin.capability.ai.invoke.description","title":"调用 AI","description":"通过宿主管理的摘要或受控智能体工作流调用 AI。","riskLevel":"high","dataClasses":["ai","document"],"operations":["invoke"],"scopeType":"feature","runtimeKinds":["declarative-ui","xingchen-agent","xingchen-workflow"],"pluginSources":["bundled","internal","development","local","marketplace"],"hostCapability":"ai-invoke","enforcementPoint":["PluginService::document_summary_permissions_granted","PluginPlatformService::prepare_feature_invocation"],"requiredChecks":["pluginExists","enabled","installedStatus","manifestDeclaration"],"auditPolicy":"allow-deny","disableBehavior":"deny-on-next-host-call","updateBehavior":"reconfirm-added-and-rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"plugin-platform","testCases":["rust:feature-invocation-permissions","rust:document-summary-permissions"]},
-    {"id":"ai.context.read","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.ai.context.read.title","descriptionKey":"plugin.capability.ai.context.read.description","title":"读取 AI 上下文","description":"读取宿主管理的 AI 会话上下文；当前仅 Planning 插件路径实施门禁。","riskLevel":"high","dataClasses":["ai-context"],"operations":["read"],"scopeType":"session","runtimeKinds":["prompt-pack"],"pluginSources":["bundled","internal","marketplace"],"hostCapability":"planning-with-files","enforcementPoint":["planning::ensure_plugin_ready"],"requiredChecks":["pluginExists","enabled","installedStatus","userGrant"],"auditPolicy":"allow-deny","disableBehavior":"deny-on-next-host-call","updateBehavior":"rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"planning","testCases":["rust:planning-plugin-ready"]},
-    {"id":"ai.context.augment","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.ai.context.augment.title","descriptionKey":"plugin.capability.ai.context.augment.description","title":"增强 AI 调用上下文","description":"在模型调用前后注入声明式上下文资源。","riskLevel":"high","dataClasses":["ai-context"],"operations":["augment"],"scopeType":"feature","runtimeKinds":["prompt-pack","declarative-ui","xingchen-agent","xingchen-workflow"],"pluginSources":["bundled","internal","development","local","marketplace"],"hostCapability":"plugin-pipeline","enforcementPoint":["PluginPlatformService::resolve_enabled_contributions","planning::ensure_plugin_ready"],"requiredChecks":["enabled","currentVersion","manifestDeclaration"],"auditPolicy":"execution-log","disableBehavior":"skip-on-next-resolution","updateBehavior":"reconfirm-added-and-rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"plugin-platform","testCases":["rust:enhancement-permission-filter","ts:plugin-pipeline-execution-log"]},
-    {"id":"ai.session.read","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.ai.session.read.title","descriptionKey":"plugin.capability.ai.session.read.description","title":"读取 AI 会话","description":"读取当前 AI 会话状态；当前仅 Planning 插件路径实施门禁。","riskLevel":"high","dataClasses":["ai-session"],"operations":["read"],"scopeType":"session","runtimeKinds":["prompt-pack"],"pluginSources":["bundled","internal","marketplace"],"hostCapability":"planning-with-files","enforcementPoint":["planning::ensure_plugin_ready"],"requiredChecks":["pluginExists","enabled","installedStatus","userGrant"],"auditPolicy":"allow-deny","disableBehavior":"deny-on-next-host-call","updateBehavior":"rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"planning","testCases":["rust:planning-plugin-ready"]},
-    {"id":"ui.editor.toolbar","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.ui.editor.toolbar.title","descriptionKey":"plugin.capability.ui.editor.toolbar.description","title":"注册编辑器工具栏按钮","description":"向编辑器工具栏注册声明式插件入口。","riskLevel":"medium","dataClasses":["ui"],"operations":["register"],"scopeType":"current-window","runtimeKinds":["declarative-ui"],"pluginSources":["bundled","internal","development","local","marketplace"],"hostCapability":"document-toolbar","enforcementPoint":["PluginService::document_summary_toolbar_buttons"],"requiredChecks":["pluginExists","enabled","installedStatus","userGrant"],"auditPolicy":"deny","disableBehavior":"remove-on-next-resolution","updateBehavior":"rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"plugins","testCases":["rust:document-summary-toolbar-permissions"]},
-    {"id":"ui.chat.toolbar","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.ui.chat.toolbar.title","descriptionKey":"plugin.capability.ui.chat.toolbar.description","title":"注册聊天工具栏入口","description":"向聊天工具栏注册宿主管理的插件入口；当前仅 Planning 插件路径实施门禁。","riskLevel":"medium","dataClasses":["ui"],"operations":["register"],"scopeType":"current-window","runtimeKinds":["prompt-pack"],"pluginSources":["bundled","internal","marketplace"],"hostCapability":"planning-with-files","enforcementPoint":["planning::ensure_plugin_ready"],"requiredChecks":["pluginExists","enabled","installedStatus","userGrant"],"auditPolicy":"allow-deny","disableBehavior":"deny-on-next-host-call","updateBehavior":"rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"planning","testCases":["rust:planning-plugin-ready"]},
-    {"id":"ui.chat.panel","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.ui.chat.panel.title","descriptionKey":"plugin.capability.ui.chat.panel.description","title":"注册聊天面板","description":"向聊天界面注册宿主管理的插件面板；当前仅 Planning 插件路径实施门禁。","riskLevel":"medium","dataClasses":["ui"],"operations":["register"],"scopeType":"current-window","runtimeKinds":["prompt-pack"],"pluginSources":["bundled","internal","marketplace"],"hostCapability":"planning-with-files","enforcementPoint":["planning::ensure_plugin_ready"],"requiredChecks":["pluginExists","enabled","installedStatus","userGrant"],"auditPolicy":"allow-deny","disableBehavior":"deny-on-next-host-call","updateBehavior":"rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"planning","testCases":["rust:planning-plugin-ready"]},
-    {"id":"planning.files.read","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.planning.files.read.title","descriptionKey":"plugin.capability.planning.files.read.description","title":"读取规划文件","description":"读取 Planning 插件受控工作区中的规划文件。","riskLevel":"high","dataClasses":["planning-files"],"operations":["read"],"scopeType":"planning-workspace","runtimeKinds":["prompt-pack"],"pluginSources":["bundled","internal","marketplace"],"hostCapability":"planning-with-files","enforcementPoint":["planning::ensure_plugin_ready"],"requiredChecks":["pluginExists","enabled","installedStatus","userGrant","resourceScope"],"auditPolicy":"allow-deny","disableBehavior":"deny-on-next-host-call","updateBehavior":"rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"planning","testCases":["rust:planning-plugin-ready"]},
-    {"id":"planning.files.write","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.planning.files.write.title","descriptionKey":"plugin.capability.planning.files.write.description","title":"写入规划文件","description":"写入 Planning 插件受控工作区中的规划文件。","riskLevel":"critical","dataClasses":["planning-files"],"operations":["write"],"scopeType":"planning-workspace","runtimeKinds":["prompt-pack"],"pluginSources":["bundled","internal","marketplace"],"hostCapability":"planning-with-files","enforcementPoint":["planning::ensure_plugin_ready"],"requiredChecks":["pluginExists","enabled","installedStatus","userGrant","resourceScope"],"auditPolicy":"allow-deny","disableBehavior":"deny-on-next-host-call","updateBehavior":"rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"planning","testCases":["rust:planning-plugin-ready"]},
-    {"id":"network.request","semanticVersion":"1.0.0","status":"restricted","legacyAliases":["network:request"],"titleKey":"plugin.capability.network.request.title","descriptionKey":"plugin.capability.network.request.description","title":"受控网络请求","description":"通过 Marketplace 服务配置访问已验证的远程端点。","riskLevel":"critical","dataClasses":["network"],"operations":["request"],"scopeType":"declared-endpoint","runtimeKinds":["xingchen-agent","xingchen-workflow","mcp-connector"],"pluginSources":["bundled","internal","marketplace"],"hostCapability":"marketplace-service-delivery","enforcementPoint":["MarketplaceService::configure_service"],"requiredChecks":["pluginExists","enabled","installedStatus","revocationStatus","manifestDeclaration","userConfirmation","resourceScope"],"auditPolicy":"allow-deny","disableBehavior":"deny-on-next-host-call","updateBehavior":"reconfirm-added-and-rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"marketplace","testCases":["rust:marketplace-network-confirmation"]},
-    {"id":"files.readSelected","semanticVersion":"1.0.0","status":"reserved","legacyAliases":["files:read"],"titleKey":"plugin.capability.files.readSelected.title","descriptionKey":"plugin.capability.files.readSelected.description","title":"读取用户选择文件","description":"读取用户显式选择的文件；宿主 capability 尚未接入。","riskLevel":"high","dataClasses":["files"],"operations":["read"],"scopeType":"user-selected-resource","runtimeKinds":["declarative-ui","xingchen-agent","xingchen-workflow"],"pluginSources":["bundled","internal","development","local","marketplace"],"hostCapability":null,"enforcementPoint":[],"requiredChecks":[],"auditPolicy":"none","disableBehavior":"reserved-no-runtime","updateBehavior":"reconfirm-if-activated","rollbackBehavior":"restore-version-policy","owner":"plugin-platform","testCases":["registry:reserved-not-v3-requestable"]},
-    {"id":"files.writeSelected","semanticVersion":"1.0.0","status":"restricted","legacyAliases":["files:write"],"titleKey":"plugin.capability.files.writeSelected.title","descriptionKey":"plugin.capability.files.writeSelected.description","title":"写入用户选择位置","description":"允许受控 Feature 返回并保存用户确认的文件输出。","riskLevel":"critical","dataClasses":["files"],"operations":["write"],"scopeType":"user-selected-resource","runtimeKinds":["xingchen-agent","xingchen-workflow"],"pluginSources":["bundled","internal","development","local","marketplace"],"hostCapability":"feature-file-output","enforcementPoint":["PluginPlatformService::prepare_feature_invocation"],"requiredChecks":["pluginExists","enabled","installedStatus","currentVersion","integrity","manifestDeclaration","resourceScope"],"auditPolicy":"execution-log","disableBehavior":"deny-on-next-host-call","updateBehavior":"reconfirm-added-and-rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"plugin-platform","testCases":["rust:feature-file-output-permission"]},
-    {"id":"prompts.register","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.prompts.register.title","descriptionKey":"plugin.capability.prompts.register.description","title":"注册 Prompt","description":"安装由 Marketplace 管理的 Prompt 模板；逐次权限门禁尚不完整。","riskLevel":"medium","dataClasses":["prompts"],"operations":["register"],"scopeType":"plugin","runtimeKinds":["prompt-pack"],"pluginSources":["bundled","internal","marketplace"],"hostCapability":"marketplace-prompt-pack","enforcementPoint":["MarketplaceService::install_prompt_pack"],"requiredChecks":["pluginExists","installedStatus","manifestDeclaration"],"auditPolicy":"install","disableBehavior":"host-lifecycle-dependent","updateBehavior":"replace-version-content","rollbackBehavior":"host-lifecycle-dependent","owner":"marketplace","testCases":["rust:marketplace-prompt-pack-install"]},
-    {"id":"views.register","semanticVersion":"1.0.0","status":"reserved","legacyAliases":["taskViews.register"],"titleKey":"plugin.capability.views.register.title","descriptionKey":"plugin.capability.views.register.description","title":"注册视图","description":"注册正式插件视图；统一宿主门禁尚未接入。","riskLevel":"medium","dataClasses":["ui"],"operations":["register"],"scopeType":"current-window","runtimeKinds":["declarative-ui"],"pluginSources":["bundled","internal","development","local","marketplace"],"hostCapability":null,"enforcementPoint":[],"requiredChecks":[],"auditPolicy":"none","disableBehavior":"reserved-no-runtime","updateBehavior":"reconfirm-if-activated","rollbackBehavior":"restore-version-policy","owner":"plugin-platform","testCases":["registry:reserved-not-v3-requestable"]},
-    {"id":"mcp.connect","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.mcp.connect.title","descriptionKey":"plugin.capability.mcp.connect.description","title":"连接 MCP","description":"配置 Marketplace 管理的远程 MCP 连接；当前仅创建禁用的 mock 注册项。","riskLevel":"critical","dataClasses":["network","tools"],"operations":["connect"],"scopeType":"declared-endpoint","runtimeKinds":["mcp-connector"],"pluginSources":["bundled","internal","marketplace"],"hostCapability":"marketplace-remote-mcp","enforcementPoint":["MarketplaceService::configure_service"],"requiredChecks":["pluginExists","enabled","installedStatus","revocationStatus","manifestDeclaration","userConfirmation","resourceScope"],"auditPolicy":"allow-deny","disableBehavior":"deny-on-next-host-call","updateBehavior":"reconfirm-added-and-rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"marketplace","testCases":["rust:marketplace-remote-mcp-configuration"]},
-    {"id":"credentials.use","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.credentials.use.title","descriptionKey":"plugin.capability.credentials.use.description","title":"使用凭据引用","description":"允许宿主使用已绑定凭据 ID，插件不获得凭据明文。","riskLevel":"critical","dataClasses":["credentials"],"operations":["use"],"scopeType":"bound-credential","runtimeKinds":["xingchen-agent","xingchen-workflow","mcp-connector"],"pluginSources":["bundled","internal","development","local","marketplace"],"hostCapability":"hosted-credential-reference","enforcementPoint":["PluginPlatformService::prepare_feature_invocation","MarketplaceService::configure_service"],"requiredChecks":["pluginExists","enabled","installedStatus","currentVersion","integrity","manifestDeclaration"],"auditPolicy":"allow-deny","disableBehavior":"deny-on-next-host-call","updateBehavior":"reconfirm-added-and-rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"credentials","testCases":["rust:feature-invocation-permissions","rust:marketplace-credential-owner"]},
-    {"id":"credentials.configure","semanticVersion":"1.0.0","status":"blocked","legacyAliases":[],"titleKey":"plugin.capability.credentials.configure.title","descriptionKey":"plugin.capability.credentials.configure.description","title":"配置凭据","description":"插件直接配置凭据的能力被禁止；凭据只能由宿主账号界面管理。","riskLevel":"critical","dataClasses":["credentials"],"operations":["configure"],"scopeType":"none","runtimeKinds":[],"pluginSources":[],"hostCapability":null,"enforcementPoint":[],"requiredChecks":[],"auditPolicy":"reject-at-validation","disableBehavior":"blocked","updateBehavior":"blocked","rollbackBehavior":"blocked","owner":"credentials","testCases":["registry:blocked-not-v3-requestable"]},
-    {"id":"network.xingchen","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.network.xingchen.title","descriptionKey":"plugin.capability.network.xingchen.description","title":"访问讯飞星辰服务","description":"通过宿主受控的星辰 Agent/Workflow 服务发起请求。","riskLevel":"critical","dataClasses":["network","ai"],"operations":["request"],"scopeType":"xingchen-service","runtimeKinds":["xingchen-agent","xingchen-workflow"],"pluginSources":["bundled","internal","development","local","marketplace"],"hostCapability":"xingchen-workflow","enforcementPoint":["PluginPlatformService::prepare_feature_invocation"],"requiredChecks":["pluginExists","enabled","installedStatus","currentVersion","integrity","manifestDeclaration"],"auditPolicy":"execution-log","disableBehavior":"deny-on-next-host-call","updateBehavior":"reconfirm-added-and-rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"xingchen-agent","testCases":["rust:feature-invocation-permissions"]},
-    {"id":"agents.invoke","semanticVersion":"1.0.0","status":"restricted","legacyAliases":[],"titleKey":"plugin.capability.agents.invoke.title","descriptionKey":"plugin.capability.agents.invoke.description","title":"调用已绑定智能体","description":"通过宿主调用用户已绑定的智能体或工作流。","riskLevel":"critical","dataClasses":["agents","ai"],"operations":["invoke"],"scopeType":"bound-agent","runtimeKinds":["xingchen-agent","xingchen-workflow"],"pluginSources":["bundled","internal","development","local","marketplace"],"hostCapability":"xingchen-workflow","enforcementPoint":["PluginPlatformService::prepare_feature_invocation"],"requiredChecks":["pluginExists","enabled","installedStatus","currentVersion","integrity","manifestDeclaration"],"auditPolicy":"execution-log","disableBehavior":"deny-on-next-host-call","updateBehavior":"reconfirm-added-and-rebuild-grants","rollbackBehavior":"grant-snapshot-not-restored","owner":"xingchen-agent","testCases":["rust:feature-invocation-permissions"]},
-    {"id":"editor:read","semanticVersion":"1.0.0","status":"legacy","legacyAliases":["document.read"],"titleKey":"plugin.capability.legacy.editorRead.title","descriptionKey":"plugin.capability.legacy.editorRead.description","title":"读取编辑器（旧版）","description":"旧版 WebView 插件读取编辑器选择内容；未形成独立安全边界。","riskLevel":"high","dataClasses":["document"],"operations":["read"],"scopeType":"current-editor","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":"legacy-editor-api","enforcementPoint":["createAppAPI.editor.getCurrentSelection"],"requiredChecks":["legacyRuntimePolicy"],"auditPolicy":"frontend-only","disableBehavior":"frontend-deactivation-required","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"legacy-plugin-runtime","testCases":["registry:legacy-not-v3-requestable"]},
-    {"id":"editor:write","semanticVersion":"1.0.0","status":"legacy","legacyAliases":["document.write"],"titleKey":"plugin.capability.legacy.editorWrite.title","descriptionKey":"plugin.capability.legacy.editorWrite.description","title":"修改编辑器（旧版）","description":"旧版 WebView 插件注册编辑器交互；调用级权限门禁不完整。","riskLevel":"critical","dataClasses":["document","ui"],"operations":["write","register"],"scopeType":"current-editor","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":"legacy-editor-api","enforcementPoint":["createAppAPI.editor"],"requiredChecks":["legacyRuntimePolicy"],"auditPolicy":"frontend-only","disableBehavior":"frontend-deactivation-required","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"legacy-plugin-runtime","testCases":["registry:legacy-not-v3-requestable"]},
-    {"id":"workspace:read","semanticVersion":"1.0.0","status":"legacy","legacyAliases":[],"titleKey":"plugin.capability.legacy.workspaceRead.title","descriptionKey":"plugin.capability.legacy.workspaceRead.description","title":"读取工作区（旧版）","description":"旧版工作区读取名称；实际能力复用笔记代理。","riskLevel":"high","dataClasses":["workspace"],"operations":["read"],"scopeType":"workspace","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":"legacy-workspace-api","enforcementPoint":["createAppAPI.workspace"],"requiredChecks":["legacyRuntimePolicy"],"auditPolicy":"frontend-only","disableBehavior":"frontend-deactivation-required","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"legacy-plugin-runtime","testCases":["registry:legacy-not-v3-requestable"]},
-    {"id":"workspace:write","semanticVersion":"1.0.0","status":"legacy","legacyAliases":[],"titleKey":"plugin.capability.legacy.workspaceWrite.title","descriptionKey":"plugin.capability.legacy.workspaceWrite.description","title":"修改工作区（旧版）","description":"旧版工作区写入权限名称；未发现独立宿主执行路径。","riskLevel":"critical","dataClasses":["workspace"],"operations":["write"],"scopeType":"workspace","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":null,"enforcementPoint":[],"requiredChecks":[],"auditPolicy":"none","disableBehavior":"frontend-deactivation-required","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"legacy-plugin-runtime","testCases":["registry:legacy-not-v3-requestable"]},
-    {"id":"notes:read","semanticVersion":"1.0.0","status":"legacy","legacyAliases":["notes.read"],"titleKey":"plugin.capability.legacy.notesRead.title","descriptionKey":"plugin.capability.legacy.notesRead.description","title":"读取笔记（旧版）","description":"旧版插件通过 token 化代理读取笔记。","riskLevel":"high","dataClasses":["notes"],"operations":["read"],"scopeType":"plugin","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":"plugin-note-proxy","enforcementPoint":["plugin_proxy::verify","plugin_proxy_notes_list","plugin_proxy_notes_get","plugin_proxy_notes_search"],"requiredChecks":["token","userGrant"],"auditPolicy":"allow","disableBehavior":"frontend-revokes-token","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"plugin-proxy","testCases":["rust:plugin-proxy-permission"]},
-    {"id":"notes:write","semanticVersion":"1.0.0","status":"legacy","legacyAliases":["notes.write"],"titleKey":"plugin.capability.legacy.notesWrite.title","descriptionKey":"plugin.capability.legacy.notesWrite.description","title":"修改笔记（旧版）","description":"旧版插件通过 token 化代理创建、更新或删除笔记。","riskLevel":"critical","dataClasses":["notes"],"operations":["write"],"scopeType":"plugin","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":"plugin-note-proxy","enforcementPoint":["plugin_proxy::verify","plugin_proxy_notes_create","plugin_proxy_notes_update","plugin_proxy_notes_delete"],"requiredChecks":["token","userGrant"],"auditPolicy":"allow","disableBehavior":"frontend-revokes-token","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"plugin-proxy","testCases":["rust:plugin-proxy-permission"]},
-    {"id":"settings:read","semanticVersion":"1.0.0","status":"legacy","legacyAliases":[],"titleKey":"plugin.capability.legacy.settingsRead.title","descriptionKey":"plugin.capability.legacy.settingsRead.description","title":"读取设置（旧版）","description":"旧版插件读取自身设置；当前代理只检查 token。","riskLevel":"medium","dataClasses":["plugin-settings"],"operations":["read"],"scopeType":"plugin","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":"legacy-plugin-settings","enforcementPoint":["plugin_proxy_settings_get","plugin_proxy_settings_get_all"],"requiredChecks":["token"],"auditPolicy":"allow","disableBehavior":"frontend-revokes-token","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"plugin-proxy","testCases":["registry:legacy-not-v3-requestable"]},
-    {"id":"settings:write","semanticVersion":"1.0.0","status":"legacy","legacyAliases":[],"titleKey":"plugin.capability.legacy.settingsWrite.title","descriptionKey":"plugin.capability.legacy.settingsWrite.description","title":"修改设置（旧版）","description":"旧版插件修改自身设置；当前代理只检查 token。","riskLevel":"high","dataClasses":["plugin-settings"],"operations":["write"],"scopeType":"plugin","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":"legacy-plugin-settings","enforcementPoint":["plugin_proxy_settings_set"],"requiredChecks":["token"],"auditPolicy":"allow","disableBehavior":"frontend-revokes-token","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"plugin-proxy","testCases":["registry:legacy-not-v3-requestable"]},
-    {"id":"files:read","semanticVersion":"1.0.0","status":"legacy","legacyAliases":["files.readSelected"],"titleKey":"plugin.capability.legacy.filesRead.title","descriptionKey":"plugin.capability.legacy.filesRead.description","title":"读取文件（旧版）","description":"旧版宽范围文件读取权限名称；未发现受控宿主代理。","riskLevel":"critical","dataClasses":["files"],"operations":["read"],"scopeType":"unspecified","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":null,"enforcementPoint":[],"requiredChecks":[],"auditPolicy":"none","disableBehavior":"frontend-deactivation-required","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"legacy-plugin-runtime","testCases":["registry:legacy-not-v3-requestable"]},
-    {"id":"files:write","semanticVersion":"1.0.0","status":"legacy","legacyAliases":["files.writeSelected"],"titleKey":"plugin.capability.legacy.filesWrite.title","descriptionKey":"plugin.capability.legacy.filesWrite.description","title":"写入文件（旧版）","description":"旧版宽范围文件写入权限名称；未发现受控宿主代理。","riskLevel":"critical","dataClasses":["files"],"operations":["write"],"scopeType":"unspecified","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":null,"enforcementPoint":[],"requiredChecks":[],"auditPolicy":"none","disableBehavior":"frontend-deactivation-required","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"legacy-plugin-runtime","testCases":["registry:legacy-not-v3-requestable"]},
-    {"id":"network:request","semanticVersion":"1.0.0","status":"legacy","legacyAliases":["network.request"],"titleKey":"plugin.capability.legacy.networkRequest.title","descriptionKey":"plugin.capability.legacy.networkRequest.description","title":"网络请求（旧版）","description":"旧版网络权限名称；未发现受控宿主网络代理。","riskLevel":"critical","dataClasses":["network"],"operations":["request"],"scopeType":"unspecified","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":null,"enforcementPoint":[],"requiredChecks":[],"auditPolicy":"none","disableBehavior":"frontend-deactivation-required","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"legacy-plugin-runtime","testCases":["registry:legacy-not-v3-requestable"]},
-    {"id":"clipboard:read","semanticVersion":"1.0.0","status":"legacy","legacyAliases":[],"titleKey":"plugin.capability.legacy.clipboardRead.title","descriptionKey":"plugin.capability.legacy.clipboardRead.description","title":"读取剪贴板（旧版）","description":"旧版剪贴板读取权限名称；未发现插件级受控代理。","riskLevel":"critical","dataClasses":["clipboard"],"operations":["read"],"scopeType":"system-clipboard","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":null,"enforcementPoint":[],"requiredChecks":[],"auditPolicy":"none","disableBehavior":"frontend-deactivation-required","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"legacy-plugin-runtime","testCases":["registry:legacy-not-v3-requestable"]},
-    {"id":"clipboard:write","semanticVersion":"1.0.0","status":"legacy","legacyAliases":[],"titleKey":"plugin.capability.legacy.clipboardWrite.title","descriptionKey":"plugin.capability.legacy.clipboardWrite.description","title":"写入剪贴板（旧版）","description":"旧版剪贴板写入权限名称；未发现插件级受控代理。","riskLevel":"high","dataClasses":["clipboard"],"operations":["write"],"scopeType":"system-clipboard","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":null,"enforcementPoint":[],"requiredChecks":[],"auditPolicy":"none","disableBehavior":"frontend-deactivation-required","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"legacy-plugin-runtime","testCases":["registry:legacy-not-v3-requestable"]},
-    {"id":"tasks.subscribe","semanticVersion":"1.0.0","status":"legacy","legacyAliases":[],"titleKey":"plugin.capability.legacy.tasksSubscribe.title","descriptionKey":"plugin.capability.legacy.tasksSubscribe.description","title":"订阅待办事件（旧版）","description":"旧版插件订阅待办事件；当前只有前端提示，没有后端权限门禁。","riskLevel":"high","dataClasses":["tasks"],"operations":["subscribe"],"scopeType":"application-events","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":"legacy-task-events","enforcementPoint":["createAppAPI.events.on"],"requiredChecks":["legacyRuntimePolicy"],"auditPolicy":"frontend-only","disableBehavior":"frontend-deactivation-required","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"legacy-plugin-runtime","testCases":["registry:legacy-not-v3-requestable"]},
-    {"id":"taskViews.register","semanticVersion":"1.0.0","status":"legacy","legacyAliases":["views.register"],"titleKey":"plugin.capability.legacy.taskViewsRegister.title","descriptionKey":"plugin.capability.legacy.taskViewsRegister.description","title":"注册待办视图（旧版）","description":"旧版插件注册待办视图；当前只有前端提示，没有后端权限门禁。","riskLevel":"medium","dataClasses":["ui","tasks"],"operations":["register"],"scopeType":"current-window","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":"legacy-task-views","enforcementPoint":["createAppAPI.taskViews.register"],"requiredChecks":["legacyRuntimePolicy"],"auditPolicy":"frontend-only","disableBehavior":"frontend-deactivation-required","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"legacy-plugin-runtime","testCases":["registry:legacy-not-v3-requestable"]},
-    {"id":"ai:chat","semanticVersion":"1.0.0","status":"legacy","legacyAliases":["ai.invoke"],"titleKey":"plugin.capability.legacy.aiChat.title","descriptionKey":"plugin.capability.legacy.aiChat.description","title":"调用 AI 对话（旧版）","description":"旧版插件通过 token 化代理调用 AI 对话。","riskLevel":"critical","dataClasses":["ai"],"operations":["invoke"],"scopeType":"plugin-request","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":"legacy-ai-proxy","enforcementPoint":["plugin_proxy_ai_chat","plugin_proxy_ai_chat_sync","plugin_proxy_ai_cancel"],"requiredChecks":["token","userGrant","rateLimit"],"auditPolicy":"allow","disableBehavior":"frontend-revokes-token","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"plugin-proxy","testCases":["rust:plugin-proxy-permission","rust:plugin-rate-limit"]},
-    {"id":"ai:models","semanticVersion":"1.0.0","status":"legacy","legacyAliases":[],"titleKey":"plugin.capability.legacy.aiModels.title","descriptionKey":"plugin.capability.legacy.aiModels.description","title":"读取 AI 模型列表（旧版）","description":"旧版插件通过 token 化代理读取模型元数据。","riskLevel":"high","dataClasses":["ai-models"],"operations":["read"],"scopeType":"application","runtimeKinds":["legacy-js"],"pluginSources":["development","local"],"hostCapability":"legacy-ai-proxy","enforcementPoint":["plugin_proxy_ai_models"],"requiredChecks":["token","userGrant"],"auditPolicy":"allow","disableBehavior":"frontend-revokes-token","updateBehavior":"legacy-only","rollbackBehavior":"legacy-only","owner":"plugin-proxy","testCases":["rust:plugin-proxy-permission"]}
-  ]
+    {
+      "id": "notes.read",
+      "semanticVersion": "1.0.0",
+      "status": "reserved",
+      "legacyAliases": [
+        "notes:read"
+      ],
+      "titleKey": "plugin.capability.notes.read.title",
+      "descriptionKey": "plugin.capability.notes.read.description",
+      "title": "读取笔记",
+      "description": "读取宿主管理的笔记；点式 v3 宿主门禁尚未接入。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "notes"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "plugin",
+      "runtimeKinds": [
+        "declarative-ui",
+        "prompt-pack",
+        "xingchen-agent",
+        "xingchen-workflow"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "development",
+        "local",
+        "marketplace"
+      ],
+      "hostCapability": null,
+      "enforcementPoint": [],
+      "requiredChecks": [],
+      "auditPolicy": "none",
+      "disableBehavior": "reserved-no-runtime",
+      "updateBehavior": "reconfirm-if-activated",
+      "rollbackBehavior": "restore-version-policy",
+      "owner": "plugin-platform",
+      "testCases": {
+        "profile": "non-requestable-v1",
+        "references": [
+          {
+            "id": "registry:reserved-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "plugin",
+        "version": 1,
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "grantModes": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "grantLifetime": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "trustLevels": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "rateLimitPolicy": {
+        "mode": "not-applicable"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "notes.write",
+      "semanticVersion": "1.0.0",
+      "status": "reserved",
+      "legacyAliases": [
+        "notes:write"
+      ],
+      "titleKey": "plugin.capability.notes.write.title",
+      "descriptionKey": "plugin.capability.notes.write.description",
+      "title": "修改笔记",
+      "description": "修改宿主管理的笔记；点式 v3 宿主门禁尚未接入。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "notes"
+      ],
+      "operations": [
+        "write"
+      ],
+      "scopeType": "plugin",
+      "runtimeKinds": [
+        "declarative-ui",
+        "prompt-pack",
+        "xingchen-agent",
+        "xingchen-workflow"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "development",
+        "local",
+        "marketplace"
+      ],
+      "hostCapability": null,
+      "enforcementPoint": [],
+      "requiredChecks": [],
+      "auditPolicy": "none",
+      "disableBehavior": "reserved-no-runtime",
+      "updateBehavior": "reconfirm-if-activated",
+      "rollbackBehavior": "restore-version-policy",
+      "owner": "plugin-platform",
+      "testCases": {
+        "profile": "non-requestable-v1",
+        "references": [
+          {
+            "id": "registry:reserved-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "plugin",
+        "version": 1,
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "grantModes": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "grantLifetime": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "trustLevels": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "rateLimitPolicy": {
+        "mode": "not-applicable"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "document.read",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [
+        "editor:read"
+      ],
+      "titleKey": "plugin.capability.document.read.title",
+      "descriptionKey": "plugin.capability.document.read.description",
+      "title": "读取当前文档",
+      "description": "读取当前文档内容；当前仅文档摘要宿主路径实施门禁。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "document"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "current-document",
+      "runtimeKinds": [
+        "declarative-ui",
+        "xingchen-agent",
+        "xingchen-workflow"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "development",
+        "local",
+        "marketplace"
+      ],
+      "hostCapability": "document-summary",
+      "enforcementPoint": [
+        "PluginService::document_summary_permissions_granted"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow-deny",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "reconfirm-added-and-rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "plugins",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:document-summary-permissions",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "current-document",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "development",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "document.write",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [
+        "editor:write"
+      ],
+      "titleKey": "plugin.capability.document.write.title",
+      "descriptionKey": "plugin.capability.document.write.description",
+      "title": "写入当前文档",
+      "description": "向当前文档写入插件结果；当前仅文档摘要宿主路径实施门禁。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "document"
+      ],
+      "operations": [
+        "write"
+      ],
+      "scopeType": "current-document",
+      "runtimeKinds": [
+        "declarative-ui",
+        "xingchen-agent",
+        "xingchen-workflow"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "development",
+        "local",
+        "marketplace"
+      ],
+      "hostCapability": "document-summary",
+      "enforcementPoint": [
+        "PluginService::document_summary_permissions_granted"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow-deny",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "reconfirm-added-and-rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "plugins",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:document-summary-permissions",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "current-document",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "development",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "tasks.read",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.tasks.read.title",
+      "descriptionKey": "plugin.capability.tasks.read.description",
+      "title": "读取待办",
+      "description": "通过受控插件代理读取待办。",
+      "riskLevel": "L2",
+      "dataClasses": [
+        "tasks"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "plugin",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": "plugin-task-proxy",
+      "enforcementPoint": [
+        "plugin_proxy::verify",
+        "plugin_proxy_tasks_list",
+        "plugin_proxy_tasks_get"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow",
+      "disableBehavior": "frontend-revokes-token",
+      "updateBehavior": "rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "plugin-proxy",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:plugin-proxy-permission",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "plugin",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "tasks.write",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.tasks.write.title",
+      "descriptionKey": "plugin.capability.tasks.write.description",
+      "title": "修改待办",
+      "description": "通过受控插件代理创建、更新、完成或删除待办。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "tasks"
+      ],
+      "operations": [
+        "write"
+      ],
+      "scopeType": "plugin",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": "plugin-task-proxy",
+      "enforcementPoint": [
+        "plugin_proxy::verify",
+        "plugin_proxy_tasks_create",
+        "plugin_proxy_tasks_update",
+        "plugin_proxy_tasks_complete",
+        "plugin_proxy_tasks_delete"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow",
+      "disableBehavior": "frontend-revokes-token",
+      "updateBehavior": "rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "plugin-proxy",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:plugin-proxy-permission",
+            "category": "positive",
+            "status": "enforced"
+          },
+          {
+            "id": "rust:plugin-rate-limit",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "plugin",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "existing-host-limit",
+        "implementationStatus": "partial"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "ai.invoke",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [
+        "ai:chat"
+      ],
+      "titleKey": "plugin.capability.ai.invoke.title",
+      "descriptionKey": "plugin.capability.ai.invoke.description",
+      "title": "调用 AI",
+      "description": "通过宿主管理的摘要或受控智能体工作流调用 AI。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "ai",
+        "document"
+      ],
+      "operations": [
+        "invoke"
+      ],
+      "scopeType": "feature",
+      "runtimeKinds": [
+        "declarative-ui",
+        "xingchen-agent",
+        "xingchen-workflow"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "development",
+        "local",
+        "marketplace"
+      ],
+      "hostCapability": "ai-invoke",
+      "enforcementPoint": [
+        "PluginService::document_summary_permissions_granted",
+        "PluginPlatformService::prepare_feature_invocation"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow-deny",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "reconfirm-added-and-rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "plugin-platform",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:feature-invocation-permissions",
+            "category": "positive",
+            "status": "enforced"
+          },
+          {
+            "id": "rust:document-summary-permissions",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "feature",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "development",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "ai.context.read",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.ai.context.read.title",
+      "descriptionKey": "plugin.capability.ai.context.read.description",
+      "title": "读取 AI 上下文",
+      "description": "读取宿主管理的 AI 会话上下文；当前仅 Planning 插件路径实施门禁。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "ai-context"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "session",
+      "runtimeKinds": [
+        "prompt-pack"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "marketplace"
+      ],
+      "hostCapability": "planning-with-files",
+      "enforcementPoint": [
+        "planning::ensure_plugin_ready"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow-deny",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "planning",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:planning-plugin-ready",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "session",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "ai.context.augment",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.ai.context.augment.title",
+      "descriptionKey": "plugin.capability.ai.context.augment.description",
+      "title": "增强 AI 调用上下文",
+      "description": "在模型调用前后注入声明式上下文资源。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "ai-context"
+      ],
+      "operations": [
+        "augment"
+      ],
+      "scopeType": "feature",
+      "runtimeKinds": [
+        "prompt-pack",
+        "declarative-ui",
+        "xingchen-agent",
+        "xingchen-workflow"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "development",
+        "local",
+        "marketplace"
+      ],
+      "hostCapability": "plugin-pipeline",
+      "enforcementPoint": [
+        "PluginPlatformService::resolve_enabled_contributions",
+        "planning::ensure_plugin_ready"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "execution-log",
+      "disableBehavior": "skip-on-next-resolution",
+      "updateBehavior": "reconfirm-added-and-rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "plugin-platform",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:enhancement-permission-filter",
+            "category": "positive",
+            "status": "enforced"
+          },
+          {
+            "id": "ts:plugin-pipeline-execution-log",
+            "category": "positive",
+            "status": "planned-not-yet-enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "feature",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "development",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "ai.session.read",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.ai.session.read.title",
+      "descriptionKey": "plugin.capability.ai.session.read.description",
+      "title": "读取 AI 会话",
+      "description": "读取当前 AI 会话状态；当前仅 Planning 插件路径实施门禁。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "ai-session"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "session",
+      "runtimeKinds": [
+        "prompt-pack"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "marketplace"
+      ],
+      "hostCapability": "planning-with-files",
+      "enforcementPoint": [
+        "planning::ensure_plugin_ready"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow-deny",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "planning",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:planning-plugin-ready",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "session",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "ui.editor.toolbar",
+      "semanticVersion": "1.0.0",
+      "status": "active",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.ui.editor.toolbar.title",
+      "descriptionKey": "plugin.capability.ui.editor.toolbar.description",
+      "title": "注册编辑器工具栏按钮",
+      "description": "向编辑器工具栏注册声明式插件入口。",
+      "riskLevel": "L1",
+      "dataClasses": [
+        "ui"
+      ],
+      "operations": [
+        "register"
+      ],
+      "scopeType": "current-window",
+      "runtimeKinds": [
+        "declarative-ui"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "development",
+        "local",
+        "marketplace"
+      ],
+      "hostCapability": "document-toolbar",
+      "enforcementPoint": [
+        "PluginService::document_summary_toolbar_buttons"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "deny",
+      "disableBehavior": "remove-on-next-resolution",
+      "updateBehavior": "rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "plugins",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:document-summary-toolbar-permissions",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "current-window",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "development",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "ui.chat.toolbar",
+      "semanticVersion": "1.0.0",
+      "status": "active",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.ui.chat.toolbar.title",
+      "descriptionKey": "plugin.capability.ui.chat.toolbar.description",
+      "title": "注册聊天工具栏入口",
+      "description": "向聊天工具栏注册宿主管理的插件入口；当前仅 Planning 插件路径实施门禁。",
+      "riskLevel": "L1",
+      "dataClasses": [
+        "ui"
+      ],
+      "operations": [
+        "register"
+      ],
+      "scopeType": "current-window",
+      "runtimeKinds": [
+        "prompt-pack"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "marketplace"
+      ],
+      "hostCapability": "planning-with-files",
+      "enforcementPoint": [
+        "planning::ensure_plugin_ready"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow-deny",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "planning",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:planning-plugin-ready",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "current-window",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "ui.chat.panel",
+      "semanticVersion": "1.0.0",
+      "status": "active",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.ui.chat.panel.title",
+      "descriptionKey": "plugin.capability.ui.chat.panel.description",
+      "title": "注册聊天面板",
+      "description": "向聊天界面注册宿主管理的插件面板；当前仅 Planning 插件路径实施门禁。",
+      "riskLevel": "L1",
+      "dataClasses": [
+        "ui"
+      ],
+      "operations": [
+        "register"
+      ],
+      "scopeType": "current-window",
+      "runtimeKinds": [
+        "prompt-pack"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "marketplace"
+      ],
+      "hostCapability": "planning-with-files",
+      "enforcementPoint": [
+        "planning::ensure_plugin_ready"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow-deny",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "planning",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:planning-plugin-ready",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "current-window",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "planning.files.read",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.planning.files.read.title",
+      "descriptionKey": "plugin.capability.planning.files.read.description",
+      "title": "读取规划文件",
+      "description": "读取 Planning 插件受控工作区中的规划文件。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "planning-files"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "planning-workspace",
+      "runtimeKinds": [
+        "prompt-pack"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "marketplace"
+      ],
+      "hostCapability": "planning-with-files",
+      "enforcementPoint": [
+        "planning::ensure_plugin_ready"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow-deny",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "planning",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:planning-plugin-ready",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "planning-workspace",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "planning.files.write",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.planning.files.write.title",
+      "descriptionKey": "plugin.capability.planning.files.write.description",
+      "title": "写入规划文件",
+      "description": "写入 Planning 插件受控工作区中的规划文件。",
+      "riskLevel": "L4",
+      "dataClasses": [
+        "planning-files"
+      ],
+      "operations": [
+        "write"
+      ],
+      "scopeType": "planning-workspace",
+      "runtimeKinds": [
+        "prompt-pack"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "marketplace"
+      ],
+      "hostCapability": "planning-with-files",
+      "enforcementPoint": [
+        "planning::ensure_plugin_ready"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow-deny",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "planning",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:planning-plugin-ready",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "planning-workspace",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "session",
+          "one-shot",
+          "policy"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "network.request",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [
+        "network:request"
+      ],
+      "titleKey": "plugin.capability.network.request.title",
+      "descriptionKey": "plugin.capability.network.request.description",
+      "title": "受控网络请求",
+      "description": "通过 Marketplace 服务配置访问已验证的远程端点。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "network"
+      ],
+      "operations": [
+        "request"
+      ],
+      "scopeType": "declared-endpoint",
+      "runtimeKinds": [
+        "xingchen-agent",
+        "xingchen-workflow",
+        "mcp-connector"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "marketplace"
+      ],
+      "hostCapability": "marketplace-service-delivery",
+      "enforcementPoint": [
+        "MarketplaceService::configure_service"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow-deny",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "reconfirm-added-and-rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "marketplace",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:marketplace-network-confirmation",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "declared-endpoint",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": [
+        {
+          "condition": "credentials-or-general-endpoint",
+          "withCapabilities": [
+            "credentials.use"
+          ],
+          "elevatesTo": "L4",
+          "policy": "default-deny-unless-reviewed-proxy"
+        }
+      ]
+    },
+    {
+      "id": "files.readSelected",
+      "semanticVersion": "1.0.0",
+      "status": "reserved",
+      "legacyAliases": [
+        "files:read"
+      ],
+      "titleKey": "plugin.capability.files.readSelected.title",
+      "descriptionKey": "plugin.capability.files.readSelected.description",
+      "title": "读取用户选择文件",
+      "description": "读取用户显式选择的文件；宿主 capability 尚未接入。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "files"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "user-selected-resource",
+      "runtimeKinds": [
+        "declarative-ui",
+        "xingchen-agent",
+        "xingchen-workflow"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "development",
+        "local",
+        "marketplace"
+      ],
+      "hostCapability": null,
+      "enforcementPoint": [],
+      "requiredChecks": [],
+      "auditPolicy": "none",
+      "disableBehavior": "reserved-no-runtime",
+      "updateBehavior": "reconfirm-if-activated",
+      "rollbackBehavior": "restore-version-policy",
+      "owner": "plugin-platform",
+      "testCases": {
+        "profile": "non-requestable-v1",
+        "references": [
+          {
+            "id": "registry:reserved-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "user-selected-resource",
+        "version": 1,
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "grantModes": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "grantLifetime": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "trustLevels": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "rateLimitPolicy": {
+        "mode": "not-applicable"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "files.writeSelected",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [
+        "files:write"
+      ],
+      "titleKey": "plugin.capability.files.writeSelected.title",
+      "descriptionKey": "plugin.capability.files.writeSelected.description",
+      "title": "写入用户选择位置",
+      "description": "允许受控 Feature 返回并保存用户确认的文件输出。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "files"
+      ],
+      "operations": [
+        "write"
+      ],
+      "scopeType": "user-selected-resource",
+      "runtimeKinds": [
+        "xingchen-agent",
+        "xingchen-workflow"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "development",
+        "local",
+        "marketplace"
+      ],
+      "hostCapability": "feature-file-output",
+      "enforcementPoint": [
+        "PluginPlatformService::prepare_feature_invocation"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "execution-log",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "reconfirm-added-and-rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "plugin-platform",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:feature-file-output-permission",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "user-selected-resource",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "development",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": [
+        {
+          "condition": "background-or-automatic-write",
+          "withCapabilities": [],
+          "elevatesTo": "L4",
+          "policy": "require-explicit-user-confirmation"
+        }
+      ]
+    },
+    {
+      "id": "prompts.register",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.prompts.register.title",
+      "descriptionKey": "plugin.capability.prompts.register.description",
+      "title": "注册 Prompt",
+      "description": "安装由 Marketplace 管理的 Prompt 模板；逐次权限门禁尚不完整。",
+      "riskLevel": "L1",
+      "dataClasses": [
+        "prompts"
+      ],
+      "operations": [
+        "register"
+      ],
+      "scopeType": "plugin",
+      "runtimeKinds": [
+        "prompt-pack"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "marketplace"
+      ],
+      "hostCapability": "marketplace-prompt-pack",
+      "enforcementPoint": [
+        "MarketplaceService::install_prompt_pack"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "install",
+      "disableBehavior": "host-lifecycle-dependent",
+      "updateBehavior": "replace-version-content",
+      "rollbackBehavior": "host-lifecycle-dependent",
+      "owner": "marketplace",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:marketplace-prompt-pack-install",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "plugin",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "views.register",
+      "semanticVersion": "1.0.0",
+      "status": "reserved",
+      "legacyAliases": [
+        "taskViews.register"
+      ],
+      "titleKey": "plugin.capability.views.register.title",
+      "descriptionKey": "plugin.capability.views.register.description",
+      "title": "注册视图",
+      "description": "注册正式插件视图；统一宿主门禁尚未接入。",
+      "riskLevel": "L1",
+      "dataClasses": [
+        "ui"
+      ],
+      "operations": [
+        "register"
+      ],
+      "scopeType": "current-window",
+      "runtimeKinds": [
+        "declarative-ui"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "development",
+        "local",
+        "marketplace"
+      ],
+      "hostCapability": null,
+      "enforcementPoint": [],
+      "requiredChecks": [],
+      "auditPolicy": "none",
+      "disableBehavior": "reserved-no-runtime",
+      "updateBehavior": "reconfirm-if-activated",
+      "rollbackBehavior": "restore-version-policy",
+      "owner": "plugin-platform",
+      "testCases": {
+        "profile": "non-requestable-v1",
+        "references": [
+          {
+            "id": "registry:reserved-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "current-window",
+        "version": 1,
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "grantModes": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "grantLifetime": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "trustLevels": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "rateLimitPolicy": {
+        "mode": "not-applicable"
+      },
+      "dangerousCombinations": [
+        {
+          "condition": "interactive-or-sensitive-view",
+          "withCapabilities": [],
+          "elevatesTo": "L2",
+          "policy": "require-host-review"
+        }
+      ]
+    },
+    {
+      "id": "mcp.connect",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.mcp.connect.title",
+      "descriptionKey": "plugin.capability.mcp.connect.description",
+      "title": "连接 MCP",
+      "description": "配置 Marketplace 管理的远程 MCP 连接；当前仅创建禁用的 mock 注册项。",
+      "riskLevel": "L4",
+      "dataClasses": [
+        "network",
+        "tools"
+      ],
+      "operations": [
+        "connect"
+      ],
+      "scopeType": "declared-endpoint",
+      "runtimeKinds": [
+        "mcp-connector"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "marketplace"
+      ],
+      "hostCapability": "marketplace-remote-mcp",
+      "enforcementPoint": [
+        "MarketplaceService::configure_service"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow-deny",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "reconfirm-added-and-rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "marketplace",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:marketplace-remote-mcp-configuration",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "declared-endpoint",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "session",
+          "one-shot",
+          "policy"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "credentials.use",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.credentials.use.title",
+      "descriptionKey": "plugin.capability.credentials.use.description",
+      "title": "使用凭据引用",
+      "description": "允许宿主使用已绑定凭据 ID，插件不获得凭据明文。",
+      "riskLevel": "L4",
+      "dataClasses": [
+        "credentials"
+      ],
+      "operations": [
+        "use"
+      ],
+      "scopeType": "bound-credential",
+      "runtimeKinds": [
+        "xingchen-agent",
+        "xingchen-workflow",
+        "mcp-connector"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "development",
+        "local",
+        "marketplace"
+      ],
+      "hostCapability": "hosted-credential-reference",
+      "enforcementPoint": [
+        "PluginPlatformService::prepare_feature_invocation",
+        "MarketplaceService::configure_service"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow-deny",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "reconfirm-added-and-rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "credentials",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:feature-invocation-permissions",
+            "category": "positive",
+            "status": "enforced"
+          },
+          {
+            "id": "rust:marketplace-credential-owner",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "bound-credential",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "session",
+          "one-shot",
+          "policy"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "development",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "credentials.configure",
+      "semanticVersion": "1.0.0",
+      "status": "blocked",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.credentials.configure.title",
+      "descriptionKey": "plugin.capability.credentials.configure.description",
+      "title": "配置凭据",
+      "description": "插件直接配置凭据的能力被禁止；凭据只能由宿主账号界面管理。",
+      "riskLevel": "L4",
+      "dataClasses": [
+        "credentials"
+      ],
+      "operations": [
+        "configure"
+      ],
+      "scopeType": "none",
+      "runtimeKinds": [],
+      "pluginSources": [],
+      "hostCapability": null,
+      "enforcementPoint": [],
+      "requiredChecks": [],
+      "auditPolicy": "reject-at-validation",
+      "disableBehavior": "blocked",
+      "updateBehavior": "blocked",
+      "rollbackBehavior": "blocked",
+      "owner": "credentials",
+      "testCases": {
+        "profile": "non-requestable-v1",
+        "references": [
+          {
+            "id": "registry:blocked-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "not-applicable",
+        "version": 1,
+        "implementationStatus": "not-applicable"
+      },
+      "grantModes": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "grantLifetime": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "trustLevels": {
+        "allowed": [],
+        "implementationStatus": "not-applicable"
+      },
+      "rateLimitPolicy": {
+        "mode": "not-applicable"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "network.xingchen",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.network.xingchen.title",
+      "descriptionKey": "plugin.capability.network.xingchen.description",
+      "title": "访问讯飞星辰服务",
+      "description": "通过宿主受控的星辰 Agent/Workflow 服务发起请求。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "network",
+        "ai"
+      ],
+      "operations": [
+        "request"
+      ],
+      "scopeType": "xingchen-service",
+      "runtimeKinds": [
+        "xingchen-agent",
+        "xingchen-workflow"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "development",
+        "local",
+        "marketplace"
+      ],
+      "hostCapability": "xingchen-workflow",
+      "enforcementPoint": [
+        "PluginPlatformService::prepare_feature_invocation"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "execution-log",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "reconfirm-added-and-rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "xingchen-agent",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:feature-invocation-permissions",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "xingchen-service",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "development",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "agents.invoke",
+      "semanticVersion": "1.0.0",
+      "status": "restricted",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.agents.invoke.title",
+      "descriptionKey": "plugin.capability.agents.invoke.description",
+      "title": "调用已绑定智能体",
+      "description": "通过宿主调用用户已绑定的智能体或工作流。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "agents",
+        "ai"
+      ],
+      "operations": [
+        "invoke"
+      ],
+      "scopeType": "bound-agent",
+      "runtimeKinds": [
+        "xingchen-agent",
+        "xingchen-workflow"
+      ],
+      "pluginSources": [
+        "bundled",
+        "internal",
+        "development",
+        "local",
+        "marketplace"
+      ],
+      "hostCapability": "xingchen-workflow",
+      "enforcementPoint": [
+        "PluginPlatformService::prepare_feature_invocation"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "execution-log",
+      "disableBehavior": "deny-on-next-host-call",
+      "updateBehavior": "reconfirm-added-and-rebuild-grants",
+      "rollbackBehavior": "grant-snapshot-not-restored",
+      "owner": "xingchen-agent",
+      "testCases": {
+        "profile": "standard-v1-matrix",
+        "references": [
+          {
+            "id": "rust:feature-invocation-permissions",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "bound-agent",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "compatibility-required-only"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "bundled",
+          "internal",
+          "development",
+          "reviewed-external"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": [
+        {
+          "condition": "credential-backed-agent-call",
+          "withCapabilities": [
+            "credentials.use"
+          ],
+          "elevatesTo": "L4",
+          "policy": "require-session-grant-and-audit"
+        }
+      ]
+    },
+    {
+      "id": "editor:read",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [
+        "document.read"
+      ],
+      "titleKey": "plugin.capability.legacy.editorRead.title",
+      "descriptionKey": "plugin.capability.legacy.editorRead.description",
+      "title": "读取编辑器（旧版）",
+      "description": "旧版 WebView 插件读取编辑器选择内容；未形成独立安全边界。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "document"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "current-editor",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": "legacy-editor-api",
+      "enforcementPoint": [
+        "createAppAPI.editor.getCurrentSelection"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "frontend-only",
+      "disableBehavior": "frontend-deactivation-required",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "legacy-plugin-runtime",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "registry:legacy-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "current-editor",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "editor:write",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [
+        "document.write"
+      ],
+      "titleKey": "plugin.capability.legacy.editorWrite.title",
+      "descriptionKey": "plugin.capability.legacy.editorWrite.description",
+      "title": "修改编辑器（旧版）",
+      "description": "旧版 WebView 插件注册编辑器交互；调用级权限门禁不完整。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "document",
+        "ui"
+      ],
+      "operations": [
+        "write",
+        "register"
+      ],
+      "scopeType": "current-editor",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": "legacy-editor-api",
+      "enforcementPoint": [
+        "createAppAPI.editor"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "frontend-only",
+      "disableBehavior": "frontend-deactivation-required",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "legacy-plugin-runtime",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "registry:legacy-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "current-editor",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "workspace:read",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.legacy.workspaceRead.title",
+      "descriptionKey": "plugin.capability.legacy.workspaceRead.description",
+      "title": "读取工作区（旧版）",
+      "description": "旧版工作区读取名称；实际能力复用笔记代理。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "workspace"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "workspace",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": "legacy-workspace-api",
+      "enforcementPoint": [
+        "createAppAPI.workspace"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "frontend-only",
+      "disableBehavior": "frontend-deactivation-required",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "legacy-plugin-runtime",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "registry:legacy-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "workspace",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "workspace:write",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.legacy.workspaceWrite.title",
+      "descriptionKey": "plugin.capability.legacy.workspaceWrite.description",
+      "title": "修改工作区（旧版）",
+      "description": "旧版工作区写入权限名称；未发现独立宿主执行路径。",
+      "riskLevel": "L4",
+      "dataClasses": [
+        "workspace"
+      ],
+      "operations": [
+        "write"
+      ],
+      "scopeType": "workspace",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": null,
+      "enforcementPoint": [],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "none",
+      "disableBehavior": "frontend-deactivation-required",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "legacy-plugin-runtime",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "registry:legacy-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "workspace",
+        "version": 1,
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "session",
+          "one-shot",
+          "policy"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "notes:read",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [
+        "notes.read"
+      ],
+      "titleKey": "plugin.capability.legacy.notesRead.title",
+      "descriptionKey": "plugin.capability.legacy.notesRead.description",
+      "title": "读取笔记（旧版）",
+      "description": "旧版插件通过 token 化代理读取笔记。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "notes"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "plugin",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": "plugin-note-proxy",
+      "enforcementPoint": [
+        "plugin_proxy::verify",
+        "plugin_proxy_notes_list",
+        "plugin_proxy_notes_get",
+        "plugin_proxy_notes_search"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow",
+      "disableBehavior": "frontend-revokes-token",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "plugin-proxy",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "rust:plugin-proxy-permission",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "plugin",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "notes:write",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [
+        "notes.write"
+      ],
+      "titleKey": "plugin.capability.legacy.notesWrite.title",
+      "descriptionKey": "plugin.capability.legacy.notesWrite.description",
+      "title": "修改笔记（旧版）",
+      "description": "旧版插件通过 token 化代理创建、更新或删除笔记。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "notes"
+      ],
+      "operations": [
+        "write"
+      ],
+      "scopeType": "plugin",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": "plugin-note-proxy",
+      "enforcementPoint": [
+        "plugin_proxy::verify",
+        "plugin_proxy_notes_create",
+        "plugin_proxy_notes_update",
+        "plugin_proxy_notes_delete"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow",
+      "disableBehavior": "frontend-revokes-token",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "plugin-proxy",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "rust:plugin-proxy-permission",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "plugin",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "settings:read",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.legacy.settingsRead.title",
+      "descriptionKey": "plugin.capability.legacy.settingsRead.description",
+      "title": "读取设置（旧版）",
+      "description": "旧版插件读取自身设置；当前代理只检查 token。",
+      "riskLevel": "L2",
+      "dataClasses": [
+        "plugin-settings"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "plugin",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": "legacy-plugin-settings",
+      "enforcementPoint": [
+        "plugin_proxy_settings_get",
+        "plugin_proxy_settings_get_all"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow",
+      "disableBehavior": "frontend-revokes-token",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "plugin-proxy",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "registry:legacy-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "plugin",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "settings:write",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.legacy.settingsWrite.title",
+      "descriptionKey": "plugin.capability.legacy.settingsWrite.description",
+      "title": "修改设置（旧版）",
+      "description": "旧版插件修改自身设置；当前代理只检查 token。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "plugin-settings"
+      ],
+      "operations": [
+        "write"
+      ],
+      "scopeType": "plugin",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": "legacy-plugin-settings",
+      "enforcementPoint": [
+        "plugin_proxy_settings_set"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow",
+      "disableBehavior": "frontend-revokes-token",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "plugin-proxy",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "registry:legacy-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "plugin",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "files:read",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [
+        "files.readSelected"
+      ],
+      "titleKey": "plugin.capability.legacy.filesRead.title",
+      "descriptionKey": "plugin.capability.legacy.filesRead.description",
+      "title": "读取文件（旧版）",
+      "description": "旧版宽范围文件读取权限名称；未发现受控宿主代理。",
+      "riskLevel": "L4",
+      "dataClasses": [
+        "files"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "unspecified",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": null,
+      "enforcementPoint": [],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "none",
+      "disableBehavior": "frontend-deactivation-required",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "legacy-plugin-runtime",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "registry:legacy-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "unspecified",
+        "version": 1,
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "session",
+          "one-shot",
+          "policy"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "files:write",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [
+        "files.writeSelected"
+      ],
+      "titleKey": "plugin.capability.legacy.filesWrite.title",
+      "descriptionKey": "plugin.capability.legacy.filesWrite.description",
+      "title": "写入文件（旧版）",
+      "description": "旧版宽范围文件写入权限名称；未发现受控宿主代理。",
+      "riskLevel": "L4",
+      "dataClasses": [
+        "files"
+      ],
+      "operations": [
+        "write"
+      ],
+      "scopeType": "unspecified",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": null,
+      "enforcementPoint": [],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "none",
+      "disableBehavior": "frontend-deactivation-required",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "legacy-plugin-runtime",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "registry:legacy-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "unspecified",
+        "version": 1,
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "session",
+          "one-shot",
+          "policy"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "network:request",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [
+        "network.request"
+      ],
+      "titleKey": "plugin.capability.legacy.networkRequest.title",
+      "descriptionKey": "plugin.capability.legacy.networkRequest.description",
+      "title": "网络请求（旧版）",
+      "description": "旧版网络权限名称；未发现受控宿主网络代理。",
+      "riskLevel": "L4",
+      "dataClasses": [
+        "network"
+      ],
+      "operations": [
+        "request"
+      ],
+      "scopeType": "unspecified",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": null,
+      "enforcementPoint": [],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "none",
+      "disableBehavior": "frontend-deactivation-required",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "legacy-plugin-runtime",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "registry:legacy-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "unspecified",
+        "version": 1,
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "session",
+          "one-shot",
+          "policy"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "clipboard:read",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.legacy.clipboardRead.title",
+      "descriptionKey": "plugin.capability.legacy.clipboardRead.description",
+      "title": "读取剪贴板（旧版）",
+      "description": "旧版剪贴板读取权限名称；未发现插件级受控代理。",
+      "riskLevel": "L4",
+      "dataClasses": [
+        "clipboard"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "system-clipboard",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": null,
+      "enforcementPoint": [],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "none",
+      "disableBehavior": "frontend-deactivation-required",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "legacy-plugin-runtime",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "registry:legacy-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "system-clipboard",
+        "version": 1,
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "session",
+          "one-shot",
+          "policy"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "clipboard:write",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.legacy.clipboardWrite.title",
+      "descriptionKey": "plugin.capability.legacy.clipboardWrite.description",
+      "title": "写入剪贴板（旧版）",
+      "description": "旧版剪贴板写入权限名称；未发现插件级受控代理。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "clipboard"
+      ],
+      "operations": [
+        "write"
+      ],
+      "scopeType": "system-clipboard",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": null,
+      "enforcementPoint": [],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "none",
+      "disableBehavior": "frontend-deactivation-required",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "legacy-plugin-runtime",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "registry:legacy-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "system-clipboard",
+        "version": 1,
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "tasks.subscribe",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.legacy.tasksSubscribe.title",
+      "descriptionKey": "plugin.capability.legacy.tasksSubscribe.description",
+      "title": "订阅待办事件（旧版）",
+      "description": "旧版插件订阅待办事件；当前只有前端提示，没有后端权限门禁。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "tasks"
+      ],
+      "operations": [
+        "subscribe"
+      ],
+      "scopeType": "application-events",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": "legacy-task-events",
+      "enforcementPoint": [
+        "createAppAPI.events.on"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "frontend-only",
+      "disableBehavior": "frontend-deactivation-required",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "legacy-plugin-runtime",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "registry:legacy-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "application-events",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "taskViews.register",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [
+        "views.register"
+      ],
+      "titleKey": "plugin.capability.legacy.taskViewsRegister.title",
+      "descriptionKey": "plugin.capability.legacy.taskViewsRegister.description",
+      "title": "注册待办视图（旧版）",
+      "description": "旧版插件注册待办视图；当前只有前端提示，没有后端权限门禁。",
+      "riskLevel": "L2",
+      "dataClasses": [
+        "ui",
+        "tasks"
+      ],
+      "operations": [
+        "register"
+      ],
+      "scopeType": "current-window",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": "legacy-task-views",
+      "enforcementPoint": [
+        "createAppAPI.taskViews.register"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "frontend-only",
+      "disableBehavior": "frontend-deactivation-required",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "legacy-plugin-runtime",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "registry:legacy-not-v3-requestable",
+            "category": "rejection",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "current-window",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "ai:chat",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [
+        "ai.invoke"
+      ],
+      "titleKey": "plugin.capability.legacy.aiChat.title",
+      "descriptionKey": "plugin.capability.legacy.aiChat.description",
+      "title": "调用 AI 对话（旧版）",
+      "description": "旧版插件通过 token 化代理调用 AI 对话。",
+      "riskLevel": "L3",
+      "dataClasses": [
+        "ai"
+      ],
+      "operations": [
+        "invoke"
+      ],
+      "scopeType": "plugin-request",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": "legacy-ai-proxy",
+      "enforcementPoint": [
+        "plugin_proxy_ai_chat",
+        "plugin_proxy_ai_chat_sync",
+        "plugin_proxy_ai_cancel"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow",
+      "disableBehavior": "frontend-revokes-token",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "plugin-proxy",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "rust:plugin-proxy-permission",
+            "category": "positive",
+            "status": "enforced"
+          },
+          {
+            "id": "rust:plugin-rate-limit",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "plugin-request",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session",
+          "one-shot"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "existing-host-limit",
+        "implementationStatus": "partial"
+      },
+      "dangerousCombinations": []
+    },
+    {
+      "id": "ai:models",
+      "semanticVersion": "1.0.0",
+      "status": "legacy",
+      "legacyAliases": [],
+      "titleKey": "plugin.capability.legacy.aiModels.title",
+      "descriptionKey": "plugin.capability.legacy.aiModels.description",
+      "title": "读取 AI 模型列表（旧版）",
+      "description": "旧版插件通过 token 化代理读取模型元数据。",
+      "riskLevel": "L2",
+      "dataClasses": [
+        "ai-models"
+      ],
+      "operations": [
+        "read"
+      ],
+      "scopeType": "application",
+      "runtimeKinds": [
+        "legacy-js"
+      ],
+      "pluginSources": [
+        "development",
+        "local"
+      ],
+      "hostCapability": "legacy-ai-proxy",
+      "enforcementPoint": [
+        "plugin_proxy_ai_models"
+      ],
+      "requiredChecks": [
+        "P",
+        "E",
+        "S",
+        "V",
+        "I",
+        "M",
+        "A",
+        "T",
+        "R"
+      ],
+      "auditPolicy": "allow",
+      "disableBehavior": "frontend-revokes-token",
+      "updateBehavior": "legacy-only",
+      "rollbackBehavior": "legacy-only",
+      "owner": "plugin-proxy",
+      "testCases": {
+        "profile": "legacy-compatibility-v1",
+        "references": [
+          {
+            "id": "rust:plugin-proxy-permission",
+            "category": "positive",
+            "status": "enforced"
+          }
+        ]
+      },
+      "legacyAliasPolicy": {
+        "mode": "explicit-compatibility-only",
+        "autoMapToManifestPermission": false
+      },
+      "scopeSchema": {
+        "type": "application",
+        "version": 1,
+        "implementationStatus": "partial"
+      },
+      "grantModes": {
+        "allowed": [
+          "required"
+        ],
+        "implementationStatus": "legacy-compatibility"
+      },
+      "grantLifetime": {
+        "allowed": [
+          "persistent",
+          "session"
+        ],
+        "implementationStatus": "planned-not-yet-enforced"
+      },
+      "trustLevels": {
+        "allowed": [
+          "development"
+        ],
+        "implementationStatus": "source-policy-only"
+      },
+      "rateLimitPolicy": {
+        "mode": "planned-not-yet-enforced"
+      },
+      "dangerousCombinations": []
+    }
+  ],
+  "testProfiles": {
+    "standard-v1-matrix": {
+      "categories": [
+        "positive",
+        "rejection",
+        "scope",
+        "revocation",
+        "disable",
+        "lifecycle"
+      ],
+      "defaultStatus": "planned-not-yet-enforced"
+    },
+    "non-requestable-v1": {
+      "categories": [
+        "rejection",
+        "lifecycle"
+      ],
+      "defaultStatus": "enforced"
+    },
+    "legacy-compatibility-v1": {
+      "categories": [
+        "positive",
+        "rejection",
+        "scope",
+        "revocation",
+        "disable",
+        "lifecycle"
+      ],
+      "defaultStatus": "planned-not-yet-enforced"
+    }
+  }
 }

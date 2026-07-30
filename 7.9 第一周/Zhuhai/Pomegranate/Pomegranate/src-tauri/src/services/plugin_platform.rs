@@ -1359,24 +1359,6 @@ fn validate_manifest(manifest: &PluginManifestV3) -> Result<(), AppError> {
     }
     let has_features = !manifest.contributes.features.is_empty();
     let has_enhancements = !manifest.contributes.enhancements.is_empty();
-    match manifest.classification {
-        crate::models::PluginClassification::Feature if !has_features => {
-            return Err(AppError::InvalidInput(
-                "feature 插件必须至少声明一个 features 贡献点".into(),
-            ));
-        }
-        crate::models::PluginClassification::Enhancement if !has_enhancements => {
-            return Err(AppError::InvalidInput(
-                "enhancement 插件必须至少声明一个 enhancements 贡献点".into(),
-            ));
-        }
-        crate::models::PluginClassification::Hybrid if !has_features || !has_enhancements => {
-            return Err(AppError::InvalidInput(
-                "hybrid 插件必须同时声明 features 和 enhancements 贡献点".into(),
-            ));
-        }
-        _ => {}
-    }
     validate_v3_capability_combination(manifest, has_features, has_enhancements)?;
 
     for feature in &manifest.contributes.features {
@@ -1411,30 +1393,53 @@ fn validate_v3_capability_combination(
     has_features: bool,
     has_enhancements: bool,
 ) -> Result<(), AppError> {
-    use crate::models::PluginClassification;
-
-    match manifest.classification {
-        PluginClassification::Feature if has_enhancements => {
-            return Err(AppError::InvalidInput(
-                "classification=feature 不得声明 enhancement contribution".into(),
-            ));
-        }
-        PluginClassification::Enhancement if has_features => {
-            return Err(AppError::InvalidInput(
-                "classification=enhancement 不得声明 feature contribution".into(),
-            ));
-        }
-        _ => {}
-    }
     let runtime = runtime_kind_name(&manifest.runtime_kind);
-    if !matches!(
-        (runtime, &manifest.classification),
-        ("declarative-ui", PluginClassification::Feature)
-            | ("prompt-pack", PluginClassification::Enhancement)
-            | (
-                "xingchen-agent" | "xingchen-workflow",
-                PluginClassification::Feature | PluginClassification::Hybrid
-            )
+    let classification = classification_name(&manifest.classification);
+    let contributions = [
+        has_features.then_some("feature"),
+        has_enhancements.then_some("enhancement"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    if let Err(violation) =
+        crate::services::plugin_capabilities::evaluate_v3_classification_contributions(
+            classification,
+            &contributions,
+        )
+    {
+        use crate::services::plugin_capabilities::V3ClassificationContributionViolation;
+        let message = match violation {
+            V3ClassificationContributionViolation::MissingRequiredContribution {
+                classification: "feature",
+                contribution: "feature",
+            } => "feature 插件必须至少声明一个 features 贡献点".to_string(),
+            V3ClassificationContributionViolation::MissingRequiredContribution {
+                classification: "enhancement",
+                contribution: "enhancement",
+            } => "enhancement 插件必须至少声明一个 enhancements 贡献点".to_string(),
+            V3ClassificationContributionViolation::MissingRequiredContribution {
+                classification: "hybrid",
+                ..
+            } => "hybrid 插件必须同时声明 features 和 enhancements 贡献点".to_string(),
+            V3ClassificationContributionViolation::ForbiddenContribution {
+                classification: "feature",
+                contribution: "enhancement",
+            } => "classification=feature 不得声明 enhancement contribution".to_string(),
+            V3ClassificationContributionViolation::ForbiddenContribution {
+                classification: "enhancement",
+                contribution: "feature",
+            } => "classification=enhancement 不得声明 feature contribution".to_string(),
+            _ => format!(
+                "classification {} 与 contribution 组合不兼容",
+                classification
+            ),
+        };
+        return Err(AppError::InvalidInput(message));
+    }
+    if !crate::services::plugin_capabilities::is_v3_runtime_classification_allowed(
+        runtime,
+        classification,
     ) {
         return Err(AppError::InvalidInput(format!(
             "runtimeKind {} 与 classification/contribution 组合不兼容",
@@ -1446,37 +1451,57 @@ fn validate_v3_capability_combination(
         .iter()
         .map(String::as_str)
         .collect::<HashSet<_>>();
-    if has_enhancements && !permissions.contains("ai.context.augment") {
-        return Err(AppError::InvalidInput(
-            "包含 enhancement contribution 的 Manifest 必须声明 ai.context.augment".into(),
-        ));
-    }
-    if has_features && matches!(runtime, "xingchen-agent" | "xingchen-workflow") {
-        for required in [
-            "credentials.use",
-            "agents.invoke",
-            "network.xingchen",
-            "ai.invoke",
-        ] {
-            if !permissions.contains(required) {
-                return Err(AppError::InvalidInput(format!(
-                    "Xingchen feature 缺少必需权限 {}",
-                    required
-                )));
+    let feature_capabilities = manifest
+        .contributes
+        .features
+        .iter()
+        .flat_map(|feature| &feature.capabilities)
+        .filter_map(|capability| {
+            matches!(capability, crate::models::PluginCapability::FileDocxOutput)
+                .then_some("file.docx.output")
+        })
+        .collect::<Vec<_>>();
+    let granted_permissions = permissions.iter().copied().collect::<Vec<_>>();
+    if let Err(violation) = crate::services::plugin_capabilities::evaluate_v3_required_permissions(
+        runtime,
+        &contributions,
+        &feature_capabilities,
+        &granted_permissions,
+    ) {
+        use crate::services::plugin_capabilities::V3RequiredPermissionViolation;
+        let message = match violation {
+            V3RequiredPermissionViolation::Contribution {
+                contribution: "enhancement",
+                permission: "ai.context.augment",
+            } => {
+                "包含 enhancement contribution 的 Manifest 必须声明 ai.context.augment".to_string()
             }
-        }
-    }
-    if manifest.contributes.features.iter().any(|feature| {
-        feature
-            .capabilities
-            .contains(&crate::models::PluginCapability::FileDocxOutput)
-    }) && !permissions.contains("files.writeSelected")
-    {
-        return Err(AppError::InvalidInput(
-            "feature capability file.docx.output 必须声明 files.writeSelected".into(),
-        ));
+            V3RequiredPermissionViolation::RuntimeContribution {
+                contribution: "feature",
+                permission,
+                ..
+            } => format!("Xingchen feature 缺少必需权限 {}", permission),
+            V3RequiredPermissionViolation::FeatureCapability {
+                feature_capability: "file.docx.output",
+                permission: "files.writeSelected",
+            } => "feature capability file.docx.output 必须声明 files.writeSelected".to_string(),
+            V3RequiredPermissionViolation::Contribution { permission, .. }
+            | V3RequiredPermissionViolation::RuntimeContribution { permission, .. }
+            | V3RequiredPermissionViolation::FeatureCapability { permission, .. } => {
+                format!("Manifest capability 组合缺少必需权限 {}", permission)
+            }
+        };
+        return Err(AppError::InvalidInput(message));
     }
     Ok(())
+}
+
+fn classification_name(classification: &crate::models::PluginClassification) -> &'static str {
+    match classification {
+        crate::models::PluginClassification::Feature => "feature",
+        crate::models::PluginClassification::Enhancement => "enhancement",
+        crate::models::PluginClassification::Hybrid => "hybrid",
+    }
 }
 
 fn runtime_kind_name(runtime_kind: &PluginRuntimeKind) -> &'static str {
@@ -3010,6 +3035,62 @@ mod tests {
         let mut incomplete_hybrid = hybrid.clone();
         incomplete_hybrid.contributes.features.clear();
         assert!(validate_manifest(&incomplete_hybrid).is_err());
+    }
+
+    #[test]
+    fn preserves_specific_v3_capability_rejection_messages() {
+        let error = |manifest: &PluginManifestV3| {
+            validate_manifest(manifest)
+                .expect_err("manifest should be rejected")
+                .to_string()
+        };
+
+        let mut feature_missing = manifest_for("feature", "declarative-ui");
+        feature_missing.contributes.features.clear();
+        feature_missing.contributes.enhancements.clear();
+        assert!(error(&feature_missing).contains("feature 插件必须至少声明一个 features 贡献点"));
+
+        let mut enhancement_missing = manifest_for("enhancement", "prompt-pack");
+        enhancement_missing.contributes.features.clear();
+        enhancement_missing.contributes.enhancements.clear();
+        assert!(error(&enhancement_missing)
+            .contains("enhancement 插件必须至少声明一个 enhancements 贡献点"));
+
+        let mut hybrid_missing = manifest_for("hybrid", "xingchen-workflow");
+        hybrid_missing.contributes.features.clear();
+        assert!(error(&hybrid_missing)
+            .contains("hybrid 插件必须同时声明 features 和 enhancements 贡献点"));
+
+        let feature_with_enhancement = manifest_for("feature", "xingchen-workflow");
+        assert!(error(&feature_with_enhancement)
+            .contains("classification=feature 不得声明 enhancement contribution"));
+
+        let enhancement_with_feature = manifest_for("enhancement", "prompt-pack");
+        assert!(error(&enhancement_with_feature)
+            .contains("classification=enhancement 不得声明 feature contribution"));
+
+        let mut enhancement_permission = manifest_for("enhancement", "prompt-pack");
+        enhancement_permission.contributes.features.clear();
+        enhancement_permission.permissions.clear();
+        assert!(error(&enhancement_permission)
+            .contains("包含 enhancement contribution 的 Manifest 必须声明 ai.context.augment"));
+
+        let mut xingchen_permission = manifest_for("feature", "xingchen-agent");
+        xingchen_permission.contributes.enhancements.clear();
+        xingchen_permission
+            .permissions
+            .retain(|permission| permission != "credentials.use");
+        assert!(
+            error(&xingchen_permission).contains("Xingchen feature 缺少必需权限 credentials.use")
+        );
+
+        let mut file_permission = manifest_for("feature", "xingchen-workflow");
+        file_permission.contributes.enhancements.clear();
+        file_permission.contributes.features[0]
+            .capabilities
+            .push(crate::models::PluginCapability::FileDocxOutput);
+        assert!(error(&file_permission)
+            .contains("feature capability file.docx.output 必须声明 files.writeSelected"));
     }
 
     #[test]

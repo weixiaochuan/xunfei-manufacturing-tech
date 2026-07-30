@@ -5,7 +5,10 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
 import {
+  evaluateV3ClassificationContributions,
+  evaluateV3RequiredPermissions,
   isV3PermissionRuntimeAllowed,
+  isV3RuntimeClassificationAllowed,
   loadCapabilityRegistry,
   validateCapabilityRegistry,
   v3RequestableCapabilities,
@@ -158,8 +161,8 @@ export function validateManifest(manifest, files) {
   if (manifest.id.length > 128 || !/^[a-z0-9][a-z0-9._-]*$/.test(manifest.id)) {
     fail("插件 ID 必须以小写字母或数字开头，长度不超过 128，且仅允许小写字母、数字、点、横线和下划线");
   }
-  if (!["feature", "enhancement", "hybrid"].includes(manifest.classification)) fail("classification 非法");
-  if (!["declarative-ui", "prompt-pack", "xingchen-agent", "xingchen-workflow"].includes(manifest.runtimeKind)) {
+  if (!CAPABILITY_REGISTRY.v3Policy.classifications.includes(manifest.classification)) fail("classification 非法");
+  if (!CAPABILITY_REGISTRY.v3Policy.runtimeKinds.includes(manifest.runtimeKind)) {
     fail("正式插件包只允许声明式、Prompt 或受控星辰运行时");
   }
   const permissions = manifest.permissions ?? [];
@@ -173,39 +176,66 @@ export function validateManifest(manifest, files) {
   const contributes = manifest.contributes ?? {};
   const hasFeatures = (contributes.features ?? []).length > 0;
   const hasEnhancements = (contributes.enhancements ?? []).length > 0;
-  if (manifest.classification === "feature" && !hasFeatures) fail("feature 插件必须声明 features");
-  if (manifest.classification === "enhancement" && !hasEnhancements) fail("enhancement 插件必须声明 enhancements");
-  if (manifest.classification === "hybrid" && (!hasFeatures || !hasEnhancements)) {
-    fail("hybrid 插件必须同时声明 features 和 enhancements");
+  const contributionTypes = [
+    ...(hasFeatures ? ["feature"] : []),
+    ...(hasEnhancements ? ["enhancement"] : []),
+  ];
+  const contributionDecision = evaluateV3ClassificationContributions(
+    manifest.classification,
+    contributionTypes,
+    CAPABILITY_REGISTRY,
+  );
+  if (!contributionDecision.ok) {
+    if (contributionDecision.code === "missing-required-contribution") {
+      if (manifest.classification === "feature") fail("feature 插件必须声明 features");
+      if (manifest.classification === "enhancement") fail("enhancement 插件必须声明 enhancements");
+      if (manifest.classification === "hybrid") {
+        fail("hybrid 插件必须同时声明 features 和 enhancements");
+      }
+    }
+    if (contributionDecision.code === "forbidden-contribution") {
+      if (manifest.classification === "feature") {
+        fail("classification=feature 不得声明 enhancement contribution");
+      }
+      if (manifest.classification === "enhancement") {
+        fail("classification=enhancement 不得声明 feature contribution");
+      }
+    }
+    fail(`classification ${manifest.classification} 与 contribution 组合不兼容`);
   }
-  if (manifest.classification === "feature" && hasEnhancements) {
-    fail("classification=feature 不得声明 enhancement contribution");
-  }
-  if (manifest.classification === "enhancement" && hasFeatures) {
-    fail("classification=enhancement 不得声明 feature contribution");
-  }
-  const runtimeClassificationAllowed =
-    (manifest.runtimeKind === "declarative-ui" && manifest.classification === "feature")
-    || (manifest.runtimeKind === "prompt-pack" && manifest.classification === "enhancement")
-    || (["xingchen-agent", "xingchen-workflow"].includes(manifest.runtimeKind)
-      && ["feature", "hybrid"].includes(manifest.classification));
-  if (!runtimeClassificationAllowed) {
+  if (!isV3RuntimeClassificationAllowed(
+    manifest.runtimeKind,
+    manifest.classification,
+    CAPABILITY_REGISTRY,
+  )) {
     fail(`runtimeKind ${manifest.runtimeKind} 与 classification/contribution 组合不兼容`);
   }
-  if (hasEnhancements && !permissions.includes("ai.context.augment")) {
-    fail("包含 enhancement contribution 的 Manifest 必须声明 ai.context.augment");
-  }
-  if (hasFeatures && ["xingchen-agent", "xingchen-workflow"].includes(manifest.runtimeKind)) {
-    for (const required of ["credentials.use", "agents.invoke", "network.xingchen", "ai.invoke"]) {
-      if (!permissions.includes(required)) fail(`Xingchen feature 缺少必需权限 ${required}`);
+  const featureCapabilities = (contributes.features ?? [])
+    .flatMap((feature) => feature.capabilities ?? []);
+  const permissionDecision = evaluateV3RequiredPermissions({
+    runtimeKind: manifest.runtimeKind,
+    contributions: contributionTypes,
+    featureCapabilities,
+    permissions,
+  }, CAPABILITY_REGISTRY);
+  if (!permissionDecision.ok) {
+    if (permissionDecision.code === "missing-contribution-permission"
+      && permissionDecision.contribution === "enhancement") {
+      fail("包含 enhancement contribution 的 Manifest 必须声明 ai.context.augment");
     }
+    if (permissionDecision.code === "missing-runtime-contribution-permission"
+      && permissionDecision.contribution === "feature"
+      && ["xingchen-agent", "xingchen-workflow"].includes(permissionDecision.runtimeKind)) {
+      fail(`Xingchen feature 缺少必需权限 ${permissionDecision.permission}`);
+    }
+    if (permissionDecision.code === "missing-feature-capability-permission"
+      && permissionDecision.featureCapability === "file.docx.output") {
+      fail("feature capability file.docx.output 必须声明 files.writeSelected");
+    }
+    fail(`Manifest capability 组合缺少必需权限 ${permissionDecision.permission}`);
   }
   const resources = [];
   for (const feature of contributes.features ?? []) {
-    if ((feature.capabilities ?? []).includes("file.docx.output")
-      && !permissions.includes("files.writeSelected")) {
-      fail("feature capability file.docx.output 必须声明 files.writeSelected");
-    }
     if (!feature.uiSchema) fail(`feature 贡献点 ${feature.id ?? "<unknown>"} 必须声明 uiSchema`);
     resources.push(feature.uiSchema);
     const schemaName = safePath(String(feature.uiSchema));

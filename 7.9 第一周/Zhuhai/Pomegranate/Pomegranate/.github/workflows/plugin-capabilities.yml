@@ -70,4 +70,4 @@ jobs:
 
       - name: Test generated registry consistency
         working-directory: src-tauri
-        run: cargo test services::plugin_capabilities::tests::generated_permissions_match_canonical_registry
+        run: cargo test services::plugin_capabilities::tests
