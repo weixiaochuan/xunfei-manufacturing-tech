@@ -185,9 +185,10 @@ impl PluginPlatformService {
     ) -> Result<PluginInstallResult, AppError> {
         validate_plugin_id(plugin_id)?;
         validate_version(version)?;
-        let (manifest, install_path, content_hash) = db
-            .plugin_version_manifest(plugin_id, version)?
+        let (manifest_json, install_path, content_hash) = db
+            .plugin_version_manifest_raw(plugin_id, version)?
             .ok_or_else(|| AppError::NotFound(format!("未找到版本 {}", version)))?;
+        let manifest = parse_manifest_v3_json(&manifest_json, ManifestUnknownFieldMode::Strict)?.0;
         if !Path::new(&install_path).is_dir() {
             return Err(AppError::NotFound(format!(
                 "版本目录不存在：{}",
@@ -901,12 +902,37 @@ fn read_manifest_v3(plugin_root: &Path) -> Result<PluginManifestV3, AppError> {
     }
     let raw_manifest: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| AppError::InvalidInput(format!("Manifest v3 解析失败：{}", error)))?;
+    parse_manifest_v3_value(raw_manifest, ManifestUnknownFieldMode::Strict).map(|result| result.0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManifestUnknownFieldMode {
+    Strict,
+    /// 预留给后续明确的开发预检入口；正式 install/update/rollback 不使用。
+    #[allow(dead_code)]
+    Warn,
+}
+
+fn parse_manifest_v3_json(
+    manifest_json: &str,
+    mode: ManifestUnknownFieldMode,
+) -> Result<(PluginManifestV3, Vec<String>), AppError> {
+    let raw_manifest: serde_json::Value = serde_json::from_str(manifest_json)
+        .map_err(|error| AppError::InvalidInput(format!("Manifest v3 解析失败：{}", error)))?;
+    parse_manifest_v3_value(raw_manifest, mode)
+}
+
+fn parse_manifest_v3_value(
+    raw_manifest: serde_json::Value,
+    mode: ManifestUnknownFieldMode,
+) -> Result<(PluginManifestV3, Vec<String>), AppError> {
     if let Some(path) = find_forbidden_secret_field(&raw_manifest, "manifest") {
         return Err(AppError::InvalidInput(format!(
             "Manifest 不得声明或收集密钥明文字段：{}；请改用 credentialId",
             path
         )));
     }
+    let warnings = validate_manifest_unknown_fields(&raw_manifest, mode)?;
     let manifest: PluginManifestV3 = serde_json::from_value(raw_manifest)
         .map_err(|error| AppError::InvalidInput(format!("Manifest v3 字段无效：{}", error)))?;
     if manifest.schema_version != 3 {
@@ -915,7 +941,291 @@ fn read_manifest_v3(plugin_root: &Path) -> Result<PluginManifestV3, AppError> {
             manifest.schema_version
         )));
     }
-    Ok(manifest)
+    Ok((manifest, warnings))
+}
+
+fn validate_manifest_unknown_fields(
+    manifest: &serde_json::Value,
+    mode: ManifestUnknownFieldMode,
+) -> Result<Vec<String>, AppError> {
+    let mut unknown_paths = Vec::new();
+    validate_object_fields(
+        manifest,
+        "$",
+        &[
+            "schemaVersion",
+            "id",
+            "name",
+            "version",
+            "authorId",
+            "description",
+            "minAppVersion",
+            "classification",
+            "runtimeKind",
+            "source",
+            "activationEvents",
+            "supportedScenes",
+            "defaultActivation",
+            "permissions",
+            "configurationSchema",
+            "dependencies",
+            "conflictsWith",
+            "contributes",
+            "integrity",
+            "signature",
+        ],
+        &mut unknown_paths,
+    );
+
+    validate_object_fields_at(
+        manifest,
+        "defaultActivation",
+        "$.defaultActivation",
+        &["global", "scenes"],
+        &mut unknown_paths,
+    );
+    validate_object_fields_at(
+        manifest,
+        "contributes",
+        "$.contributes",
+        &[
+            "features",
+            "agents",
+            "commands",
+            "views",
+            "tools",
+            "enhancements",
+            "settings",
+        ],
+        &mut unknown_paths,
+    );
+    validate_object_fields_at(
+        manifest,
+        "integrity",
+        "$.integrity",
+        &["sha256"],
+        &mut unknown_paths,
+    );
+    validate_object_fields_at(
+        manifest,
+        "signature",
+        "$.signature",
+        &["status", "signer"],
+        &mut unknown_paths,
+    );
+    validate_array_object_fields_at(
+        manifest,
+        &["conflictsWith"],
+        "$.conflictsWith",
+        &["id", "reason"],
+        &mut unknown_paths,
+    );
+    validate_dependencies_fields(manifest, &mut unknown_paths);
+
+    if let Some(contributes) = manifest
+        .get("contributes")
+        .and_then(serde_json::Value::as_object)
+    {
+        validate_array_object_fields(
+            contributes.get("features"),
+            "$.contributes.features",
+            &[
+                "pluginId",
+                "id",
+                "title",
+                "description",
+                "icon",
+                "scenes",
+                "capabilities",
+                "uiSchema",
+                "handler",
+            ],
+            &mut unknown_paths,
+        );
+        validate_array_nested_object_fields(
+            contributes.get("features"),
+            "$.contributes.features",
+            "handler",
+            &["kind", "resource"],
+            &mut unknown_paths,
+        );
+        validate_array_object_fields(
+            contributes.get("agents"),
+            "$.contributes.agents",
+            &["id", "title", "description", "scenes", "handler"],
+            &mut unknown_paths,
+        );
+        validate_array_nested_object_fields(
+            contributes.get("agents"),
+            "$.contributes.agents",
+            "handler",
+            &["kind", "resource"],
+            &mut unknown_paths,
+        );
+        for field in ["commands", "views"] {
+            validate_array_object_fields(
+                contributes.get(field),
+                &format!("$.contributes.{field}"),
+                &["id", "title"],
+                &mut unknown_paths,
+            );
+        }
+        validate_array_object_fields(
+            contributes.get("tools"),
+            "$.contributes.tools",
+            &["id", "title", "description", "inputSchema", "handler"],
+            &mut unknown_paths,
+        );
+        validate_array_nested_object_fields(
+            contributes.get("tools"),
+            "$.contributes.tools",
+            "handler",
+            &["kind", "resource"],
+            &mut unknown_paths,
+        );
+        validate_array_object_fields(
+            contributes.get("enhancements"),
+            "$.contributes.enhancements",
+            &[
+                "id",
+                "title",
+                "hook",
+                "scenes",
+                "features",
+                "priority",
+                "mode",
+                "runsBefore",
+                "runsAfter",
+                "handler",
+            ],
+            &mut unknown_paths,
+        );
+        validate_array_nested_object_fields(
+            contributes.get("enhancements"),
+            "$.contributes.enhancements",
+            "handler",
+            &["kind", "resource"],
+            &mut unknown_paths,
+        );
+    }
+
+    if mode == ManifestUnknownFieldMode::Strict {
+        if let Some(path) = unknown_paths.first() {
+            return Err(AppError::InvalidInput(format!(
+                "Manifest 包含未知字段：{}",
+                path
+            )));
+        }
+    }
+    Ok(unknown_paths)
+}
+
+fn validate_object_fields_at(
+    parent: &serde_json::Value,
+    field: &str,
+    path: &str,
+    allowed: &[&str],
+    unknown_paths: &mut Vec<String>,
+) {
+    if let Some(value) = parent.get(field) {
+        validate_object_fields(value, path, allowed, unknown_paths);
+    }
+}
+
+fn validate_object_fields(
+    value: &serde_json::Value,
+    path: &str,
+    allowed: &[&str],
+    unknown_paths: &mut Vec<String>,
+) {
+    let Some(fields) = value.as_object() else {
+        return;
+    };
+    for field in fields.keys() {
+        if !allowed.contains(&field.as_str()) {
+            unknown_paths.push(format!("{path}.{field}"));
+        }
+    }
+}
+
+fn validate_array_object_fields_at(
+    parent: &serde_json::Value,
+    fields: &[&str],
+    path: &str,
+    allowed: &[&str],
+    unknown_paths: &mut Vec<String>,
+) {
+    let value = fields.iter().fold(Some(parent), |current, field| {
+        current.and_then(|value| value.get(*field))
+    });
+    validate_array_object_fields(value, path, allowed, unknown_paths);
+}
+
+fn validate_array_object_fields(
+    value: Option<&serde_json::Value>,
+    path: &str,
+    allowed: &[&str],
+    unknown_paths: &mut Vec<String>,
+) {
+    let Some(items) = value.and_then(serde_json::Value::as_array) else {
+        return;
+    };
+    for (index, item) in items.iter().enumerate() {
+        validate_object_fields(item, &format!("{path}[{index}]"), allowed, unknown_paths);
+    }
+}
+
+fn validate_array_nested_object_fields(
+    value: Option<&serde_json::Value>,
+    path: &str,
+    nested_field: &str,
+    allowed: &[&str],
+    unknown_paths: &mut Vec<String>,
+) {
+    let Some(items) = value.and_then(serde_json::Value::as_array) else {
+        return;
+    };
+    for (index, item) in items.iter().enumerate() {
+        if let Some(nested) = item.get(nested_field) {
+            validate_object_fields(
+                nested,
+                &format!("{path}[{index}].{nested_field}"),
+                allowed,
+                unknown_paths,
+            );
+        }
+    }
+}
+
+fn validate_dependencies_fields(manifest: &serde_json::Value, unknown_paths: &mut Vec<String>) {
+    let Some(dependencies) = manifest.get("dependencies") else {
+        return;
+    };
+    if let Some(items) = dependencies.as_array() {
+        for (index, item) in items.iter().enumerate() {
+            validate_object_fields(
+                item,
+                &format!("$.dependencies[{index}]"),
+                &["id", "version", "required"],
+                unknown_paths,
+            );
+        }
+        return;
+    }
+    if let Some(entries) = dependencies.as_object() {
+        for (id, detail) in entries {
+            if detail.is_object() {
+                let quoted_id =
+                    serde_json::to_string(id).unwrap_or_else(|_| "\"<invalid>\"".to_string());
+                validate_object_fields(
+                    detail,
+                    &format!("$.dependencies[{quoted_id}]"),
+                    &["id", "version", "required"],
+                    unknown_paths,
+                );
+            }
+        }
+    }
 }
 
 fn find_forbidden_secret_field(value: &serde_json::Value, path: &str) -> Option<String> {
@@ -1827,6 +2137,108 @@ mod tests {
         assert!(extract_archive_safely(directory.path(), &large_archive, &limits).is_err());
     }
 
+    fn valid_manifest_json() -> serde_json::Value {
+        serde_json::json!({
+            "schemaVersion": 3,
+            "id": "com.firstwork.unknown-field-test",
+            "name": "Unknown Field Test",
+            "version": "1.0.0",
+            "authorId": "firstwork-tests",
+            "classification": "enhancement",
+            "runtimeKind": "prompt-pack",
+            "supportedScenes": ["global"],
+            "permissions": ["ai.context.augment"],
+            "dependencies": {"com.firstwork.base": "^1.0.0"},
+            "contributes": {
+                "enhancements": [{
+                    "id": "test-enhancement",
+                    "title": "Test Enhancement",
+                    "hook": "promptEnhancer",
+                    "scenes": ["global"],
+                    "handler": {
+                        "kind": "declarative",
+                        "resource": "prompt.md"
+                    }
+                }]
+            },
+            "integrity": {"sha256": null},
+            "signature": {"status": "unsigned", "signer": null}
+        })
+    }
+
+    fn strict_manifest_error(value: serde_json::Value) -> String {
+        parse_manifest_v3_value(value, ManifestUnknownFieldMode::Strict)
+            .expect_err("strict validation must reject manifest")
+            .to_string()
+    }
+
+    #[test]
+    fn strict_unknown_field_validation_accepts_legal_manifest_and_hook() {
+        let (manifest, warnings) =
+            parse_manifest_v3_value(valid_manifest_json(), ManifestUnknownFieldMode::Strict)
+                .expect("parse legal manifest");
+        assert!(warnings.is_empty());
+        assert_eq!(
+            manifest.contributes.enhancements[0].hook,
+            PluginEnhancementHook::PromptEnhancer
+        );
+        assert_eq!(manifest.dependencies.len(), 1);
+        assert_eq!(manifest.dependencies[0].id, "com.firstwork.base");
+    }
+
+    #[test]
+    fn strict_unknown_field_validation_reports_top_level_paths() {
+        for (field, expected_path) in [("hooks", "$.hooks"), ("schemaVerzion", "$.schemaVerzion")] {
+            let mut value = valid_manifest_json();
+            value[field] = serde_json::json!(["before-model"]);
+            let error = strict_manifest_error(value);
+            assert!(error.contains(expected_path), "{error}");
+        }
+    }
+
+    #[test]
+    fn strict_unknown_field_validation_reports_nested_paths() {
+        let mut contributes = valid_manifest_json();
+        contributes["contributes"]["unknownField"] = serde_json::json!(true);
+        let error = strict_manifest_error(contributes);
+        assert!(error.contains("$.contributes.unknownField"), "{error}");
+
+        let mut enhancement = valid_manifest_json();
+        enhancement["contributes"]["enhancements"][0]["unknownField"] = serde_json::json!(true);
+        let error = strict_manifest_error(enhancement);
+        assert!(
+            error.contains("$.contributes.enhancements[0].unknownField"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn warn_unknown_field_validation_returns_paths_without_relaxing_strict_mode() {
+        let mut value = valid_manifest_json();
+        value["hooks"] = serde_json::json!(["before-model"]);
+        let (_, warnings) = parse_manifest_v3_value(value, ManifestUnknownFieldMode::Warn)
+            .expect("warn mode keeps compatible deserialization");
+        assert_eq!(warnings, vec!["$.hooks"]);
+    }
+
+    #[test]
+    fn unknown_field_errors_do_not_include_values() {
+        const MOCK_SECRET: &str = "A5_SECRET_VALUE_MUST_NOT_LEAK";
+        let mut value = valid_manifest_json();
+        value["unexpectedMetadata"] = serde_json::json!(MOCK_SECRET);
+        let error = strict_manifest_error(value);
+        assert!(error.contains("$.unexpectedMetadata"), "{error}");
+        assert!(!error.contains(MOCK_SECRET), "{error}");
+    }
+
+    #[test]
+    fn schema_version_rejection_remains_distinct_from_unknown_fields() {
+        let mut value = valid_manifest_json();
+        value["schemaVersion"] = serde_json::json!(2);
+        let error = strict_manifest_error(value);
+        assert!(error.contains("正式插件包仅接受 Manifest v3"), "{error}");
+    }
+
     #[test]
     fn parses_manifest_v3_with_object_dependencies() {
         let directory = TestDir::new();
@@ -2000,6 +2412,153 @@ mod tests {
         db.set_plugin_enabled(&manifest.id, true)
             .expect("enable resource plugin");
         install_path
+    }
+
+    fn install_rollback_version(
+        db: &Database,
+        data_dir: &TestDir,
+        manifest: &PluginManifestV3,
+    ) -> PathBuf {
+        let install_path = data_dir
+            .path()
+            .join("plugins")
+            .join(&manifest.id)
+            .join("versions")
+            .join(&manifest.version);
+        fs::create_dir_all(&install_path).expect("create rollback version directory");
+        fs::write(install_path.join("README.md"), "# Rollback test")
+            .expect("write rollback readme");
+        fs::write(install_path.join("prompt.md"), "safe enhancement")
+            .expect("write rollback prompt");
+        let hash = PluginService::calculate_integrity_for_path(&install_path)
+            .expect("calculate rollback version integrity");
+        db.record_plugin_version(
+            manifest,
+            &install_path.to_string_lossy(),
+            &hash,
+            &manifest.permissions,
+        )
+        .expect("record rollback version");
+        install_path
+    }
+
+    fn rollback_test_versions() -> (Database, TestDir, PluginManifestV3, PluginManifestV3) {
+        let db = Database::init(":memory:").expect("create rollback database");
+        let data_dir = TestDir::new();
+        let old = enhancement_manifest();
+        install_rollback_version(&db, &data_dir, &old);
+        let mut current = old.clone();
+        current.version = "2.0.0".into();
+        install_rollback_version(&db, &data_dir, &current);
+        assert_eq!(
+            db.current_plugin_version(&old.id)
+                .expect("read current version")
+                .as_deref(),
+            Some("2.0.0")
+        );
+        (db, data_dir, old, current)
+    }
+
+    fn replace_version_manifest_json(
+        db: &Database,
+        plugin_id: &str,
+        version: &str,
+        manifest: &serde_json::Value,
+    ) {
+        db.conn_lock()
+            .expect("lock rollback database")
+            .execute(
+                "UPDATE plugin_versions SET manifest_json = ?3
+                 WHERE plugin_id = ?1 AND version = ?2",
+                rusqlite::params![plugin_id, version, manifest.to_string()],
+            )
+            .expect("replace stored manifest json");
+    }
+
+    #[test]
+    fn rollback_accepts_legal_manifest_with_object_dependencies() {
+        let (db, data_dir, old, current) = rollback_test_versions();
+        let mut stored = serde_json::to_value(&old).expect("serialize old manifest");
+        stored["dependencies"] = serde_json::json!({
+            "com.firstwork.base": {
+                "version": "^1.0.0",
+                "required": true
+            }
+        });
+        replace_version_manifest_json(&db, &old.id, &old.version, &stored);
+
+        let result = PluginPlatformService::rollback(&db, data_dir.path(), &old.id, &old.version)
+            .expect("rollback compatible manifest");
+        assert_eq!(result.version, "1.0.0");
+        assert_eq!(
+            db.current_plugin_version(&old.id)
+                .expect("read rolled back version")
+                .as_deref(),
+            Some("1.0.0")
+        );
+        let conn = db.conn_lock().expect("lock rollback database");
+        let current_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM plugin_versions
+                 WHERE plugin_id = ?1 AND is_current = 1",
+                [&old.id],
+                |row| row.get(0),
+            )
+            .expect("count current versions");
+        assert_eq!(current_count, 1);
+        let previous_is_current: bool = conn
+            .query_row(
+                "SELECT is_current FROM plugin_versions
+                 WHERE plugin_id = ?1 AND version = ?2",
+                rusqlite::params![current.id, current.version],
+                |row| row.get(0),
+            )
+            .expect("read previous current version state");
+        assert!(!previous_is_current);
+    }
+
+    #[test]
+    fn rollback_rejects_top_level_unknown_field_before_switch_without_leaking_values() {
+        const MOCK_SECRET: &str = "ROLLBACK_SECRET_VALUE_MUST_NOT_LEAK";
+        let (db, data_dir, old, _) = rollback_test_versions();
+        let mut stored = serde_json::to_value(&old).expect("serialize old manifest");
+        stored["hooks"] = serde_json::json!(MOCK_SECRET);
+        replace_version_manifest_json(&db, &old.id, &old.version, &stored);
+
+        let error = PluginPlatformService::rollback(&db, data_dir.path(), &old.id, &old.version)
+            .expect_err("rollback must reject unknown top-level field")
+            .to_string();
+        assert!(error.contains("$.hooks"), "{error}");
+        assert!(!error.contains(MOCK_SECRET), "{error}");
+        assert_eq!(
+            db.current_plugin_version(&old.id)
+                .expect("read unchanged version")
+                .as_deref(),
+            Some("2.0.0")
+        );
+    }
+
+    #[test]
+    fn rollback_rejects_nested_unknown_field_before_switch() {
+        let (db, data_dir, old, _) = rollback_test_versions();
+        let mut stored = serde_json::to_value(&old).expect("serialize old manifest");
+        stored["contributes"]["enhancements"][0]["unknownField"] =
+            serde_json::json!("not persisted to errors");
+        replace_version_manifest_json(&db, &old.id, &old.version, &stored);
+
+        let error = PluginPlatformService::rollback(&db, data_dir.path(), &old.id, &old.version)
+            .expect_err("rollback must reject unknown nested field")
+            .to_string();
+        assert!(
+            error.contains("$.contributes.enhancements[0].unknownField"),
+            "{error}"
+        );
+        assert_eq!(
+            db.current_plugin_version(&old.id)
+                .expect("read unchanged version")
+                .as_deref(),
+            Some("2.0.0")
+        );
     }
 
     fn enhancement_manifest() -> PluginManifestV3 {

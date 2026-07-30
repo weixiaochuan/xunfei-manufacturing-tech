@@ -321,17 +321,26 @@ impl Database {
         plugin_id: &str,
         version: &str,
     ) -> Result<Option<(PluginManifestV3, String, String)>, AppError> {
-        let conn = self.conn_lock()?;
-        let row: Option<(String, String, String)> = conn
-            .query_row(
-                "SELECT manifest_json, install_path, content_hash FROM plugin_versions
-                 WHERE plugin_id = ?1 AND version = ?2",
-                params![plugin_id, version],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()?;
-        row.map(|(json, path, hash)| Ok((serde_json::from_str(&json)?, path, hash)))
+        self.plugin_version_manifest_raw(plugin_id, version)?
+            .map(|(json, path, hash)| Ok((serde_json::from_str(&json)?, path, hash)))
             .transpose()
+    }
+
+    /// 返回版本记录中的原始 Manifest JSON，供宿主在反序列化前执行调用模式相关校验。
+    pub fn plugin_version_manifest_raw(
+        &self,
+        plugin_id: &str,
+        version: &str,
+    ) -> Result<Option<(String, String, String)>, AppError> {
+        let conn = self.conn_lock()?;
+        conn.query_row(
+            "SELECT manifest_json, install_path, content_hash FROM plugin_versions
+                 WHERE plugin_id = ?1 AND version = ?2",
+            params![plugin_id, version],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(AppError::from)
     }
 
     pub fn current_v3_plugins(&self) -> Result<Vec<(PluginManifestV3, String, bool)>, AppError> {
@@ -371,11 +380,37 @@ impl Database {
                 |row| row.get(0),
             )
             .optional()?;
+        let target_exists = tx.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM plugin_versions WHERE plugin_id = ?1 AND version = ?2
+             )",
+            params![manifest.id, manifest.version],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !target_exists {
+            return Err(AppError::NotFound(format!(
+                "未找到插件 {} 的版本 {}",
+                manifest.id, manifest.version
+            )));
+        }
+
+        // SQLite 会逐行维护部分唯一索引；必须先清除旧 current，再精确设置目标版本。
         tx.execute(
-            "UPDATE plugin_versions SET is_current = CASE WHEN version = ?2 THEN 1 ELSE 0 END
-             WHERE plugin_id = ?1",
+            "UPDATE plugin_versions SET is_current = 0
+             WHERE plugin_id = ?1 AND is_current = 1",
+            [manifest.id.as_str()],
+        )?;
+        let updated = tx.execute(
+            "UPDATE plugin_versions SET is_current = 1
+             WHERE plugin_id = ?1 AND version = ?2",
             params![manifest.id, manifest.version],
         )?;
+        if updated != 1 {
+            return Err(AppError::InvalidInput(format!(
+                "插件版本切换目标不唯一：{}@{}",
+                manifest.id, manifest.version
+            )));
+        }
         tx.execute(
             "UPDATE plugins SET version = ?2, path = ?3, content_hash = ?4,
                     updated_at = datetime('now','localtime') WHERE id = ?1",
@@ -678,5 +713,88 @@ mod tests {
                 .expect("re-query missing permission"),
             None
         );
+    }
+
+    #[test]
+    fn switch_plugin_version_replaces_existing_current_atomically() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let old = manifest_with_permissions(&[]);
+        db.record_plugin_version(&old, "C:/test/v1", "hash-v1", &[])
+            .expect("record old version");
+        let mut current = old.clone();
+        current.version = "2.0.0".into();
+        db.record_plugin_version(&current, "C:/test/v2", "hash-v2", &[])
+            .expect("record current version");
+
+        let previous = db
+            .switch_plugin_version(&old, "C:/test/v1", "hash-v1")
+            .expect("switch to historical version");
+        assert_eq!(previous.as_deref(), Some("2.0.0"));
+        assert_eq!(
+            db.current_plugin_version(&old.id)
+                .expect("read current version")
+                .as_deref(),
+            Some("1.0.0")
+        );
+
+        let conn = db.conn_lock().expect("lock database");
+        let current_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM plugin_versions
+                 WHERE plugin_id = ?1 AND is_current = 1",
+                [&old.id],
+                |row| row.get(0),
+            )
+            .expect("count current versions");
+        assert_eq!(current_count, 1);
+        let old_current: bool = conn
+            .query_row(
+                "SELECT is_current FROM plugin_versions
+                 WHERE plugin_id = ?1 AND version = '1.0.0'",
+                [&old.id],
+                |row| row.get(0),
+            )
+            .expect("read old version state");
+        let new_current: bool = conn
+            .query_row(
+                "SELECT is_current FROM plugin_versions
+                 WHERE plugin_id = ?1 AND version = '2.0.0'",
+                [&old.id],
+                |row| row.get(0),
+            )
+            .expect("read new version state");
+        assert!(old_current);
+        assert!(!new_current);
+    }
+
+    #[test]
+    fn switch_plugin_version_missing_target_preserves_existing_current() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let current = manifest_with_permissions(&[]);
+        db.record_plugin_version(&current, "C:/test/current", "current-hash", &[])
+            .expect("record current version");
+        let mut missing = current.clone();
+        missing.version = "9.9.9".into();
+
+        let error = db
+            .switch_plugin_version(&missing, "C:/test/missing", "missing-hash")
+            .expect_err("missing target must fail");
+        assert!(matches!(error, AppError::NotFound(_)));
+        assert_eq!(
+            db.current_plugin_version(&current.id)
+                .expect("read unchanged current version")
+                .as_deref(),
+            Some("1.0.0")
+        );
+        let conn = db.conn_lock().expect("lock database");
+        let current_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM plugin_versions
+                 WHERE plugin_id = ?1 AND is_current = 1",
+                [&current.id],
+                |row| row.get(0),
+            )
+            .expect("count current versions");
+        assert_eq!(current_count, 1);
     }
 }
