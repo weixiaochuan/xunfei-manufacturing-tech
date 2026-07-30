@@ -31,7 +31,13 @@ impl Database {
             .optional()?)
     }
 
-    pub fn current_plugin_permissions(&self, plugin_id: &str) -> Result<Vec<String>, AppError> {
+    /// 返回当前活动版本保存的 Manifest 权限声明。
+    ///
+    /// 该字段是版本声明快照，不代表用户当前仍然授权这些权限。
+    pub fn current_version_declared_permissions(
+        &self,
+        plugin_id: &str,
+    ) -> Result<Option<Vec<String>>, AppError> {
         let conn = self.conn_lock()?;
         let json: Option<String> = conn
             .query_row(
@@ -42,8 +48,8 @@ impl Database {
             )
             .optional()?;
         match json {
-            Some(value) => Ok(serde_json::from_str(&value)?),
-            None => Ok(Vec::new()),
+            Some(value) => Ok(Some(serde_json::from_str(&value)?)),
+            None => Ok(None),
         }
     }
 
@@ -426,5 +432,98 @@ impl Database {
             ],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest_with_permissions(permissions: &[&str]) -> PluginManifestV3 {
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 3,
+            "id": "com.firstwork.permission-snapshot",
+            "name": "Permission Snapshot",
+            "version": "1.0.0",
+            "authorId": "tests",
+            "classification": "feature",
+            "runtimeKind": "declarative-ui",
+            "source": "local",
+            "supportedScenes": ["global"],
+            "permissions": permissions,
+            "contributes": {
+                "features": [{
+                    "id": "snapshot-feature",
+                    "title": "Snapshot Feature",
+                    "scenes": ["global"],
+                    "uiSchema": "ui.json"
+                }]
+            }
+        }))
+        .expect("parse test manifest")
+    }
+
+    #[test]
+    fn current_version_declared_permissions_distinguishes_present_empty_and_missing() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let declared = manifest_with_permissions(&["ai.invoke"]);
+        db.record_plugin_version(
+            &declared,
+            "C:/test/declared",
+            "declared-hash",
+            &declared.permissions,
+        )
+        .expect("record declared version");
+        assert_eq!(
+            db.current_version_declared_permissions(&declared.id)
+                .expect("query declared permissions"),
+            Some(vec!["ai.invoke".to_string()])
+        );
+
+        let mut empty = manifest_with_permissions(&[]);
+        empty.id = "com.firstwork.permission-empty".into();
+        db.record_plugin_version(&empty, "C:/test/empty", "empty-hash", &[])
+            .expect("record empty version");
+        assert_eq!(
+            db.current_version_declared_permissions(&empty.id)
+                .expect("query empty permissions"),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            db.current_version_declared_permissions("com.firstwork.permission-missing")
+                .expect("query missing version"),
+            None
+        );
+    }
+
+    #[test]
+    fn permission_queries_do_not_create_or_regrant_records() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let manifest = manifest_with_permissions(&["ai.invoke"]);
+        db.record_plugin_version(&manifest, "C:/test/query", "query-hash", &[])
+            .expect("record denied permission");
+
+        assert_eq!(
+            db.plugin_permission_grant_state(&manifest.id, "ai.invoke")
+                .expect("query denied permission"),
+            Some(false)
+        );
+        assert_eq!(
+            db.plugin_permission_grant_state(&manifest.id, "agents.invoke")
+                .expect("query missing permission"),
+            None
+        );
+        db.current_version_declared_permissions(&manifest.id)
+            .expect("query version declaration");
+        assert_eq!(
+            db.plugin_permission_grant_state(&manifest.id, "ai.invoke")
+                .expect("re-query denied permission"),
+            Some(false)
+        );
+        assert_eq!(
+            db.plugin_permission_grant_state(&manifest.id, "agents.invoke")
+                .expect("re-query missing permission"),
+            None
+        );
     }
 }

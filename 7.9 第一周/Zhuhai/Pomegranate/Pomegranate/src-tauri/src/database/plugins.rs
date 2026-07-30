@@ -463,6 +463,17 @@ impl Database {
 
     /// 检查插件是否已获得指定权限（T2: plugin_proxy 权限校验用）
     pub fn has_plugin_permission(&self, plugin_id: &str, perm: &str) -> Result<bool, AppError> {
+        Ok(self
+            .plugin_permission_grant_state(plugin_id, perm)?
+            .unwrap_or(false))
+    }
+
+    /// 查询单项用户授权记录，区分已授权、已撤权和记录不存在。
+    pub fn plugin_permission_grant_state(
+        &self,
+        plugin_id: &str,
+        perm: &str,
+    ) -> Result<Option<bool>, AppError> {
         let conn = self.conn_lock()?;
         let granted: Option<i32> = conn
             .query_row(
@@ -472,7 +483,7 @@ impl Database {
                 |row| row.get(0),
             )
             .optional()?;
-        Ok(granted.unwrap_or(0) != 0)
+        Ok(granted.map(|value| value != 0))
     }
 
     /// 查询单个插件设置（T2: plugin_proxy_settings_get 用）
@@ -670,6 +681,40 @@ mod tests {
             params![plugin_id, permission],
         )
         .unwrap();
+    }
+
+    fn set_permission_state(db: &Database, plugin_id: &str, permission: &str, granted: bool) {
+        let conn = db.conn_lock().unwrap();
+        conn.execute(
+            "INSERT INTO plugin_permissions (plugin_id, permission, granted)
+             VALUES (?1, ?2, ?3)",
+            params![plugin_id, permission, i32::from(granted)],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn plugin_permission_grant_state_distinguishes_granted_revoked_and_missing() {
+        let db = setup_test_db();
+        insert_test_plugin(&db, "permission-state", true, "installed");
+        set_permission_state(&db, "permission-state", "ai.invoke", true);
+        set_permission_state(&db, "permission-state", "agents.invoke", false);
+
+        assert_eq!(
+            db.plugin_permission_grant_state("permission-state", "ai.invoke")
+                .unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            db.plugin_permission_grant_state("permission-state", "agents.invoke")
+                .unwrap(),
+            Some(false)
+        );
+        assert_eq!(
+            db.plugin_permission_grant_state("permission-state", "credentials.use")
+                .unwrap(),
+            None
+        );
     }
 
     // ─── §10.15 越权测试用例（针对 Database 层的 has_plugin_permission） ───

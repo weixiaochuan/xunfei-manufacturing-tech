@@ -27,6 +27,12 @@ pub enum AppError {
         required_permission: Option<String>,
     },
 
+    #[error("插件当前版本未声明 capability: plugin={plugin_id} capability={capability}")]
+    PluginCapabilityNotDeclared {
+        plugin_id: String,
+        capability: String,
+    },
+
     #[error("{0}")]
     Custom(String),
 }

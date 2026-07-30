@@ -256,10 +256,6 @@ impl PluginPlatformService {
                 ));
                 continue;
             }
-            let granted_permissions = db
-                .current_plugin_permissions(&manifest.id)?
-                .into_iter()
-                .collect::<HashSet<_>>();
             active_plugins.push(manifest.id.clone());
             features.extend(manifest.contributes.features.iter().filter_map(|item| {
                 if !scene_matches(&item.scenes, &context.scene) {
@@ -282,9 +278,20 @@ impl PluginPlatformService {
                 scene_matches(&item.scenes, &context.scene)
                     && (item.features.is_empty() || item.features.contains(&context.feature))
             }) {
-                if !granted_permissions.contains("ai.context.augment") {
+                if !manifest
+                    .permissions
+                    .iter()
+                    .any(|permission| permission == "ai.context.augment")
+                {
                     warnings.push(format!(
-                        "插件 {} 的增强贡献 {} 缺少 ai.context.augment 授权，已跳过",
+                        "插件 {} 的增强贡献 {} 未在 Manifest 声明 ai.context.augment，已跳过",
+                        manifest.id, item.id
+                    ));
+                    continue;
+                }
+                if !db.has_plugin_permission(&manifest.id, "ai.context.augment")? {
+                    warnings.push(format!(
+                        "插件 {} 的增强贡献 {} 未获 ai.context.augment 授权或授权已撤销，已跳过",
                         manifest.id, item.id
                     ));
                     continue;
@@ -392,24 +399,13 @@ impl PluginPlatformService {
         if !enabled {
             return Err(AppError::InvalidInput("当前插件功能已被禁用".into()));
         }
-        let granted = db
-            .current_plugin_permissions(plugin_id)?
-            .into_iter()
-            .collect::<HashSet<_>>();
         for permission in [
             "credentials.use",
             "agents.invoke",
             "network.xingchen",
             "ai.invoke",
         ] {
-            if !manifest.permissions.iter().any(|item| item == permission)
-                || !granted.contains(permission)
-            {
-                return Err(AppError::InvalidInput(format!(
-                    "插件缺少已授权权限：{}",
-                    permission
-                )));
-            }
+            Self::ensure_runtime_capability(db, &manifest, permission)?;
         }
         let ui_schema = feature
             .ui_schema
@@ -433,18 +429,34 @@ impl PluginPlatformService {
                 output_kind
             )));
         }
-        if matches!(output_kind.as_str(), "docx-base64" | "file-base64")
-            && (!manifest
-                .permissions
-                .iter()
-                .any(|permission| permission == "files.writeSelected")
-                || !granted.contains("files.writeSelected"))
-        {
-            return Err(AppError::InvalidInput(
-                "文件输出需要已授权的 files.writeSelected 权限".into(),
-            ));
+        if matches!(output_kind.as_str(), "docx-base64" | "file-base64") {
+            Self::ensure_runtime_capability(db, &manifest, "files.writeSelected")?;
         }
         Ok(PluginFeatureInvocationSpec { output_kind })
+    }
+
+    fn ensure_runtime_capability(
+        db: &Database,
+        manifest: &PluginManifestV3,
+        capability: &str,
+    ) -> Result<(), AppError> {
+        if !manifest
+            .permissions
+            .iter()
+            .any(|permission| permission == capability)
+        {
+            return Err(AppError::PluginCapabilityNotDeclared {
+                plugin_id: manifest.id.clone(),
+                capability: capability.to_string(),
+            });
+        }
+        if !db.has_plugin_permission(&manifest.id, capability)? {
+            return Err(AppError::PluginPermissionDenied {
+                plugin_id: Some(manifest.id.clone()),
+                required_permission: Some(capability.to_string()),
+            });
+        }
+        Ok(())
     }
 
     pub fn finish_feature_invocation(
@@ -546,7 +558,9 @@ fn inspect_extracted(
     scan_package_security(&extracted.plugin_root)?;
     let compatibility =
         PluginService::check_compatibility(manifest.min_app_version.clone(), app_version);
-    let current_permissions = db.current_plugin_permissions(&manifest.id)?;
+    let current_permissions = db
+        .current_version_declared_permissions(&manifest.id)?
+        .unwrap_or_default();
     let permission_diff =
         PluginService::compare_permissions(current_permissions, manifest.permissions.clone());
     let installed = db.current_v3_plugins()?;
@@ -1679,6 +1693,220 @@ mod tests {
             }
         }))
         .expect("parse test manifest")
+    }
+
+    fn execution_context() -> PluginExecutionContext {
+        serde_json::from_value(serde_json::json!({
+            "scene": "global",
+            "feature": "test-feature",
+            "requestId": "a2-permission-test"
+        }))
+        .expect("parse execution context")
+    }
+
+    fn install_test_manifest(
+        db: &Database,
+        directory: &TestDir,
+        manifest: &PluginManifestV3,
+        approved_permissions: &[String],
+        output_kind: &str,
+    ) {
+        fs::write(directory.path().join("prompt.md"), "safe enhancement")
+            .expect("write enhancement resource");
+        fs::write(
+            directory.path().join("ui.json"),
+            serde_json::json!({"output": {"kind": output_kind}}).to_string(),
+        )
+        .expect("write feature schema");
+        let hash = PluginService::calculate_integrity_for_path(directory.path())
+            .expect("calculate test integrity");
+        db.record_plugin_version(
+            manifest,
+            &directory.path().to_string_lossy(),
+            &hash,
+            approved_permissions,
+        )
+        .expect("record test plugin version");
+        db.set_plugin_enabled(&manifest.id, true)
+            .expect("enable test plugin");
+    }
+
+    fn enhancement_manifest() -> PluginManifestV3 {
+        let mut manifest = manifest_for("enhancement", "prompt-pack");
+        manifest.contributes.features.clear();
+        manifest.permissions = vec!["ai.context.augment".into()];
+        manifest.default_activation.global = true;
+        manifest
+    }
+
+    fn feature_manifest(output_kind: &str) -> PluginManifestV3 {
+        let mut manifest = manifest_for("feature", "xingchen-workflow");
+        manifest.contributes.enhancements.clear();
+        manifest.default_activation.global = true;
+        manifest.permissions = vec![
+            "credentials.use".into(),
+            "agents.invoke".into(),
+            "network.xingchen".into(),
+            "ai.invoke".into(),
+        ];
+        if matches!(output_kind, "docx-base64" | "file-base64") {
+            manifest.permissions.push("files.writeSelected".into());
+        }
+        manifest
+    }
+
+    #[test]
+    fn enhancement_requires_manifest_declaration_and_current_user_grant() {
+        let cases = [
+            (true, Some(true), true, None),
+            (true, Some(false), false, Some("未获")),
+            (true, None, false, Some("未获")),
+            (false, Some(true), false, Some("未在 Manifest 声明")),
+        ];
+        for (declared, grant_state, expected_resolved, warning_fragment) in cases {
+            let db = Database::init(":memory:").expect("create in-memory database");
+            let directory = TestDir::new();
+            let mut manifest = enhancement_manifest();
+            if !declared {
+                manifest.permissions.clear();
+            }
+            let approved = if grant_state == Some(true) && declared {
+                manifest.permissions.clone()
+            } else {
+                Vec::new()
+            };
+            install_test_manifest(&db, &directory, &manifest, &approved, "text");
+            if !declared && grant_state == Some(true) {
+                let conn = db.conn_lock().expect("lock test database");
+                conn.execute(
+                    "INSERT INTO plugin_permissions (plugin_id, permission, granted)
+                     VALUES (?1, 'ai.context.augment', 1)",
+                    [&manifest.id],
+                )
+                .expect("insert undeclared grant");
+            } else if grant_state.is_none() {
+                let conn = db.conn_lock().expect("lock test database");
+                conn.execute(
+                    "DELETE FROM plugin_permissions
+                     WHERE plugin_id = ?1 AND permission = 'ai.context.augment'",
+                    [&manifest.id],
+                )
+                .expect("remove grant row");
+            }
+
+            let resolved =
+                PluginPlatformService::resolve_enabled_contributions(&db, execution_context())
+                    .expect("resolve contributions");
+            assert_eq!(resolved.enhancements.len() == 1, expected_resolved);
+            if let Some(fragment) = warning_fragment {
+                assert!(
+                    resolved
+                        .warnings
+                        .iter()
+                        .any(|warning| warning.contains(fragment)),
+                    "expected warning containing {fragment}: {:?}",
+                    resolved.warnings
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn feature_capabilities_distinguish_revoked_missing_and_undeclared() {
+        for capability in [
+            "credentials.use",
+            "agents.invoke",
+            "network.xingchen",
+            "ai.invoke",
+            "files.writeSelected",
+        ] {
+            let output_kind = if capability == "files.writeSelected" {
+                "file-base64"
+            } else {
+                "text"
+            };
+            for state in ["granted", "revoked", "missing", "undeclared"] {
+                let db = Database::init(":memory:").expect("create in-memory database");
+                let directory = TestDir::new();
+                let mut manifest = feature_manifest(output_kind);
+                if state == "undeclared" {
+                    manifest
+                        .permissions
+                        .retain(|permission| permission != capability);
+                }
+                let approved = manifest
+                    .permissions
+                    .iter()
+                    .filter(|permission| state == "granted" || permission.as_str() != capability)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                install_test_manifest(&db, &directory, &manifest, &approved, output_kind);
+                if state == "missing" {
+                    let conn = db.conn_lock().expect("lock test database");
+                    conn.execute(
+                        "DELETE FROM plugin_permissions
+                         WHERE plugin_id = ?1 AND permission = ?2",
+                        rusqlite::params![manifest.id, capability],
+                    )
+                    .expect("remove grant row");
+                } else if state == "undeclared" {
+                    let conn = db.conn_lock().expect("lock test database");
+                    conn.execute(
+                        "INSERT INTO plugin_permissions (plugin_id, permission, granted)
+                         VALUES (?1, ?2, 1)",
+                        rusqlite::params![manifest.id, capability],
+                    )
+                    .expect("insert undeclared grant");
+                }
+
+                let result = PluginPlatformService::prepare_feature_invocation(
+                    &db,
+                    &manifest.id,
+                    "test-feature",
+                );
+                match state {
+                    "granted" => assert!(result.is_ok(), "{capability} should be allowed"),
+                    "revoked" | "missing" => assert!(
+                        matches!(result, Err(AppError::PluginPermissionDenied { .. })),
+                        "{capability} {state} should be permission denied: {result:?}"
+                    ),
+                    "undeclared" => assert!(
+                        matches!(result, Err(AppError::PluginCapabilityNotDeclared { .. })),
+                        "{capability} should be reported as undeclared: {result:?}"
+                    ),
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_invocation_reports_missing_plugin_and_current_version() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        assert!(matches!(
+            PluginPlatformService::prepare_feature_invocation(
+                &db,
+                "com.firstwork.missing-plugin",
+                "test-feature"
+            ),
+            Err(AppError::NotFound(_))
+        ));
+
+        let directory = TestDir::new();
+        let manifest = feature_manifest("text");
+        install_test_manifest(&db, &directory, &manifest, &manifest.permissions, "text");
+        {
+            let conn = db.conn_lock().expect("lock test database");
+            conn.execute(
+                "UPDATE plugin_versions SET is_current = 0 WHERE plugin_id = ?1",
+                [&manifest.id],
+            )
+            .expect("clear current version");
+        }
+        assert!(matches!(
+            PluginPlatformService::prepare_feature_invocation(&db, &manifest.id, "test-feature"),
+            Err(AppError::NotFound(_))
+        ));
     }
 
     #[test]
