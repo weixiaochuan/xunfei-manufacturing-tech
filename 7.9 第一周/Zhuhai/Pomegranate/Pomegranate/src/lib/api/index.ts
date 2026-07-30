@@ -316,6 +316,10 @@ export const pluginApi: PluginApi = {
   setSettings: (pluginId, settings) => invoke("set_plugin_settings", { pluginId, settings }),
   readAsset: (pluginId, relativePath) =>
     invoke("read_plugin_asset", { pluginId, relativePath }),
+  readEnhancementResource: (pluginId, contributionId) =>
+    invoke("plugin_read_enhancement_resource", { pluginId, contributionId }),
+  readFeatureUiSchema: (pluginId, featureId) =>
+    invoke("plugin_read_feature_ui_schema", { pluginId, featureId }),
   getAuditLog: (pluginId, limit) => invoke("plugin_audit_log_list", { pluginId, limit }),
   parseManifest: (path) => invoke("parse_plugin_manifest", { path }),
   validateManifest: (path) => invoke("validate_plugin_manifest", { path }),
@@ -1178,6 +1182,8 @@ interface PluginApi {
   getSettings(pluginId: string): Promise<Record<string, unknown>>;
   setSettings(pluginId: string, settings: unknown): Promise<void>;
   readAsset(pluginId: string, relativePath: string): Promise<string>;
+  readEnhancementResource(pluginId: string, contributionId: string): Promise<string>;
+  readFeatureUiSchema(pluginId: string, featureId: string): Promise<string>;
   getAuditLog(pluginId: string, limit?: number): Promise<PluginAuditLogEntry[]>;
   parseManifest(path: string): Promise<NormalizedPluginManifest>;
   validateManifest(path: string): Promise<NormalizedPluginManifest>;

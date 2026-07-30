@@ -66,7 +66,7 @@ async function readDeclarativeResource(item: ResolvedEnhancementContribution) {
   if (item.contribution.handler.kind !== "declarative") {
     throw new Error(`不支持的增强处理器：${item.contribution.handler.kind}`);
   }
-  return pluginApi.readAsset(item.pluginId, item.contribution.handler.resource);
+  return pluginApi.readEnhancementResource(item.pluginId, item.contribution.id);
 }
 
 function appendPrompt(base: string, heading: string, content: string) {

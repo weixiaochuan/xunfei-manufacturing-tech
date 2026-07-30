@@ -15,6 +15,19 @@ pub(crate) struct AuthorizedPluginContext {
     pub install_path: String,
 }
 
+/// 只读解析已安装并启用的当前 Manifest 上下文，不授予或检查任何 capability。
+///
+/// 该入口供只需要读取当前声明元数据的宿主路径使用；需要执行 capability 的调用方
+/// 仍必须使用 `require_current_plugin_capabilities`。
+pub(crate) fn resolve_current_plugin_context(
+    db: &Database,
+    plugin_id: &str,
+) -> Result<AuthorizedPluginContext, AppError> {
+    validate_plugin_id(plugin_id)?;
+    let (context, _) = resolve_current_plugin_context_and_grants(db, plugin_id, &[])?;
+    Ok(context)
+}
+
 /// 要求当前 Manifest 声明且用户真实授予全部 capability。
 ///
 /// 此函数只读、全有或全无，并且不记录日志或缓存授权结果。
@@ -26,6 +39,43 @@ pub(crate) fn require_current_plugin_capabilities(
     validate_plugin_id(plugin_id)?;
     validate_capabilities(capabilities)?;
 
+    let (context, grant_states) =
+        resolve_current_plugin_context_and_grants(db, plugin_id, capabilities)?;
+    for capability in capabilities {
+        if !context
+            .manifest
+            .permissions
+            .iter()
+            .any(|permission| permission == capability)
+        {
+            return Err(AppError::PluginCapabilityNotDeclared {
+                plugin_id: plugin_id.to_string(),
+                capability: (*capability).to_string(),
+            });
+        }
+    }
+    for capability in capabilities {
+        let granted = grant_states
+            .iter()
+            .find(|(permission, _)| permission == capability)
+            .and_then(|(_, state)| *state)
+            .unwrap_or(false);
+        if !granted {
+            return Err(AppError::PluginPermissionDenied {
+                plugin_id: Some(plugin_id.to_string()),
+                required_permission: Some((*capability).to_string()),
+            });
+        }
+    }
+
+    Ok(context)
+}
+
+fn resolve_current_plugin_context_and_grants(
+    db: &Database,
+    plugin_id: &str,
+    capabilities: &[&str],
+) -> Result<(AuthorizedPluginContext, Vec<(String, Option<bool>)>), AppError> {
     let snapshot = db
         .current_plugin_authorization_snapshot(plugin_id, capabilities)?
         .ok_or_else(|| AppError::NotFound(format!("未找到插件 {}", plugin_id)))?;
@@ -51,39 +101,14 @@ pub(crate) fn require_current_plugin_capabilities(
         )));
     }
 
-    for capability in capabilities {
-        if !current
-            .manifest
-            .permissions
-            .iter()
-            .any(|permission| permission == capability)
-        {
-            return Err(AppError::PluginCapabilityNotDeclared {
-                plugin_id: plugin_id.to_string(),
-                capability: (*capability).to_string(),
-            });
-        }
-    }
-    for capability in capabilities {
-        let granted = snapshot
-            .grant_states
-            .iter()
-            .find(|(permission, _)| permission == capability)
-            .and_then(|(_, state)| *state)
-            .unwrap_or(false);
-        if !granted {
-            return Err(AppError::PluginPermissionDenied {
-                plugin_id: Some(plugin_id.to_string()),
-                required_permission: Some((*capability).to_string()),
-            });
-        }
-    }
-
-    Ok(AuthorizedPluginContext {
-        manifest: current.manifest,
-        version: current.version,
-        install_path: current.install_path,
-    })
+    Ok((
+        AuthorizedPluginContext {
+            manifest: current.manifest,
+            version: current.version,
+            install_path: current.install_path,
+        },
+        snapshot.grant_states,
+    ))
 }
 
 fn validate_plugin_id(value: &str) -> Result<(), AppError> {
@@ -189,6 +214,33 @@ mod tests {
         assert_eq!(context.version, "1.0.0");
         assert_eq!(context.install_path, "C:/plugins/guard-test/1.0.0");
         assert_eq!(context.manifest.version, "1.0.0");
+    }
+
+    #[test]
+    fn current_context_resolver_keeps_lifecycle_checks_without_capability_grants() {
+        let enabled = setup(&["ai.invoke"], &[]);
+        let context = resolve_current_plugin_context(&enabled, "com.firstwork.guard-test")
+            .expect("resolve current context without grants");
+        assert_eq!(context.version, "1.0.0");
+        assert_eq!(context.manifest.id, "com.firstwork.guard-test");
+
+        let disabled = setup(&["ai.invoke"], &[]);
+        disabled
+            .set_plugin_enabled("com.firstwork.guard-test", false)
+            .expect("disable plugin");
+        assert!(resolve_current_plugin_context(&disabled, "com.firstwork.guard-test").is_err());
+
+        let no_current = setup(&["ai.invoke"], &[]);
+        no_current
+            .conn_lock()
+            .expect("lock database")
+            .execute(
+                "UPDATE plugin_versions SET is_current = 0
+                 WHERE plugin_id = 'com.firstwork.guard-test'",
+                [],
+            )
+            .expect("clear current version");
+        assert!(resolve_current_plugin_context(&no_current, "com.firstwork.guard-test").is_err());
     }
 
     #[test]

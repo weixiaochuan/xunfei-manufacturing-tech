@@ -126,6 +126,36 @@ pub fn read_plugin_asset(
 }
 
 #[tauri::command]
+pub fn plugin_read_enhancement_resource(
+    state: State<'_, AppState>,
+    plugin_id: String,
+    contribution_id: String,
+) -> Result<String, String> {
+    PluginPlatformService::read_enhancement_resource(
+        &state.db,
+        &state.data_dir,
+        &plugin_id,
+        &contribution_id,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn plugin_read_feature_ui_schema(
+    state: State<'_, AppState>,
+    plugin_id: String,
+    feature_id: String,
+) -> Result<String, String> {
+    PluginPlatformService::read_feature_ui_schema(
+        &state.db,
+        &state.data_dir,
+        &plugin_id,
+        &feature_id,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn parse_plugin_manifest(path: String) -> Result<NormalizedPluginManifest, String> {
     PluginService::parse_manifest(&PathBuf::from(path)).map_err(|e| e.to_string())
 }

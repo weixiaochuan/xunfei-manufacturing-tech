@@ -1058,6 +1058,8 @@ pub fn run() {
             commands::plugins::get_plugin_settings,
             commands::plugins::set_plugin_settings,
             commands::plugins::read_plugin_asset,
+            commands::plugins::plugin_read_enhancement_resource,
+            commands::plugins::plugin_read_feature_ui_schema,
             // PPT Master 外部引擎
             commands::ppt_master::ppt_master_check,
             commands::ppt_master::ppt_master_export,

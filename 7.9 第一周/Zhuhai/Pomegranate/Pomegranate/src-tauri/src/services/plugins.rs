@@ -204,8 +204,24 @@ impl PluginService {
             return Err(AppError::InvalidInput("资源路径非法".into()));
         }
         let plugin = db.get_plugin(plugin_id)?;
+        if plugin.schema_version >= 3 {
+            return Err(AppError::InvalidInput(
+                "Manifest v3 插件必须通过声明资源专用入口读取资源".into(),
+            ));
+        }
+        Self::read_asset_from_install_path(data_dir, &plugin.path, relative_path)
+    }
+
+    pub(crate) fn read_asset_from_install_path(
+        data_dir: &Path,
+        install_path: &str,
+        relative_path: &str,
+    ) -> Result<String, AppError> {
+        if !is_safe_relative_path(relative_path, false) {
+            return Err(AppError::InvalidInput("资源路径非法".into()));
+        }
         let plugins_root = fs::canonicalize(ensure_plugins_dir(data_dir)?)?;
-        let plugin_dir = fs::canonicalize(PathBuf::from(&plugin.path))?;
+        let plugin_dir = fs::canonicalize(PathBuf::from(install_path))?;
         if !plugin_dir.starts_with(&plugins_root) {
             return Err(AppError::InvalidInput("插件安装路径不在受控目录内".into()));
         }
@@ -1350,6 +1366,7 @@ fn enrich_plugin_info(mut plugin: PluginInfo, integrity_status: Option<String>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::PluginManifestV3;
 
     fn fixture_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1387,6 +1404,66 @@ mod tests {
                 "应拒绝插件 ID: {invalid}"
             );
         }
+    }
+
+    #[test]
+    fn generic_asset_read_preserves_legacy_and_rejects_manifest_v3() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let data_dir = fixture_dir("asset-boundary");
+        let plugins_dir = data_dir.join("plugins");
+
+        let legacy_dir = plugins_dir.join("legacy-asset");
+        fs::create_dir_all(&legacy_dir).expect("create legacy plugin directory");
+        fs::write(legacy_dir.join("main.js"), "legacy content").expect("write legacy asset");
+        let legacy = normalize_legacy_manifest(PluginManifest {
+            id: "legacy-asset".into(),
+            name: "Legacy Asset".into(),
+            version: "1.0.0".into(),
+            description: None,
+            author: Some("tests".into()),
+            main: "main.js".into(),
+            styles: None,
+            min_app_version: None,
+            permissions: Vec::new(),
+            contributes: PluginContributes::default(),
+        });
+        let legacy_hash =
+            PluginService::calculate_integrity_for_path(&legacy_dir).expect("hash legacy plugin");
+        db.upsert_plugin(&legacy, &legacy_dir.to_string_lossy(), &legacy_hash)
+            .expect("install legacy plugin");
+        assert_eq!(
+            PluginService::read_asset(&db, &data_dir, "legacy-asset", "main.js",)
+                .expect("read legacy asset"),
+            "legacy content"
+        );
+
+        let v3_dir = plugins_dir.join("com.firstwork.v3-asset").join("1.0.0");
+        fs::create_dir_all(&v3_dir).expect("create v3 plugin directory");
+        fs::write(v3_dir.join("ui.json"), "{}").expect("write v3 asset");
+        let manifest: PluginManifestV3 = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 3,
+            "id": "com.firstwork.v3-asset",
+            "name": "V3 Asset",
+            "version": "1.0.0",
+            "authorId": "tests",
+            "classification": "feature",
+            "runtimeKind": "declarative-ui",
+            "permissions": [],
+            "contributes": {
+                "features": [{
+                    "id": "feature",
+                    "title": "Feature",
+                    "uiSchema": "ui.json"
+                }]
+            }
+        }))
+        .expect("parse v3 manifest");
+        let v3_hash = PluginService::calculate_integrity_for_path(&v3_dir).expect("hash v3 plugin");
+        db.record_plugin_version(&manifest, &v3_dir.to_string_lossy(), &v3_hash, &[])
+            .expect("install v3 plugin");
+        assert!(PluginService::read_asset(&db, &data_dir, &manifest.id, "ui.json",).is_err());
+
+        fs::remove_dir_all(data_dir).ok();
     }
 
     #[test]

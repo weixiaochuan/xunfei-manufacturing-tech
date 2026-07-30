@@ -21,7 +21,7 @@ use crate::models::{
     SignatureStatus,
 };
 use crate::services::plugin_permission_guard::{
-    require_current_plugin_capabilities, AuthorizedPluginContext,
+    require_current_plugin_capabilities, resolve_current_plugin_context, AuthorizedPluginContext,
 };
 use crate::services::plugins::PluginService;
 
@@ -363,6 +363,65 @@ impl PluginPlatformService {
             enhancements,
             warnings,
         })
+    }
+
+    pub fn read_enhancement_resource(
+        db: &Database,
+        data_dir: &Path,
+        plugin_id: &str,
+        contribution_id: &str,
+    ) -> Result<String, AppError> {
+        validate_plugin_id(plugin_id)?;
+        validate_contribution_id(contribution_id)?;
+        let authorized =
+            require_current_plugin_capabilities(db, plugin_id, &["ai.context.augment"])?;
+        let contribution = authorized
+            .manifest
+            .contributes
+            .enhancements
+            .iter()
+            .find(|item| item.id == contribution_id)
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "当前 Manifest 未声明 enhancement：{}",
+                    contribution_id
+                ))
+            })?;
+        if contribution.handler.kind != "declarative" {
+            return Err(AppError::InvalidInput(
+                "enhancement 资源读取只支持 declarative handler".into(),
+            ));
+        }
+        PluginService::read_asset_from_install_path(
+            data_dir,
+            &authorized.install_path,
+            &contribution.handler.resource,
+        )
+    }
+
+    pub fn read_feature_ui_schema(
+        db: &Database,
+        data_dir: &Path,
+        plugin_id: &str,
+        feature_id: &str,
+    ) -> Result<String, AppError> {
+        validate_plugin_id(plugin_id)?;
+        validate_contribution_id(feature_id)?;
+        let current = resolve_current_plugin_context(db, plugin_id)?;
+        let feature = current
+            .manifest
+            .contributes
+            .features
+            .iter()
+            .find(|item| item.id == feature_id)
+            .ok_or_else(|| {
+                AppError::NotFound(format!("当前 Manifest 未声明 feature：{}", feature_id))
+            })?;
+        let ui_schema = feature
+            .ui_schema
+            .as_deref()
+            .ok_or_else(|| AppError::InvalidInput("feature 缺少 uiSchema".into()))?;
+        PluginService::read_asset_from_install_path(data_dir, &current.install_path, ui_schema)
     }
 
     pub fn record_execution(db: &Database, input: PluginExecutionLogInput) -> Result<(), AppError> {
@@ -1797,6 +1856,36 @@ mod tests {
             .expect("enable test plugin");
     }
 
+    fn install_resource_manifest(
+        db: &Database,
+        data_dir: &TestDir,
+        manifest: &PluginManifestV3,
+        approved_permissions: &[String],
+        prompt: &str,
+        schema: &str,
+    ) -> PathBuf {
+        let install_path = data_dir
+            .path()
+            .join("plugins")
+            .join(&manifest.id)
+            .join(&manifest.version);
+        fs::create_dir_all(&install_path).expect("create resource plugin directory");
+        fs::write(install_path.join("prompt.md"), prompt).expect("write enhancement resource");
+        fs::write(install_path.join("ui.json"), schema).expect("write feature schema");
+        let hash = PluginService::calculate_integrity_for_path(&install_path)
+            .expect("calculate resource plugin integrity");
+        db.record_plugin_version(
+            manifest,
+            &install_path.to_string_lossy(),
+            &hash,
+            approved_permissions,
+        )
+        .expect("record resource plugin version");
+        db.set_plugin_enabled(&manifest.id, true)
+            .expect("enable resource plugin");
+        install_path
+    }
+
     fn enhancement_manifest() -> PluginManifestV3 {
         let mut manifest = manifest_for("enhancement", "prompt-pack");
         manifest.contributes.features.clear();
@@ -1819,6 +1908,180 @@ mod tests {
             manifest.permissions.push("files.writeSelected".into());
         }
         manifest
+    }
+
+    #[test]
+    fn enhancement_resource_read_rechecks_declaration_and_current_grant() {
+        let cases = [
+            (true, Some(true), true),
+            (true, Some(false), false),
+            (true, None, false),
+            (false, Some(true), false),
+        ];
+        for (declared, grant_state, expected_success) in cases {
+            let db = Database::init(":memory:").expect("create in-memory database");
+            let data_dir = TestDir::new();
+            let mut manifest = enhancement_manifest();
+            if !declared {
+                manifest.permissions.clear();
+            }
+            let approved = if declared && grant_state == Some(true) {
+                manifest.permissions.clone()
+            } else {
+                Vec::new()
+            };
+            install_resource_manifest(
+                &db,
+                &data_dir,
+                &manifest,
+                &approved,
+                "current enhancement",
+                "{}",
+            );
+            let conn = db.conn_lock().expect("lock test database");
+            if grant_state.is_none() {
+                conn.execute(
+                    "DELETE FROM plugin_permissions
+                     WHERE plugin_id = ?1 AND permission = 'ai.context.augment'",
+                    [&manifest.id],
+                )
+                .expect("remove grant row");
+            } else if !declared && grant_state == Some(true) {
+                conn.execute(
+                    "INSERT INTO plugin_permissions (plugin_id, permission, granted)
+                     VALUES (?1, 'ai.context.augment', 1)",
+                    [&manifest.id],
+                )
+                .expect("insert undeclared grant");
+            }
+            drop(conn);
+
+            let result = PluginPlatformService::read_enhancement_resource(
+                &db,
+                data_dir.path(),
+                &manifest.id,
+                "test-enhancement",
+            );
+            assert_eq!(result.is_ok(), expected_success);
+        }
+    }
+
+    #[test]
+    fn enhancement_resource_read_uses_only_current_manifest_and_install_path() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let data_dir = TestDir::new();
+        let old = enhancement_manifest();
+        install_resource_manifest(
+            &db,
+            &data_dir,
+            &old,
+            &old.permissions,
+            "old enhancement",
+            "{}",
+        );
+
+        let mut current = old.clone();
+        current.version = "2.0.0".into();
+        current.contributes.enhancements[0].id = "current-enhancement".into();
+        install_resource_manifest(
+            &db,
+            &data_dir,
+            &current,
+            &current.permissions,
+            "current enhancement",
+            "{}",
+        );
+
+        let content = PluginPlatformService::read_enhancement_resource(
+            &db,
+            data_dir.path(),
+            &current.id,
+            "current-enhancement",
+        )
+        .expect("read current enhancement");
+        assert_eq!(content, "current enhancement");
+        assert!(PluginPlatformService::read_enhancement_resource(
+            &db,
+            data_dir.path(),
+            &current.id,
+            "test-enhancement",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn declared_resource_reads_reject_path_escape() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let data_dir = TestDir::new();
+        let mut enhancement = enhancement_manifest();
+        enhancement.contributes.enhancements[0].handler.resource = "../outside.txt".into();
+        install_resource_manifest(
+            &db,
+            &data_dir,
+            &enhancement,
+            &enhancement.permissions,
+            "unused",
+            "{}",
+        );
+        fs::write(
+            data_dir.path().join("plugins").join("outside.txt"),
+            "outside",
+        )
+        .expect("write outside resource");
+        assert!(PluginPlatformService::read_enhancement_resource(
+            &db,
+            data_dir.path(),
+            &enhancement.id,
+            "test-enhancement",
+        )
+        .is_err());
+
+        let mut feature = feature_manifest("text");
+        feature.id = "com.firstwork.feature-path-test".into();
+        feature.contributes.features[0].ui_schema = Some("../outside.json".into());
+        install_resource_manifest(&db, &data_dir, &feature, &[], "unused", "{}");
+        assert!(PluginPlatformService::read_feature_ui_schema(
+            &db,
+            data_dir.path(),
+            &feature.id,
+            "test-feature",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn feature_ui_schema_uses_current_context_without_execution_grants() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let data_dir = TestDir::new();
+        let old = feature_manifest("text");
+        install_resource_manifest(&db, &data_dir, &old, &[], "unused", r#"{"version":"old"}"#);
+        let mut current = old.clone();
+        current.version = "2.0.0".into();
+        current.contributes.features[0].id = "current-feature".into();
+        install_resource_manifest(
+            &db,
+            &data_dir,
+            &current,
+            &[],
+            "unused",
+            r#"{"version":"current"}"#,
+        );
+
+        let content = PluginPlatformService::read_feature_ui_schema(
+            &db,
+            data_dir.path(),
+            &current.id,
+            "current-feature",
+        )
+        .expect("read current feature schema without execution grants");
+        assert_eq!(content, r#"{"version":"current"}"#);
+        assert!(PluginPlatformService::read_feature_ui_schema(
+            &db,
+            data_dir.path(),
+            &current.id,
+            "test-feature",
+        )
+        .is_err());
     }
 
     #[test]

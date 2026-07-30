@@ -204,7 +204,7 @@ export default function PluginFeatureHost() {
         if (!matched.item.uiSchema) throw new Error("该功能未声明 uiSchema");
         const installed = installedPlugins.find((item) => item.id === pluginId);
         if (!installed) throw new Error("插件未安装");
-        const content = await pluginApi.readAsset(pluginId, matched.item.uiSchema);
+        const content = await pluginApi.readFeatureUiSchema(pluginId, featureId);
         if (cancelled) return;
         const availableAgents = configuredAgents.filter(usableAgent);
         setFeature(matched.item);
