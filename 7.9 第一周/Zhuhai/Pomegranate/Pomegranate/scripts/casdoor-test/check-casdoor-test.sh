@@ -27,23 +27,30 @@ postgres_volume="$(
 [[ "${postgres_volume}" == "pomegranate_casdoor_test_postgres_data" ]] ||
   casdoor_test_die "postgres-test is not using the approved isolated named volume."
 
-expected_network="pomegranate_casdoor_test_backend"
-for container_id in "${postgres_id}" "${casdoor_id}"; do
-  network_names="$(
-    docker inspect \
-      --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
-      "${container_id}" |
-      sed '/^[[:space:]]*$/d' |
-      sort -u
-  )"
-  [[ "${network_names}" == "${expected_network}" ]] ||
-    casdoor_test_die "A Casdoor TEST container is attached to an unexpected network."
-done
+postgres_network_names="$(
+  docker inspect \
+    --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
+    "${postgres_id}" |
+    sed '/^[[:space:]]*$/d' |
+    sort -u
+)"
+[[ "${postgres_network_names}" == "pomegranate_casdoor_test_backend" ]] ||
+  casdoor_test_die "postgres-test must connect only to the isolated backend network."
+
+casdoor_network_names="$(
+  docker inspect \
+    --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' \
+    "${casdoor_id}" |
+    sed '/^[[:space:]]*$/d' |
+    sort -u
+)"
+[[ "${casdoor_network_names}" == $'pomegranate_casdoor_test_backend\npomegranate_casdoor_test_edge' ]] ||
+  casdoor_test_die "casdoor-test must connect only to the isolated backend and dedicated edge networks."
 
 [[ -z "$(docker port "${postgres_id}" 2>/dev/null || true)" ]] ||
   casdoor_test_die "postgres-test must not publish a host port."
-[[ "$(docker port "${casdoor_id}" 8000/tcp)" == "127.0.0.1:18000" ]] ||
-  casdoor_test_die "casdoor-test is not bound exclusively to 127.0.0.1:18000."
+[[ "$(docker port "${casdoor_id}" 8000/tcp)" == "0.0.0.0:18000" ]] ||
+  casdoor_test_die "casdoor-test temporary public entry is not bound to 0.0.0.0:18000."
 
 database_exists="$(
   casdoor_test_compose exec -T postgres-test sh -eu -c \
@@ -76,8 +83,9 @@ trap 'rm -f "${discovery_file}"' EXIT
 curl --fail --silent --show-error --max-time 10 \
   --output "${discovery_file}" \
   "${CASDOOR_TEST_PUBLIC_URL}/.well-known/openid-configuration"
-grep -Eq '"issuer"[[:space:]]*:[[:space:]]*"http://127\.0\.0\.1:18000"' \
+issuer_pattern="$(printf '%s' "${CASDOOR_TEST_PUBLIC_URL}" | sed 's/[][\\.^$*+?{}|()]/\\&/g')"
+grep -Eq "\"issuer\"[[:space:]]*:[[:space:]]*\"${issuer_pattern}\"" \
   "${discovery_file}" ||
-  casdoor_test_die "Casdoor TEST discovery issuer does not match the loopback-only origin."
+  casdoor_test_die "Casdoor TEST discovery issuer does not match the configured TEST origin."
 
 printf 'Casdoor TEST isolation, database, binding, and OIDC checks passed.\n'

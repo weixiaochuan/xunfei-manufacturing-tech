@@ -44,11 +44,14 @@ services:
       origin: "${CASDOOR_TEST_PUBLIC_URL}"
       originFrontend: "${CASDOOR_TEST_PUBLIC_URL}"
     ports:
-      - "127.0.0.1:${CASDOOR_TEST_HOST_PORT}:8000"
+      - "0.0.0.0:18000:8000"
     volumes:
       - ./infra/casdoor-test/casdoor/app.conf:/conf/app.conf:ro
     networks:
-      - casdoor_test_backend
+      casdoor_test_backend:
+        gw_priority: 0
+      casdoor_test_edge:
+        gw_priority: 1
 
 volumes:
   postgres_test_data:
@@ -59,3 +62,6 @@ networks:
     name: pomegranate_casdoor_test_backend
     driver: bridge
     internal: true
+  casdoor_test_edge:
+    name: pomegranate_casdoor_test_edge
+    driver: bridge

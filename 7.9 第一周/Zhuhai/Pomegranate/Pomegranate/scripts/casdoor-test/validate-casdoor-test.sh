@@ -8,7 +8,16 @@ source "${SCRIPT_DIR}/common.sh"
 
 casdoor_test_require_command docker
 casdoor_test_load_environment
-docker compose version >/dev/null
+compose_version="$(docker compose version --short)"
+compose_version="${compose_version#v}"
+compose_major="${compose_version%%.*}"
+compose_remainder="${compose_version#*.}"
+compose_minor="${compose_remainder%%.*}"
+[[ "${compose_major}" =~ ^[0-9]+$ && "${compose_minor}" =~ ^[0-9]+$ ]] ||
+  casdoor_test_die "Cannot parse Docker Compose version: ${compose_version}"
+if (( compose_major < 2 || (compose_major == 2 && compose_minor < 33) )); then
+  casdoor_test_die "Docker Compose 2.33.1 or newer is required for gw_priority (found ${compose_version})."
+fi
 
 required_variables=(
   CASDOOR_TEST_POSTGRES_ADMIN_USER
@@ -63,8 +72,10 @@ done
   casdoor_test_die "CASDOOR_TEST_DB_USER must be casdoor_test_app."
 [[ "${CASDOOR_TEST_HOST_PORT}" == "18000" ]] ||
   casdoor_test_die "CASDOOR_TEST_HOST_PORT must remain 18000."
-[[ "${CASDOOR_TEST_PUBLIC_URL}" == "http://127.0.0.1:18000" ]] ||
-  casdoor_test_die "CASDOOR_TEST_PUBLIC_URL must remain the loopback-only test origin."
+case "${CASDOOR_TEST_PUBLIC_URL}" in
+  http://127.0.0.1:18000|http://82.157.119.201:18000) ;;
+  *) casdoor_test_die "CASDOOR_TEST_PUBLIC_URL must be the loopback origin or the approved TEST public origin." ;;
+esac
 [[ "${CASDOOR_TEST_ORGANIZATION}" == "pomegranate-test" ]] ||
   casdoor_test_die "CASDOOR_TEST_ORGANIZATION must be pomegranate-test."
 [[ "${CASDOOR_TEST_APPLICATION}" == "app-pomegranate-test" ]] ||
@@ -84,12 +95,14 @@ published_ports="$(
 )"
 [[ "${published_ports}" == "18000" ]] ||
   casdoor_test_die "Only host port 18000 may be published by the Casdoor TEST stack."
-grep -Fq 'host_ip: 127.0.0.1' <<<"${rendered_config}" ||
-  casdoor_test_die "Casdoor TEST must bind only to 127.0.0.1."
+grep -Fq 'host_ip: 0.0.0.0' <<<"${rendered_config}" ||
+  casdoor_test_die "Casdoor TEST temporary public entry must bind to 0.0.0.0:18000."
 grep -Fq 'name: pomegranate_casdoor_test_postgres_data' <<<"${rendered_config}" ||
   casdoor_test_die "The isolated PostgreSQL volume name is missing."
 grep -Fq 'name: pomegranate_casdoor_test_backend' <<<"${rendered_config}" ||
-  casdoor_test_die "The isolated Casdoor TEST network name is missing."
+  casdoor_test_die "The isolated Casdoor TEST backend network name is missing."
+grep -Fq 'name: pomegranate_casdoor_test_edge' <<<"${rendered_config}" ||
+  casdoor_test_die "The dedicated Casdoor TEST edge network name is missing."
 
 for forbidden_value in \
   pomegranate_backend pomegranate_edge pomegranate-cloud \
