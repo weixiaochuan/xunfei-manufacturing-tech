@@ -8,6 +8,21 @@ use crate::models::{
     PluginActivationRule, PluginManifestV3, PluginScene, PluginVersionInfo, SignatureStatus,
 };
 
+#[derive(Debug, Clone)]
+pub(crate) struct CurrentPluginVersionAuthorization {
+    pub version: String,
+    pub manifest: PluginManifestV3,
+    pub install_path: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CurrentPluginAuthorizationSnapshot {
+    pub enabled: bool,
+    pub status: String,
+    pub current_version: Option<CurrentPluginVersionAuthorization>,
+    pub grant_states: Vec<(String, Option<bool>)>,
+}
+
 fn enum_value<T: serde::Serialize>(value: &T, fallback: &str) -> String {
     serde_json::to_value(value)
         .ok()
@@ -20,6 +35,73 @@ fn signature_from_db(value: String) -> SignatureStatus {
 }
 
 impl Database {
+    /// 在同一连接锁内读取运行时授权所需的当前状态。
+    ///
+    /// `manifest_json` 是当前活动版本的权威声明，`plugin_permissions.granted`
+    /// 是用户真实授权；本查询只读，不会创建、同步或恢复任何授权行。
+    pub(crate) fn current_plugin_authorization_snapshot(
+        &self,
+        plugin_id: &str,
+        capabilities: &[&str],
+    ) -> Result<Option<CurrentPluginAuthorizationSnapshot>, AppError> {
+        let conn = self.conn_lock()?;
+        let plugin: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT enabled, status FROM plugins WHERE id = ?1",
+                [plugin_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((enabled, status)) = plugin else {
+            return Ok(None);
+        };
+
+        let current: Option<(String, String, String)> = conn
+            .query_row(
+                "SELECT version, manifest_json, install_path
+                 FROM plugin_versions
+                 WHERE plugin_id = ?1 AND is_current = 1",
+                [plugin_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let current_version = current
+            .map(
+                |(
+                    version,
+                    manifest_json,
+                    install_path,
+                )|
+                 -> Result<CurrentPluginVersionAuthorization, AppError> {
+                Ok(CurrentPluginVersionAuthorization {
+                    version,
+                    manifest: serde_json::from_str(&manifest_json)?,
+                    install_path,
+                })
+            },
+            )
+            .transpose()?;
+
+        let mut grant_states = Vec::with_capacity(capabilities.len());
+        let mut statement = conn.prepare(
+            "SELECT granted FROM plugin_permissions
+             WHERE plugin_id = ?1 AND permission = ?2",
+        )?;
+        for capability in capabilities {
+            let granted: Option<i64> = statement
+                .query_row(params![plugin_id, capability], |row| row.get(0))
+                .optional()?;
+            grant_states.push(((*capability).to_string(), granted.map(|value| value != 0)));
+        }
+
+        Ok(Some(CurrentPluginAuthorizationSnapshot {
+            enabled: enabled != 0,
+            status,
+            current_version,
+            grant_states,
+        }))
+    }
+
     pub fn current_plugin_version(&self, plugin_id: &str) -> Result<Option<String>, AppError> {
         let conn = self.conn_lock()?;
         Ok(conn
@@ -461,6 +543,77 @@ mod tests {
             }
         }))
         .expect("parse test manifest")
+    }
+
+    #[test]
+    fn authorization_snapshot_reads_current_manifest_and_exact_grant_states() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let manifest = manifest_with_permissions(&["ai.invoke", "agents.invoke"]);
+        db.record_plugin_version(
+            &manifest,
+            "C:/test/current-authorized",
+            "authorized-hash",
+            &["ai.invoke".to_string()],
+        )
+        .expect("record current version");
+        db.set_plugin_enabled(&manifest.id, true)
+            .expect("enable plugin");
+
+        let snapshot = db
+            .current_plugin_authorization_snapshot(
+                &manifest.id,
+                &["ai.invoke", "agents.invoke", "ai"],
+            )
+            .expect("query authorization snapshot")
+            .expect("plugin exists");
+        assert!(snapshot.enabled);
+        assert_eq!(snapshot.status, "installed");
+        let current = snapshot.current_version.expect("current version exists");
+        assert_eq!(current.version, "1.0.0");
+        assert_eq!(current.install_path, "C:/test/current-authorized");
+        assert_eq!(current.manifest.permissions, manifest.permissions);
+        assert_eq!(
+            snapshot.grant_states,
+            vec![
+                ("ai.invoke".to_string(), Some(true)),
+                ("agents.invoke".to_string(), Some(false)),
+                ("ai".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn authorization_snapshot_distinguishes_missing_plugin_and_current_version() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        assert!(db
+            .current_plugin_authorization_snapshot("com.firstwork.missing", &["ai.invoke"])
+            .expect("query missing plugin")
+            .is_none());
+
+        let manifest = manifest_with_permissions(&["ai.invoke"]);
+        db.record_plugin_version(
+            &manifest,
+            "C:/test/no-current",
+            "no-current-hash",
+            &manifest.permissions,
+        )
+        .expect("record plugin");
+        db.conn_lock()
+            .expect("lock database")
+            .execute(
+                "UPDATE plugin_versions SET is_current = 0 WHERE plugin_id = ?1",
+                [&manifest.id],
+            )
+            .expect("clear current version");
+        let snapshot = db
+            .current_plugin_authorization_snapshot(&manifest.id, &["ai.invoke"])
+            .expect("query plugin without current version")
+            .expect("plugin exists");
+        assert!(snapshot.current_version.is_none());
+        assert_eq!(
+            snapshot.grant_states,
+            vec![("ai.invoke".to_string(), Some(true))]
+        );
     }
 
     #[test]

@@ -20,6 +20,9 @@ use crate::models::{
     PluginVersionInfo, ResolvedEnhancementContribution, ResolvedPluginContributions,
     SignatureStatus,
 };
+use crate::services::plugin_permission_guard::{
+    require_current_plugin_capabilities, AuthorizedPluginContext,
+};
 use crate::services::plugins::PluginService;
 
 const ARCHIVE_EXTENSION: &str = "firstwork-plugin";
@@ -228,8 +231,32 @@ impl PluginPlatformService {
             .map(|(manifest, _, _)| manifest.id.clone())
             .collect();
 
-        for (manifest, install_path, legacy_enabled) in installed {
+        for (manifest, _install_path, legacy_enabled) in installed {
+            let matching_enhancement_ids = manifest
+                .contributes
+                .enhancements
+                .iter()
+                .filter(|item| {
+                    scene_matches(&item.scenes, &context.scene)
+                        && (item.features.is_empty() || item.features.contains(&context.feature))
+                })
+                .map(|item| item.id.clone())
+                .collect::<Vec<_>>();
             if !legacy_enabled {
+                if !matching_enhancement_ids.is_empty() {
+                    if let Err(error) = require_current_plugin_capabilities(
+                        db,
+                        &manifest.id,
+                        &["ai.context.augment"],
+                    ) {
+                        append_enhancement_guard_warnings(
+                            &mut warnings,
+                            &manifest.id,
+                            &matching_enhancement_ids,
+                            &error,
+                        );
+                    }
+                }
                 continue;
             }
             let override_value = context.session_overrides.get(&manifest.id).copied();
@@ -274,32 +301,52 @@ impl PluginPlatformService {
                     .cloned(),
             );
             tools.extend(manifest.contributes.tools.iter().cloned());
-            for item in manifest.contributes.enhancements.iter().filter(|item| {
-                scene_matches(&item.scenes, &context.scene)
-                    && (item.features.is_empty() || item.features.contains(&context.feature))
-            }) {
-                if !manifest
-                    .permissions
-                    .iter()
-                    .any(|permission| permission == "ai.context.augment")
-                {
-                    warnings.push(format!(
-                        "插件 {} 的增强贡献 {} 未在 Manifest 声明 ai.context.augment，已跳过",
-                        manifest.id, item.id
-                    ));
+            if matching_enhancement_ids.is_empty() {
+                continue;
+            }
+            let authorized = match require_current_plugin_capabilities(
+                db,
+                &manifest.id,
+                &["ai.context.augment"],
+            ) {
+                Ok(authorized) => authorized,
+                Err(error) => {
+                    append_enhancement_guard_warnings(
+                        &mut warnings,
+                        &manifest.id,
+                        &matching_enhancement_ids,
+                        &error,
+                    );
                     continue;
                 }
-                if !db.has_plugin_permission(&manifest.id, "ai.context.augment")? {
-                    warnings.push(format!(
-                        "插件 {} 的增强贡献 {} 未获 ai.context.augment 授权或授权已撤销，已跳过",
-                        manifest.id, item.id
-                    ));
-                    continue;
-                }
+            };
+            let authorized_override = context
+                .session_overrides
+                .get(&authorized.manifest.id)
+                .copied();
+            let (authorized_enabled, _) = db.resolve_plugin_enabled(
+                &authorized.manifest,
+                &context.scene,
+                &context.feature,
+                authorized_override,
+            )?;
+            if !authorized_enabled {
+                continue;
+            }
+            for item in authorized
+                .manifest
+                .contributes
+                .enhancements
+                .iter()
+                .filter(|item| {
+                    scene_matches(&item.scenes, &context.scene)
+                        && (item.features.is_empty() || item.features.contains(&context.feature))
+                })
+            {
                 enhancements.push(ResolvedEnhancementContribution {
-                    plugin_id: manifest.id.clone(),
+                    plugin_id: authorized.manifest.id.clone(),
                     contribution: item.clone(),
-                    resource_path: Path::new(&install_path)
+                    resource_path: Path::new(&authorized.install_path)
                         .join(&item.handler.resource)
                         .to_string_lossy()
                         .to_string(),
@@ -361,12 +408,41 @@ impl PluginPlatformService {
                     .unwrap_or_else(|| "插件内容完整性校验失败".into()),
             ));
         }
-        let version = db
-            .current_plugin_version(plugin_id)?
-            .ok_or_else(|| AppError::NotFound("未找到插件当前版本".into()))?;
-        let (manifest, install_path, _) = db
-            .plugin_version_manifest(plugin_id, &version)?
-            .ok_or_else(|| AppError::NotFound("未找到插件 Manifest v3".into()))?;
+        let fixed_capabilities = [
+            "credentials.use",
+            "agents.invoke",
+            "network.xingchen",
+            "ai.invoke",
+        ];
+        let authorized = require_current_plugin_capabilities(db, plugin_id, &fixed_capabilities)?;
+        let output_kind = Self::validate_feature_context(db, &authorized, feature_id)?;
+        let authorized = if matches!(output_kind.as_str(), "docx-base64" | "file-base64") {
+            let all_capabilities = [
+                "credentials.use",
+                "agents.invoke",
+                "network.xingchen",
+                "ai.invoke",
+                "files.writeSelected",
+            ];
+            require_current_plugin_capabilities(db, plugin_id, &all_capabilities)?
+        } else {
+            authorized
+        };
+        let output_kind = Self::validate_feature_context(db, &authorized, feature_id)?;
+        Ok(PluginFeatureInvocationSpec { output_kind })
+    }
+
+    fn validate_feature_context(
+        db: &Database,
+        authorized: &AuthorizedPluginContext,
+        feature_id: &str,
+    ) -> Result<String, AppError> {
+        let manifest = &authorized.manifest;
+        if manifest.version != authorized.version {
+            return Err(AppError::InvalidInput(
+                "授权上下文中的插件版本不一致".into(),
+            ));
+        }
         if !matches!(
             manifest.classification,
             crate::models::PluginClassification::Feature
@@ -399,19 +475,11 @@ impl PluginPlatformService {
         if !enabled {
             return Err(AppError::InvalidInput("当前插件功能已被禁用".into()));
         }
-        for permission in [
-            "credentials.use",
-            "agents.invoke",
-            "network.xingchen",
-            "ai.invoke",
-        ] {
-            Self::ensure_runtime_capability(db, &manifest, permission)?;
-        }
         let ui_schema = feature
             .ui_schema
             .as_deref()
             .ok_or_else(|| AppError::InvalidInput("feature 缺少 uiSchema".into()))?;
-        let schema_path = Path::new(&install_path).join(ui_schema);
+        let schema_path = Path::new(&authorized.install_path).join(ui_schema);
         let schema_text = fs::read_to_string(&schema_path)?;
         let schema: serde_json::Value = serde_json::from_str(&schema_text)
             .map_err(|error| AppError::InvalidInput(format!("uiSchema JSON 无效：{}", error)))?;
@@ -429,34 +497,7 @@ impl PluginPlatformService {
                 output_kind
             )));
         }
-        if matches!(output_kind.as_str(), "docx-base64" | "file-base64") {
-            Self::ensure_runtime_capability(db, &manifest, "files.writeSelected")?;
-        }
-        Ok(PluginFeatureInvocationSpec { output_kind })
-    }
-
-    fn ensure_runtime_capability(
-        db: &Database,
-        manifest: &PluginManifestV3,
-        capability: &str,
-    ) -> Result<(), AppError> {
-        if !manifest
-            .permissions
-            .iter()
-            .any(|permission| permission == capability)
-        {
-            return Err(AppError::PluginCapabilityNotDeclared {
-                plugin_id: manifest.id.clone(),
-                capability: capability.to_string(),
-            });
-        }
-        if !db.has_plugin_permission(&manifest.id, capability)? {
-            return Err(AppError::PluginPermissionDenied {
-                plugin_id: Some(manifest.id.clone()),
-                required_permission: Some(capability.to_string()),
-            });
-        }
-        Ok(())
+        Ok(output_kind)
     }
 
     pub fn finish_feature_invocation(
@@ -1340,6 +1381,31 @@ fn scene_matches(scenes: &[PluginScene], scene: &PluginScene) -> bool {
     scenes.is_empty() || scenes.contains(scene) || scenes.contains(&PluginScene::Global)
 }
 
+fn append_enhancement_guard_warnings(
+    warnings: &mut Vec<String>,
+    plugin_id: &str,
+    contribution_ids: &[String],
+    error: &AppError,
+) {
+    for contribution_id in contribution_ids {
+        let warning = match error {
+            AppError::PluginCapabilityNotDeclared { .. } => format!(
+                "插件 {} 的增强贡献 {} 未在 Manifest 声明 ai.context.augment，已跳过",
+                plugin_id, contribution_id
+            ),
+            AppError::PluginPermissionDenied { .. } => format!(
+                "插件 {} 的增强贡献 {} 未获 ai.context.augment 授权或授权已撤销，已跳过",
+                plugin_id, contribution_id
+            ),
+            _ => format!(
+                "插件 {} 的增强贡献 {} 因插件生命周期状态不允许调用而跳过：{}",
+                plugin_id, contribution_id, error
+            ),
+        };
+        warnings.push(warning);
+    }
+}
+
 fn ensure_plugins_dir(data_dir: &Path) -> Result<PathBuf, AppError> {
     let path = data_dir.join("plugins");
     fs::create_dir_all(&path)?;
@@ -1809,6 +1875,84 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn enhancement_lifecycle_rejection_warns_without_blocking_other_plugins() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let rejected_directory = TestDir::new();
+        let allowed_directory = TestDir::new();
+        let mut rejected = enhancement_manifest();
+        rejected.id = "com.firstwork.rejected-enhancement".into();
+        let mut allowed = enhancement_manifest();
+        allowed.id = "com.firstwork.allowed-enhancement".into();
+        install_test_manifest(
+            &db,
+            &rejected_directory,
+            &rejected,
+            &rejected.permissions,
+            "text",
+        );
+        install_test_manifest(
+            &db,
+            &allowed_directory,
+            &allowed,
+            &allowed.permissions,
+            "text",
+        );
+        db.set_plugin_enabled(&rejected.id, false)
+            .expect("disable rejected plugin");
+
+        let resolved =
+            PluginPlatformService::resolve_enabled_contributions(&db, execution_context())
+                .expect("resolve contributions");
+        assert_eq!(resolved.enhancements.len(), 1);
+        assert_eq!(resolved.enhancements[0].plugin_id, allowed.id);
+        assert!(resolved.warnings.iter().any(|warning| {
+            warning.contains(&rejected.id) && warning.contains("生命周期状态")
+        }));
+    }
+
+    #[test]
+    fn enhancement_uses_current_guard_manifest_and_install_path() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let old_directory = TestDir::new();
+        let current_directory = TestDir::new();
+        let old = enhancement_manifest();
+        install_test_manifest(&db, &old_directory, &old, &old.permissions, "text");
+
+        let mut current = old.clone();
+        current.version = "2.0.0".into();
+        current.contributes.enhancements[0].id = "current-enhancement".into();
+        current.contributes.enhancements[0].handler.resource = "current-prompt.md".into();
+        fs::write(
+            current_directory.path().join("current-prompt.md"),
+            "current enhancement",
+        )
+        .expect("write current resource");
+        let hash = PluginService::calculate_integrity_for_path(current_directory.path())
+            .expect("calculate current integrity");
+        db.record_plugin_version(
+            &current,
+            &current_directory.path().to_string_lossy(),
+            &hash,
+            &current.permissions,
+        )
+        .expect("record current version");
+
+        let resolved =
+            PluginPlatformService::resolve_enabled_contributions(&db, execution_context())
+                .expect("resolve contributions");
+        assert_eq!(resolved.enhancements.len(), 1);
+        let enhancement = &resolved.enhancements[0];
+        assert_eq!(enhancement.contribution.id, "current-enhancement");
+        assert_eq!(
+            enhancement.resource_path,
+            current_directory
+                .path()
+                .join("current-prompt.md")
+                .to_string_lossy()
+        );
     }
 
     #[test]
