@@ -12,6 +12,9 @@ jobs:
   node:
     name: Registry, package and TypeScript checks
     runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: '7.9 第一周/Zhuhai/Pomegranate/Pomegranate'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,8 +69,8 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: '7.9 第一周/Zhuhai/Pomegranate/Pomegranate/src-tauri -> target'
 
       - name: Test generated registry consistency
-        working-directory: src-tauri
+        working-directory: '7.9 第一周/Zhuhai/Pomegranate/Pomegranate/src-tauri'
         run: cargo test services::plugin_capabilities::tests
