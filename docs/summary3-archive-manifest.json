@@ -1,0 +1,92 @@
+{
+  "sourceArchive": "D:\\ag\\汇总3\\firstwork",
+  "policy": {
+    "doNotDeleteSourceArchive": true,
+    "preserveFeatureBehavior": true,
+    "cloudIdentityKey": "platform_users.id",
+    "clientMustNotAuthorizeByOwnerUserId": true,
+    "clientMustNotAuthorizeByStudentId": true
+  },
+  "targets": {
+    "cloud": [
+      {
+        "source": "Pomegranate account/cloud integration",
+        "target": "services/account-server",
+        "status": "partially_present",
+        "notes": "Keep account, session, user file, document library, and learning project APIs here unless service size requires extraction."
+      },
+      {
+        "source": "student/teacher classroom linkage",
+        "target": "services/classroom or services/account-server/src/classroom-*",
+        "status": "reserved",
+        "notes": "Class, membership, assignments, messages, and learning events belong to cloud."
+      },
+      {
+        "source": "files.v21_最终/question_bank_system",
+        "target": "services/question-bank or account-server proxy",
+        "status": "reserved",
+        "notes": "Server must inject student identity from session; student question list must hide answers."
+      },
+      {
+        "source": "plugin marketplace, review center, entitlement",
+        "target": "services/plugin-registry",
+        "status": "reserved",
+        "notes": "Cloud stores packages, review status, versions, and entitlement policy; desktop executes plugins locally."
+      }
+    ],
+    "local": [
+      {
+        "source": "Pomegranate desktop shell",
+        "target": "src and src-tauri",
+        "status": "present",
+        "notes": "Desktop UI, Tauri commands, local SQLite, import/export, offline features."
+      },
+      {
+        "source": "learning-assistant/data/knowledge_points",
+        "target": "src-tauri/resources/learning-assistant/knowledge-points",
+        "status": "present",
+        "notes": "Bundled local knowledge point files."
+      },
+      {
+        "source": "mechanical knowledge graph SQLite export",
+        "target": "src-tauri/resources/course-graph/process_graph.db",
+        "status": "present",
+        "notes": "Bundled local course graph; original Neo4j/FastAPI service remains archive/dev reference."
+      },
+      {
+        "source": "ppt-master",
+        "target": "src-tauri/src/services/ppt_master*.rs and optional src-tauri/resources/ppt-master",
+        "status": "partially_present",
+        "notes": "Keep generation local; do not package generated project outputs."
+      },
+      {
+        "source": "question-bank-tooling",
+        "target": "archive/source only; optional future tools/question-bank",
+        "status": "archive_only",
+        "notes": "Internal production/review tooling, not a normal student runtime dependency."
+      }
+    ],
+    "plugins": [
+      {
+        "source": "PLUGIN_PIPELINE_SCENE_INTEGRATION_PROMPTS.md",
+        "target": "plugins source packages and src-tauri local plugin runtime",
+        "status": "runtime_present_market_reserved",
+        "notes": "Preserve extension points while keeping permissions enforced by Rust proxy."
+      }
+    ],
+    "packageExcludes": [
+      "汇总3/",
+      "node_modules/",
+      "src-tauri/target/",
+      "services/account-server/dist/",
+      "runtime data directories",
+      ".env files",
+      "PostgreSQL data directories",
+      "ppt-master/projects/"
+    ]
+  },
+  "references": [
+    "docs/summary3-cloud-local-archive.md",
+    "docs/account-classroom-isolation.md"
+  ]
+}

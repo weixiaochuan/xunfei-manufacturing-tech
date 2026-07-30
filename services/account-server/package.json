@@ -1,0 +1,33 @@
+{
+  "name": "@pomegranate/account-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc && node --watch dist/src/index.js",
+    "migrate": "tsc && node dist/scripts/migrate.js",
+    "verify:documents": "tsc && node dist/scripts/verify-document-library.js",
+    "storage:migrate": "tsc && node dist/scripts/migrate-file-storage.js",
+    "storage:verify": "tsc && node dist/scripts/migrate-file-storage.js --verify",
+    "start": "node dist/src/index.js",
+    "test": "tsc && node --test dist/test/auth.test.js dist/test/config.test.js dist/test/documents.test.js dist/test/id-token.test.js dist/test/learning-project-documents.test.js dist/test/learning-projects.test.js dist/test/platform-users.test.js dist/test/sessions.test.js dist/test/storage.test.js dist/test/user-files.test.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cookie": "11.1.2",
+    "@fastify/multipart": "10.1.0",
+    "dotenv": "17.4.2",
+    "fastify": "5.10.0",
+    "jose": "6.2.3",
+    "pg": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "@types/pg": "8.20.0",
+    "typescript": "~5.8.3"
+  }
+}

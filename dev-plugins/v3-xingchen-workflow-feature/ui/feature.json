@@ -1,0 +1,28 @@
+{
+  "title": "星辰 Workflow 动态表单",
+  "description": "请选择 AI 资源中心中已配置的 Workflow。字段 key 会原样写入 parameters。",
+  "fields": [
+    {
+      "key": "AGENT_USER_INPUT",
+      "label": "用户输入",
+      "type": "multiline",
+      "required": true,
+      "rows": 8,
+      "placeholder": "请输入要交给工作流处理的内容"
+    },
+    {
+      "key": "audience",
+      "label": "目标受众",
+      "type": "select",
+      "required": false,
+      "options": [
+        { "label": "学生", "value": "student" },
+        { "label": "教师", "value": "teacher" },
+        { "label": "研究人员", "value": "researcher" }
+      ]
+    }
+  ],
+  "submitLabel": "调用 Workflow",
+  "outputTitle": "Workflow 结果",
+  "output": { "kind": "markdown" }
+}

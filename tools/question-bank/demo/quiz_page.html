@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>学-练-考 · 答题 + 反馈</title>
+<style>
+  :root{ --ink:#1a2233; --sub:#6b7686; --line:#e6e9ef; --ok:#137a4b; --bad:#c0392b;
+         --brand:#2d5bd7; --bg:#f6f7fb; --warn:#8a5a00; --soft:#f7f9ff; }
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+       margin:0;background:var(--bg);color:var(--ink);line-height:1.65}
+  .wrap{max-width:800px;margin:0 auto;padding:22px 18px 96px}
+  h1{font-size:20px;margin:6px 0 2px}
+  .meta{color:var(--sub);font-size:13px;margin-bottom:14px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+  select,button,input,textarea{font:inherit;padding:8px 12px;border:1px solid var(--line);
+       border-radius:10px;background:#fff;color:var(--ink)}
+  button{cursor:pointer}
+  button.primary{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .switch{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--sub)}
+  .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:20px;margin-bottom:16px;
+        box-shadow:0 1px 2px rgba(20,30,60,.04)}
+  .tag{display:inline-block;font-size:12px;color:var(--sub);background:#f0f2f7;border-radius:999px;padding:2px 10px;margin-right:6px}
+  .tag.bloom{background:#eef3ff;color:var(--brand);cursor:help}
+  .stem{font-size:16px;font-weight:600;margin:10px 0 12px;white-space:pre-wrap}
+  .qimg{max-width:100%;border:1px solid var(--line);border-radius:12px;margin:4px 0 12px;background:#fff}
+  .opt{display:block;width:100%;text-align:left;padding:12px 14px;border:1px solid var(--line);
+       border-radius:12px;background:#fff;margin:8px 0;transition:.15s}
+  .opt:hover{border-color:var(--brand)}
+  .opt.correct{border-color:var(--ok);background:#eafaf1}
+  .opt.wrong{border-color:var(--bad);background:#fdecea}
+  .opt:disabled{cursor:default}
+  .calcbox textarea{width:100%;min-height:88px;border:1px solid var(--line);border-radius:12px;padding:10px;font:inherit;resize:vertical}
+  .fb{margin-top:12px;padding:14px;border-radius:12px;background:var(--soft);border:1px solid #e2e8fb;font-size:14px}
+  .fb .ok{color:var(--ok);font-weight:700}
+  .fb .bad{color:var(--bad);font-weight:700}
+  .fb h4{margin:12px 0 4px;font-size:13px;color:var(--brand)}
+  .fb .src{color:var(--sub);font-size:12px;margin-top:10px}
+  .scorepill{display:inline-block;font-weight:700;border-radius:999px;padding:2px 12px;margin-left:8px;color:#fff}
+  .spin{color:var(--sub);font-size:13px;display:flex;align-items:center;gap:8px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--brand);animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:.3}50%{opacity:1}}
+  details.ref{margin-top:10px;border:1px solid var(--line);border-radius:10px;background:#fff;padding:8px 12px}
+  details.ref summary{cursor:pointer;color:var(--sub);font-size:13px}
+  details.ref pre{white-space:pre-wrap;font:inherit;margin:8px 0 0;color:var(--ink)}
+  /* 趁热打铁入口 */
+  .reinforce-entry{margin-top:12px;padding:12px 14px;border:1px dashed #bcd;border-radius:12px;
+       background:#f0f7ff;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+  /* 追问框 */
+  .askbtn{margin-top:10px}
+  .askbox{margin-top:10px;padding:12px;border:1px solid #e2e8fb;border-radius:12px;background:#fff}
+  .askrow{display:flex;gap:8px;align-items:flex-end;margin-top:6px}
+  .askbox textarea{flex:1;min-height:48px;font-size:14px}
+  .askrow button{padding:6px 14px;font-size:13px;white-space:nowrap}
+  .askreply{margin-top:10px;padding:10px 12px;background:var(--soft);border-radius:10px;
+       white-space:pre-wrap;font-size:14px;display:flex;gap:8px;align-items:flex-start}
+  .askreply .who{flex:0 0 auto;font-weight:700;color:var(--brand)}
+  .askmine{margin-top:8px;padding:8px 12px;background:#f2f4f8;border-radius:10px;font-size:14px;
+       display:flex;gap:8px;align-items:flex-start}
+  .askmine .who{flex:0 0 auto;font-weight:700;color:var(--sub)}
+  /* 弹窗 */
+  .mask{position:fixed;inset:0;background:rgba(20,28,50,.45);display:none;align-items:center;
+        justify-content:center;padding:18px;z-index:50}
+  .mask.show{display:flex}
+  .modal{background:#fff;border-radius:18px;max-width:640px;width:100%;max-height:86vh;overflow:auto;
+         padding:20px;box-shadow:0 18px 50px rgba(20,30,60,.25)}
+  .modal{position:relative}
+  .modalx{position:absolute;top:12px;right:14px;border:none;background:none;font-size:20px;
+          color:var(--sub);cursor:pointer;line-height:1;padding:4px 8px;border-radius:8px}
+  .modalx:hover{background:#f0f2f7;color:var(--ink)}
+  .modal h3{margin:0 0 4px;font-size:17px;padding-right:30px}
+  .modal .mmeta{color:var(--sub);font-size:13px;margin-bottom:12px}
+  .modal .mfoot{display:flex;justify-content:space-between;align-items:center;margin-top:14px;gap:10px}
+  .linkbtn{background:none;border:none;color:var(--sub);text-decoration:underline;font-size:13px;padding:4px}
+  .foot{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);
+        padding:10px 18px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+  .note{color:var(--sub);font-size:12px;margin-top:22px;border-top:1px dashed var(--line);padding-top:12px}
+  .tip{background:#fffaf0;border:1px solid #ffe6b3;color:var(--warn);border-radius:10px;padding:8px 12px;font-size:13px;margin-bottom:12px}
+  body.hide-bloom .bloom{display:none}
+  .tag.real{background:#fff1e6;color:#a4530a;font-weight:600}
+  .goalgrid{display:grid;gap:10px;margin:10px 0}
+  .goalcard{border:1.5px solid #e3e8f2;border-radius:12px;padding:12px 14px;cursor:pointer;transition:.15s}
+  .goalcard:hover{border-color:var(--brand);background:#f7f9ff}
+  .goalcard.rec{border-color:var(--brand);background:#f7f9ff}
+  .goalcard .gt{font-weight:700;font-size:15px;margin-bottom:3px}
+  .goalcard .gd{font-size:13px;color:var(--ink);line-height:1.6}
+  .goalcard .gp{font-size:12px;color:var(--sub);margin-top:4px}
+  .badge{background:var(--brand);color:#fff;font-size:11px;padding:1px 7px;border-radius:20px;font-weight:600}
+  .tag.rec{background:#eaf0ff;color:#2b4fa2;font-weight:600}
+  .scanTip{margin:8px 0;padding:7px 10px;background:#fff8e8;border-left:3px solid #e0a63c;
+           border-radius:0 8px 8px 0;font-size:12.5px;line-height:1.6;color:#6b4d16}
+  .wbstat{padding:10px 0;font-size:14px}
+  .wbnum{font-size:22px;font-weight:700;margin-right:3px}
+  .wbnum.bad{color:#c0392b} .wbnum.ok{color:#2e7d32}
+  .wbweak{padding:7px 10px;margin:5px 0;background:#fff6f6;border-left:3px solid #e57373;
+          border-radius:0 6px 6px 0;font-size:13px;display:flex;justify-content:space-between}
+  .wbitem{padding:9px 11px;margin:7px 0;border:1px solid var(--line);border-radius:8px;background:#fff}
+  .wbtop{margin-bottom:5px}
+  .wbstem{font-size:13.5px;line-height:1.6;margin-bottom:4px}
+  .tag.warn{background:#ffeaea;color:#c0392b}
+  .ansimg{margin:10px 0}
+  .ansimg img{max-width:100%;border:1px solid var(--line);border-radius:8px;background:#fff}
+  .opt.sel{border-color:var(--brand);background:#eef3ff;font-weight:600}
+  .opt.multi:before{content:"☐ ";color:var(--sub)}
+  .opt.multi.sel:before{content:"☑ ";color:var(--brand)}
+  /* 提交按钮：不要占满一整行的深色大块（用户反馈"太丑、观感很差"）。
+     改成：小尺寸、浅底、细边框，只占内容宽度，靠左放。 */
+  .submitbtn{
+    display:inline-block; width:auto; margin-top:10px;
+    padding:7px 20px; font-size:13.5px; font-weight:600;
+    background:#eef3ff; color:var(--brand);
+    border:1px solid #c7d7f5; border-radius:8px; cursor:pointer;
+    text-align:center; transition:.15s;
+  }
+  .submitbtn:hover{background:#dfe9ff; border-color:var(--brand)}
+  .submitbtn:disabled{opacity:.5; cursor:default}
+  .submitbtn.warn{background:#fff4f4; color:#b03030; border-color:#f0c8c8}
+  table.rubric{width:100%;border-collapse:collapse;margin:6px 0 2px}
+  table.rubric td{padding:6px 8px;border-bottom:1px solid #e8ecf5;vertical-align:top;font-size:13.5px}
+  table.rubric td.ic{width:22px;text-align:center;font-weight:700}
+  table.rubric td.pt{width:60px;text-align:right;color:var(--sub);white-space:nowrap}
+  table.rubric .why{color:var(--sub);font-size:12px;margin-top:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>学-练-考 · 答题 + 反馈</h1>
+  <div class="meta">只显示【已通过审核】的题 · 共 <b id="total">…</b> 道 · <span id="modeLabel">加载中</span> · <a href="/teacher" style="color:var(--brand)">教师看板 →</a></div>
+
+  <div class="tip">
+    主观题按<b>采分点</b>批改：每个得分点单独给分，写出过程就能拿分，不是只看最终答案。
+    答错后可点【趁热打铁】做同类题巩固，也可以点"问一下"直接提问。
+  </div>
+
+  <div class="bar">
+    <select id="chapterSel"><option value="">全部章节</option></select>
+    <select id="typeSel">
+      <option value="">全部题型</option>
+      <option value="名词解释">名词解释</option>
+      <option value="简述">简述题</option>
+      <option value="计算">分析计算题</option>
+      <option value="单选">单选题</option>
+      <option value="多选">多选题</option>
+    </select>
+    <select id="srcSel">
+      <option value="">全部题目</option>
+      <option value="real">仅历年真题</option>
+      <option value="book">仅教材原题</option>
+      <option value="ai">仅AI出的题</option>
+    </select>
+    <label class="switch"><input type="checkbox" id="bloomToggle" checked> 显示考点标签(Bloom)</label>
+    <button onclick="restart()">重新开始</button>
+    <button class="primary" onclick="showRecommend()">🎯 给我推题</button>
+    <button class="primary" onclick="showWrongBook()">📕 我的错题本</button>
+    <button onclick="showProgress()">我的学情</button>
+  </div>
+
+  <div id="quiz"></div>
+
+  <div class="note">
+    <b>Bloom</b> 是"考点认知层级"（记忆/理解/应用…），给出题和老师看的元数据；学生端要不要显示可和 UI 同学商量，这里给了开关。<br>
+    <b>配图</b>：题目配图存在磁盘 <code>assets/images/</code>，数据库只存路径。图由题目参数用代码画出（见 <code>pipeline/make_figures.py</code>），所以图和题目数据永远一致。
+  </div>
+</div>
+
+<div class="foot">
+  <span><b>得分：</b><span id="score">0</span> / <span id="answered">0</span></span>
+  <span class="meta" id="progressLine"></span>
+</div>
+
+<!-- 趁热打铁弹窗 -->
+<div class="mask" id="mask">
+  <div class="modal" id="modal"></div>
+</div>
+
+<script>
+let DATA=[], pool=[], stats={answered:0,correct:0}, LLM=false;
+let REC={};   // 推题理由：question_id -> 推荐信息（不是推题时为空）
+let RF=null;  // 当前趁热打铁会话
+
+async function boot(){
+  try{ const cfg=await (await fetch('/api/config')).json(); LLM=cfg.use_llm; }catch(e){}
+  document.getElementById('modeLabel').textContent = LLM? '智能反馈已开启' : '离线模式';
+  DATA = await (await fetch('/api/questions')).json();
+  document.getElementById('total').textContent = DATA.length;
+  // 章节按 第一章→第七章 正确排序（用户反馈：之前是一、七、二…乱序）
+  const chs=[...new Map(DATA.map(q=>[q.chapter,q.chapter_no??99])).entries()]
+            .sort((a,b)=>a[1]-b[1]);
+  const cs=document.getElementById('chapterSel');
+  chs.forEach(([c])=>{const o=document.createElement('option');o.value=c;o.textContent=c;cs.appendChild(o);});
+  cs.onchange=restart; document.getElementById('typeSel').onchange=restart;
+  document.getElementById('srcSel').onchange=restart;
+  document.getElementById('bloomToggle').onchange=e=>document.body.classList.toggle('hide-bloom', !e.target.checked);
+  document.getElementById('mask').onclick=e=>{ if(e.target.id==='mask') closeModal(); };
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeModal(); });   // ESC 关闭
+  restart();
+}
+function byId(id){ return DATA.find(q=>q.id===id); }
+const TYPE_ORDER={'名词解释':0,'简述':1,'计算':2,'单选':3,'多选':4};
+function restart(){
+  const ch=document.getElementById('chapterSel').value;
+  const tp=document.getElementById('typeSel').value;
+  const sc=document.getElementById('srcSel').value;
+  pool = DATA.filter(q=>(!ch||q.chapter===ch) && (!tp||q.type===tp) &&
+                        (!sc || (sc==='real' ? q.src==='真题'
+                               : sc==='book' ? q.src==='教材习题'
+                               : q.src==='AI生成')))
+             .sort((a,b)=>(a.chapter_no??99)-(b.chapter_no??99)
+                          || (a.is_real?0:1)-(b.is_real?0:1)          // 真题排前面
+                          || (TYPE_ORDER[a.type]??9)-(TYPE_ORDER[b.type]??9));
+  stats={answered:0,correct:0}; render(); window.scrollTo(0,0);
+}
+function render(){ const b=document.getElementById('quiz'); b.innerHTML=''; pool.forEach((q,i)=>b.appendChild(card(q,i))); updateScore(); }
+function bloomTag(q){ return q.bloom?`<span class="tag bloom" title="考点认知层级：这道题主要考${q.bloom}">Bloom:${q.bloom}</span>`:''; }
+function imgTag(q){ return q.image?`<img class="qimg" src="${q.image}" alt="题目配图">`:''; }
+
+function card(q,i){
+  const el=document.createElement('div'); el.className='card'; el.dataset.qid=q.id;
+  const realTag = q.is_real? `<span class="tag real">真题</span>`:'';
+  const scoreTag = q.total_score? `<span class="tag">${q.total_score}分</span>`:'';
+  // 推荐理由：只给一个极短的标签，不写大段。
+  // （用户："学生不需要那么多信息量，要考虑阅读难度和信噪比"——对，是我啰嗦了。）
+  const rec = REC[q.id];
+  const recTip = rec ? `<span class="tag rec">${esc(rec.tag||'推荐')}</span>` : '';
+  // 原卷截图题：公式和尺寸链在图里，文字题干是PDF提取出来的（会有点乱）。
+  // 明确告诉学生"以图为准"，别对着乱码发懵。
+  const scanTip = q.scan ? `<div class="scanTip">📄 <b>这是历年真题原卷</b>　公式、尺寸链、零件图都在下面的图里，<b>以图为准</b>（上面的文字是自动提取的，可能有错行）。</div>` : '';
+  el.innerHTML=`<div><span class="tag">${q.chapter}</span><span class="tag">${q.type}</span>${realTag}${scoreTag}${recTip}${bloomTag(q)}</div>
+    <div class="stem">${i+1}. ${esc(q.stem)}</div>${scanTip}${imgTag(q)}`;
+  if(q.type==='单选' && q.options){
+    // 单选：点一个选中（不立刻判分），点【提交】才判分——和多选、主观题统一
+    q.options.forEach(opt=>{
+      const b=document.createElement('button'); b.className='opt'; b.textContent=opt;
+      b.onclick=()=>{
+        if(el.dataset.done) return;
+        el.querySelectorAll('.opt').forEach(x=>x.classList.remove('sel'));
+        b.classList.add('sel'); el.dataset.pick=opt;
+      };
+      el.appendChild(b);
+    });
+    el.appendChild(submitBtn(el,q,()=>el.dataset.pick||''));
+  } else if(q.type==='多选' && q.options){
+    // 多选：勾选多个，点【提交】判分
+    // 判分规则（老师定的）：全答对=满分；答对一部分且没答错=一半分；但凡错一个=0分
+    const tip=document.createElement('div'); tip.className='src';
+    tip.textContent='多选题：可以选多个。全部答对得满分，答对一部分（没有答错的）得一半分，选错任何一个不得分。';
+    el.appendChild(tip);
+    q.options.forEach(opt=>{
+      const b=document.createElement('button'); b.className='opt multi'; b.textContent=opt;
+      b.onclick=()=>{ if(el.dataset.done) return; b.classList.toggle('sel'); };
+      el.appendChild(b);
+    });
+    el.appendChild(submitBtn(el,q,()=>
+      [...el.querySelectorAll('.opt.sel')].map(x=>x.textContent).join('；')));
+  } else {
+    const box=document.createElement('div'); box.className='calcbox';
+    box.innerHTML=`<textarea placeholder="写下你的解题步骤和最终答案"></textarea>`;
+    el.appendChild(box);
+    el.appendChild(submitBtn(el,q,()=>box.querySelector('textarea').value));
+  }
+  return el;
+}
+/* 所有题型统一用这一个【提交】按钮（你说得对，加个提交按钮就都解决了） */
+function submitBtn(el,q,getVal){
+  const b=document.createElement('button');
+  b.className='opt primary submitbtn'; b.textContent='提交作答';
+  b.onclick=()=>{
+    if(el.dataset.done) return;
+    const v=(getVal()||'').trim();
+    // 空白不许提交（用户反馈：空白答案居然能提交）
+    if(!v){
+      b.classList.add('warn');
+      b.textContent = (q.type==='单选'||q.type==='多选') ? '请先选择答案' : '请先写下你的解答';
+      setTimeout(()=>{ b.classList.remove('warn'); b.textContent='提交作答'; }, 1400);
+      return;
+    }
+    if(q.type==='单选'||q.type==='多选') submit(el,q,v,b);
+    else submitCalc(el,q,v,b);
+  };
+  return b;
+}
+function loadingBox(el,text){
+  const fb=document.createElement('div'); fb.className='fb';
+  fb.innerHTML=`<div class="spin"><span class="dot"></span>${text}</div>`;
+  el.appendChild(fb); return fb;
+}
+async function submit(el,q,opt,btn){
+  if(el.dataset.done)return; el.dataset.done=1;
+  el.querySelectorAll('.opt').forEach(b=>b.disabled=true);
+  const fb=loadingBox(el, LLM?'正在判分并生成反馈，需要几秒，你可以先看下一题～':'正在判分…');
+  let res; try{ res=await postJSON('/api/answer',{question_id:q.id,answer:opt,mode:'练习'}); }
+  catch(e){ fb.innerHTML='反馈出错了：'+e; return; }
+  el.querySelectorAll('.opt').forEach(b=>{
+    if(b.textContent===res.correct_answer) b.classList.add('correct');
+    else if(b===btn && !res.is_correct) b.classList.add('wrong');
+  });
+  stats.answered++; if(res.is_correct) stats.correct++;
+  renderChoiceFeedback(fb,q,res); updateScore();
+}
+async function submitCalc(el,q,text,btn){
+  if(el.dataset.done)return; el.dataset.done=1; btn.disabled=true; el.querySelector('textarea').disabled=true;
+  const fb=loadingBox(el, LLM?'正在批改你的作答，需要几秒～':'正在核对…');
+  let res; try{ res=await postJSON('/api/answer',{question_id:q.id,answer:text,mode:'练习'}); }
+  catch(e){ fb.innerHTML='反馈出错了：'+e; return; }
+  renderCalcFeedback(fb,q,res); stats.answered++; updateScore();
+}
+
+/* ---------- 反馈渲染 ---------- */
+function reinforceEntry(res,q){
+  const list=res.reinforce||[]; if(!list.length) return '';
+  const ids=list.map(r=>r.question_id).join(',');
+  return `<div class="reinforce-entry">
+      <span><b>趁热打铁</b>　来 ${list.length} 道同类题巩固一下吧！</span>
+      <button class="primary" onclick="openReinforce('${res.review_knowledge_id||q.node}','${ids}')">开始巩固</button>
+    </div>`;
+}
+function askBlock(q, wasCorrect){
+  if(!LLM) return '';
+  return `<button class="opt askbtn" onclick="toggleAsk(this,'${q.id}',${wasCorrect})">💬 有疑问？说说你的想法，我来给你讲</button>`;
+}
+function renderChoiceFeedback(fb,q,res){
+  let h = res.is_correct?`<span class="ok">✔ 答对了</span>`
+                        :`<span class="bad">✘ 答错了</span>　正确答案：${esc(res.correct_answer)}`;
+  if(res.explanation) h+=`<h4>解析</h4><div>${rich(res.explanation)}</div>`;
+  if(!res.is_correct){
+    if(res.process_feedback) h+=`<h4>你的错因</h4><div>${rich(res.process_feedback)}</div>`;
+    else if(res.offline_misconception) h+=`<h4>你可能踩的误区</h4><div>${rich(res.offline_misconception)}</div>`;
+    if(res.action_suggestion) h+=`<h4>给你的建议</h4><div>${rich(res.action_suggestion)}</div>`;
+    if(res.note) h+=`<div class="src">${esc(res.note)}</div>`;
+    h+=reinforceEntry(res,q); h+=askBlock(q,false);
+  }
+  const tail=res.feedback_source==='llm'?`智能反馈 · ${res.feedback_model||''}`:'离线反馈';
+  h+=`<div class="src">来源知识点：${res.review_knowledge_id||q.node}　·　${tail}</div>`;
+  fb.innerHTML=h;
+}
+function renderCalcFeedback(fb,q,res){
+  // 主观题（名词解释/简述/计算）：采分点制批改 —— 评分方式学自本课程历年真题
+  let h='';
+  const T = res.total_score || 10;
+  if(res.graded){
+    const pct = T? res.score/T : 0;
+    const c = pct>=0.8?'var(--ok)':(pct>=0.6?'var(--warn)':'var(--bad)');
+    h+=`<div><b>你的得分</b><span class="scorepill" style="background:${c}">${res.score} / ${T}</span></div>`;
+    // 采分点逐条核对（这是学生最想看的：我哪条拿到了分）
+    if(res.rubric_check && res.rubric_check.length){
+      h+=`<h4>采分点核对</h4><table class="rubric">`;
+      res.rubric_check.forEach(p=>{
+        const ok = p.got>=p.full, half = p.got>0 && p.got<p.full;
+        const icon = ok?'<span style="color:var(--ok)">✔</span>':(half?'<span style="color:var(--warn)">◐</span>':'<span style="color:var(--bad)">✘</span>');
+        h+=`<tr><td class="ic">${icon}</td><td>${rich(p.point)}
+            ${p.reason?`<div class="why">${rich(p.reason)}</div>`:''}</td>
+            <td class="pt">${p.got}/${p.full}</td></tr>`;
+      });
+      h+=`</table>`;
+    }
+  } else {
+    // 离线（没开模型）：不批改，只给标准答案让你自己对。
+    // 一句话说清就行，不用长篇大论（用户反馈：信息冗余）。
+    h+=`<div class="src">当前是离线模式，不自动批改。加粗的地方就是采分点，对照着自评。</div>`;
+  }
+  h+=`<h4>标准答案</h4><div>${richAnswer(res.reference_answer||'')}</div>`;
+  // 原卷截图题：标准答案是图（尺寸链、公式、采分点都在图里）
+  if(res.answer_image){
+    h+=`<div class="ansimg"><img src="${res.answer_image}" alt="标准答案原卷">
+        <div class="src">↑ 这是老师原卷上的标准答案（含尺寸链图、公式、采分点）</div></div>`;
+  }
+  if(res.explanation) h+=`<h4>解析</h4><div>${rich(res.explanation)}</div>`;
+  if(res.graded){
+    if(res.lost_points) h+=`<h4>你的扣分点</h4><div>${rich(res.lost_points)}</div>`;
+    if(res.suggestion) h+=`<h4>给你的建议</h4><div>${rich(res.suggestion)}</div>`;
+  }
+  if(res.reference_steps){
+    const st=Array.isArray(res.reference_steps)?res.reference_steps.join('\n'):String(res.reference_steps);
+    h+=`<details class="ref"><summary>展开完整解题步骤</summary><pre>${esc(st)}</pre></details>`;
+  }
+  h+=reinforceEntry(res,q);
+  h+=askBlock(q, res.graded?(res.score>=0.6*T):null);
+  const tail=res.feedback_source==='llm'?`采分点批改 · ${res.feedback_model||''}`:'离线';
+  h+=`<div class="src">来源知识点：${res.review_knowledge_id||q.node}　·　${tail}</div>`;
+  fb.innerHTML=h;
+}
+
+/* ---------- 趁热打铁弹窗（可翻页，2-3道，做完给小结） ---------- */
+function openReinforce(kid, idsStr){
+  const ids=idsStr.split(',').filter(Boolean);
+  RF={kid, ids, idx:0, results:[]};
+  document.getElementById('mask').classList.add('show');
+  renderReinforce();
+}
+function closeModal(){ document.getElementById('mask').classList.remove('show'); RF=null; }
+function renderReinforce(){
+  const m=document.getElementById('modal');
+  if(!RF){ return; }
+  if(RF.idx>=RF.ids.length){ return renderReinforceSummary(); }
+  const q=byId(RF.ids[RF.idx]);
+  if(!q){ RF.idx++; return renderReinforce(); }
+  m.innerHTML=`<button class="modalx" onclick="closeModal()" title="关闭">✕</button>
+    <h3>趁热打铁 · 同类题 ${RF.idx+1} / ${RF.ids.length}</h3>
+    <div class="mmeta">${q.chapter}　·　${q.type}</div>
+    <div class="stem">${esc(q.stem)}</div>${imgTag(q)}
+    <div id="rfBody"></div>
+    <div class="mfoot"><span></span><span id="rfNav"></span></div>`;
+  const body=m.querySelector('#rfBody');
+  // 交互和主界面完全一致：选中/写完 -> 点【提交作答】。按钮也是同一款样式
+  // （用户反馈：趁热打铁的按钮是白的，看不出来能点）
+  let getVal;
+  if((q.type==='单选'||q.type==='多选') && q.options){
+    const multi = q.type==='多选';
+    if(multi){
+      const tip=document.createElement('div'); tip.className='src';
+      tip.textContent='多选题：可以选多个。全部答对得满分，答对一部分（没有答错的）得一半分，选错任何一个不得分。';
+      body.appendChild(tip);
+    }
+    q.options.forEach(opt=>{
+      const b=document.createElement('button');
+      b.className='opt'+(multi?' multi':''); b.textContent=opt;
+      b.onclick=()=>{
+        if(body.dataset.done) return;
+        if(multi){ b.classList.toggle('sel'); }
+        else { body.querySelectorAll('.opt').forEach(x=>x.classList.remove('sel')); b.classList.add('sel'); }
+      };
+      body.appendChild(b);
+    });
+    getVal=()=>[...body.querySelectorAll('.opt.sel')].map(x=>x.textContent).join('；');
+  } else {
+    const ta=document.createElement('textarea'); ta.style.width='100%'; ta.style.minHeight='80px';
+    ta.placeholder='写下你的步骤和答案';
+    body.appendChild(ta);
+    getVal=()=>ta.value;
+  }
+  const sb=document.createElement('button');
+  sb.className='submitbtn'; sb.textContent='提交作答';
+  sb.onclick=()=>{
+    if(body.dataset.done) return;
+    const v=(getVal()||'').trim();
+    if(!v){
+      sb.classList.add('warn');
+      sb.textContent=(q.type==='单选'||q.type==='多选')?'请先选择答案':'请先写下你的解答';
+      setTimeout(()=>{ sb.classList.remove('warn'); sb.textContent='提交作答'; },1400);
+      return;
+    }
+    body.dataset.done=1;
+    rfSubmit(q,v,sb);
+  };
+  body.appendChild(sb);
+}
+async function rfSubmit(q,answer,btn){
+  const body=document.getElementById('rfBody');
+  body.querySelectorAll('.opt,textarea').forEach(x=>x.disabled=true);
+  const fb=document.createElement('div'); fb.className='fb';
+  fb.innerHTML=`<div class="spin"><span class="dot"></span>正在判分…</div>`;
+  body.appendChild(fb);
+  let res; try{ res=await postJSON('/api/answer',{question_id:q.id,answer:answer,mode:'练习'}); }
+  catch(e){ fb.innerHTML='出错了：'+e; return; }
+  if(q.type==='单选'){
+    body.querySelectorAll('.opt').forEach(b=>{
+      if(b.textContent===res.correct_answer) b.classList.add('correct');
+      else if(b===btn && !res.is_correct) b.classList.add('wrong');
+    });
+    let h=res.is_correct?`<span class="ok">✔ 答对了</span>`
+                        :`<span class="bad">✘ 答错了</span>　正确答案：${esc(res.correct_answer)}`;
+    if(res.explanation) h+=`<h4>解析</h4><div>${rich(res.explanation)}</div>`;
+    if(!res.is_correct && res.process_feedback) h+=`<h4>你的错因</h4><div>${rich(res.process_feedback)}</div>`;
+    fb.innerHTML=h;
+    RF.results.push({question_id:q.id, is_correct:res.is_correct, your_answer:res.your_answer});
+  } else {
+    let h='';
+    if(res.graded) h+=`<div><b>得分</b> ${res.score}/100 <span class="src">(结果 ${res.result_score}/40 · 步骤 ${res.step_score}/60)</span></div>`;
+    h+=`<h4>标准答案</h4><div>${rich(res.reference_answer||'')}</div>`;
+    if(res.explanation) h+=`<h4>解析</h4><div>${rich(res.explanation)}</div>`;
+    fb.innerHTML=h;
+    RF.results.push({question_id:q.id, is_correct: res.graded? (res.score>=60) : null, your_answer:answer});
+  }
+  const nav=document.getElementById('rfNav');
+  const last = RF.idx===RF.ids.length-1;
+  nav.innerHTML=`<button class="primary" onclick="rfNext()">${last?'看小结':'下一道'}</button>`;
+}
+function rfNext(){ RF.idx++; renderReinforce(); }
+async function renderReinforceSummary(){
+  const m=document.getElementById('modal');
+  m.innerHTML=`<h3>巩固小结</h3><div class="mmeta">这轮同类题的掌握情况</div>
+    <div class="fb"><div class="spin"><span class="dot"></span>正在总结…</div></div>`;
+  let s; try{ s=await postJSON('/api/reinforce_summary',{knowledge_id:RF.kid, results:RF.results}); }
+  catch(e){ s={summary:'总结失败：'+e}; }
+  const n=RF.results.length, c=RF.results.filter(r=>r.is_correct).length;
+  let h=`<div style="margin-bottom:8px"><b>${c} / ${n}</b> 答对`;
+  if(s.mastery_prob!=null) h+=`　<span class="src">当前掌握度估计 ${(s.mastery_prob*100).toFixed(0)}%</span>`;
+  h+=`</div>`;
+  if(s.summary) h+=`<div>${rich(s.summary)}</div>`;
+  if(s.error_pattern && s.error_pattern!=='无') h+=`<h4>你的错误规律</h4><div>${rich(s.error_pattern)}</div>`;
+  if(s.advice) h+=`<h4>接下来</h4><div>${rich(s.advice)}</div>`;
+  m.innerHTML=`<button class="modalx" onclick="closeModal()" title="关闭">✕</button>
+    <h3>巩固小结</h3><div class="mmeta">${esc(s.knowledge_title||RF.kid)}</div>
+    <div class="fb">${h}</div>
+    <div class="mfoot"><span></span><button class="primary" onclick="closeModal()">关闭</button></div>`;
+}
+
+/* ---------- 追问 ---------- */
+function toggleAsk(btn,qid,wasCorrect){
+  const ex=btn.parentNode.querySelector('.askbox'); if(ex){ ex.remove(); return; }
+  const box=document.createElement('div'); box.className='askbox';
+  box.innerHTML=`<div class="src">把你不懂的地方或你的想法说出来，我给你讲清楚：</div>
+    <div class="askrow"><textarea placeholder="例如：这一步为什么要这么做？我是这样想的……"></textarea>
+    <button class="primary">发送</button></div>
+    <div class="asklog"></div>`;
+  const ta=box.querySelector('textarea'), send=box.querySelector('button'), log=box.querySelector('.asklog');
+  send.onclick=async ()=>{
+    const msg=ta.value.trim(); if(!msg) return;
+    send.disabled=true; ta.disabled=true;
+    log.insertAdjacentHTML('beforeend',
+      `<div class="askmine"><span class="who">我：</span><span>${esc(msg)}</span></div>`);
+    const rep=document.createElement('div'); rep.className='askreply';
+    rep.innerHTML=`<span class="who">👨‍🏫 老师：</span><span class="spin"><span class="dot"></span>正在给你讲…</span>`;
+    log.appendChild(rep);
+    try{ const r=await postJSON('/api/ask',{question_id:qid,message:msg,was_correct:wasCorrect});
+         rep.innerHTML=`<span class="who">👨‍🏫 老师：</span><span>${rich(r.reply)}</span>`; }
+    catch(e){ rep.innerHTML=`<span class="who">👨‍🏫 老师：</span><span>出错了：${e}</span>`; }
+    ta.value=''; ta.disabled=false; send.disabled=false; ta.focus();
+  };
+  btn.parentNode.appendChild(box); ta.focus();
+}
+
+/* Phase 3：自适应推题 —— 按你的掌握度推"跳一跳够得着"的题（预计答对率50-70%） */
+/* 推题前先问清楚你想练什么 —— 不问清楚，推得再"智能"也是瞎猜。
+   用户说得对：推难题还是简单题，得你自己说了算。 */
+// ⭐ 错题本：把学生做错的题按知识点归堆，让他看清"我到底哪个概念反复错"
+async function showWrongBook(){
+  const m=document.getElementById('modal');
+  m.style.display='flex';
+  const X=`<button class="modalx" onclick="closeModal()" title="关闭">✕</button>`;
+  m.innerHTML=`${X}<div class="mhead">📕 我的错题本</div><div style="padding:14px">正在整理…</div>`;
+  let d;
+  try{ d=await (await fetch('/api/wrong_book')).json(); }
+  catch(e){ m.innerHTML=`${X}<div class="mhead">📕 我的错题本</div><div style="padding:14px">加载失败</div>`; return; }
+
+  if(!d.todo_count && !d.mastered_count){
+    m.innerHTML=`${X}<div class="mhead">📕 我的错题本</div>
+      <div style="padding:18px;line-height:1.8">
+        还没有错题记录。<br><span class="src">做几道题吧——做错的题会自动收进这里。</span>
+      </div>
+      <div class="mfoot"><span></span><button class="primary" onclick="closeModal()">知道了</button></div>`;
+    return;
+  }
+
+  let h=`${X}<div class="mhead">📕 我的错题本</div><div style="padding:4px 16px 14px">`;
+  h+=`<div class="wbstat">
+        <span class="wbnum bad">${d.todo_count}</span> 道待攻克
+        <span style="margin:0 10px;color:#ccc">|</span>
+        <span class="wbnum ok">${d.mastered_count}</span> 道已攻克
+      </div>`;
+
+  // 最该补的知识点（这是错题本真正的价值：不是"我错了几道"，而是"我哪里没懂"）
+  if(d.weak_points && d.weak_points.length){
+    h+=`<h4 style="margin:12px 0 6px">最该补的知识点</h4>`;
+    d.weak_points.forEach(w=>{
+      h+=`<div class="wbweak">
+            <b>${esc(w.knowledge||'（未标注）')}</b>
+            <span class="src">错了 ${w.wrong_count} 道</span>
+          </div>`;
+    });
+  }
+
+  if(d.todo_count){
+    h+=`<h4 style="margin:14px 0 6px">待攻克的错题</h4>`;
+    d.todo.forEach(q=>{
+      h+=`<div class="wbitem">
+            <div class="wbtop">
+              <span class="tag">${esc(q.type)}</span>
+              <span class="tag">${esc(q.src)}</span>
+              ${q.attempts>1?`<span class="tag warn">做错 ${q.attempts} 次</span>`:''}
+            </div>
+            <div class="wbstem">${esc((q.stem||'').slice(0,90))}${(q.stem||'').length>90?'…':''}</div>
+            <div class="src">你的答案：${esc((q.your_answer||'（空）').slice(0,50))}</div>
+          </div>`;
+    });
+  }
+  h+=`</div><div class="mfoot"><span class="src">重做对了就会自动移出错题本</span>
+      <button class="primary" onclick="closeModal()">关闭</button></div>`;
+  m.innerHTML=h;
+}
+
+function showRecommend(){
+  // 必须用和 closeModal 配套的方式开关（加/去 show 类）。
+  // 之前我用 style.display 打开，closeModal 却是去掉 show 类——所以关不掉。
+  const m=document.getElementById('modal');
+  document.getElementById('mask').classList.add('show');
+  m.innerHTML=`<button class="modalx" onclick="closeModal()">✕</button>
+    <h3>你想练什么？</h3>
+    <div class="mmeta">告诉我你的目标，我按目标给你挑题</div>
+    <div class="goalgrid">
+      <div class="goalcard" onclick="doRecommend('巩固基础')">
+        <div class="gt">巩固基础</div>
+        <div class="gd">推你<b>有把握</b>的题，先把会的做熟、建立手感</div>
+        <div class="gp">预计答对率 70%~85%</div></div>
+      <div class="goalcard rec" onclick="doRecommend('攻破薄弱')">
+        <div class="gt">攻破薄弱 <span class="badge">推荐</span></div>
+        <div class="gd">推你<b>薄弱知识点</b>上跳一跳够得着的题，学习效率最高</div>
+        <div class="gp">预计答对率 50%~70%</div></div>
+      <div class="goalcard" onclick="doRecommend('提升拔高')">
+        <div class="gt">提升拔高</div>
+        <div class="gd">推<b>有挑战的难题</b>，冲高分</div>
+        <div class="gp">预计答对率 30%~50%</div></div>
+    </div>
+    <div class="mfoot"><span class="src">也可以只练某个题型：
+      <select id="recType">
+        <option value="">全部题型</option>
+        <option value="名词解释">名词解释</option>
+        <option value="简述">简述题</option>
+        <option value="计算">分析计算题</option>
+        <option value="单选">单选题</option>
+      </select></span><span></span></div>`;
+}
+
+async function doRecommend(goal){
+  const qt=(document.getElementById('recType')||{}).value||'';
+  closeModal();
+  const r=await (await fetch(`/api/recommend?n=6&goal=${encodeURIComponent(goal)}&qtype=${encodeURIComponent(qt)}`)).json();
+  const items=r.items||[];
+  if(!items.length){ alert('这个条件下暂时没有合适的题，换个目标或题型试试。'); return; }
+  REC = {};
+  items.forEach(x=>{ REC[x.question_id]=x; });          // 记住每道题的推荐理由
+  pool = items.map(x=>byId(x.question_id)).filter(Boolean);
+  render(); window.scrollTo(0,0);
+  const b=document.getElementById('quiz');
+  const tip=document.createElement('div');
+  tip.className='tip';
+  tip.innerHTML=`🎯 <b>${esc(goal)}</b> · ${pool.length} 道　
+    <a href="#" onclick="showRecommend();return false;" style="color:var(--brand)">换目标</a>`;
+  b.insertBefore(tip, b.firstChild);
+}
+
+async function showProgress(){
+  const p=await (await fetch('/api/progress')).json();
+  const weak=(p.weak_knowledge_points||[]).map(w=>`${w.title||w.knowledge_id}(错${w.wrong_count})`).join('、')||'—';
+  alert(`你的学情\n已答：${p.answered} 题　正确：${p.correct} 题　正确率：${p.accuracy===null?'—':(p.accuracy*100).toFixed(0)+'%'}\n你的薄弱知识点：${weak}`);
+}
+async function postJSON(url,body){
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  return await r.json();
+}
+function updateScore(){
+  document.getElementById('score').textContent=stats.correct;
+  document.getElementById('answered').textContent=stats.answered;
+  document.getElementById('progressLine').textContent=`本次筛选共 ${pool.length} 道`;
+}
+function esc(s){return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+/* 富文本：把 **加粗** 渲染成粗体，换行渲染成 <br>，去掉模型偶尔吐出的 markdown 记号 */
+function rich(s){
+  let t=esc(s);
+  t=t.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
+  t=t.replace(/(^|\n)\s*[-*]\s+/g,'$1· ');
+  t=t.replace(/\n/g,'<br>');
+  return t;
+}
+/* 标准答案的加粗 = 标出【采分点】。
+   用户一针见血："加粗的内容其实就是采分点"。
+   之前我把"方法""由于各种原因"这种词加粗，是瞎标——那根本不是得分点。
+
+   真正的采分点是：
+     · 罗列题里的每一条【要点名】（摩擦降落、刀具前后角变化、再生振动…）
+     · "X——解释" / "X：解释" 里的 X（工序、工步、基准重合原则…）
+     · 定义题里被定义的【核心属性】
+   其余一律不加粗——宁可不加，也不要加错重点。 */
+function richAnswer(s){
+  let t = esc(s||'');
+  t = t.replace(/\*\*(.+?)\*\*/g, '\u0001$1\u0002');   // 保护模型自己标的加粗
+
+  t = t.split('\n').map(line=>{
+    // (a) "有：A、B、C和D五种形式" -> 逐项加粗（这一行全是采分点）
+    const m = line.match(/^(\s*(?:有|包括|分为|主要有|可分为)\s*[：:])(.+)$/);
+    if(m && m[2].indexOf('、')>=0){
+      const tail = m[2].match(/([一二三四五六七八九十\d]+\s*(?:种|个|条|方面|类)[^、]*)$/);
+      let body = tail ? m[2].slice(0, m[2].length-tail[1].length) : m[2];
+      const items = body.split(/、|，|,|和(?=\S)/).map(x=>x.trim()).filter(Boolean);
+      if(items.length>=2){
+        return m[1] + items.map(x=>'\u0001'+x+'\u0002').join('、') + (tail?tail[1]:'');
+      }
+    }
+    // (b) "（1）基准重合原则：…" / "摩擦降落——…" / "工序：…"
+    //     破折号或冒号前面的那个名称 = 采分点
+    return line.replace(
+      /^(\s*(?:[（(]\s*\d+\s*[)）]|[①②③④⑤⑥⑦⑧⑨⑩]|\d+\s*[、.．)）])?\s*)([^：:—–\u0001\u0002<>]{2,22}?)(\s*(?:[—–]{1,2}|[：:]))/,
+      (all, pre, name, sep)=> pre + '\u0001' + name.trim() + '\u0002' + sep
+    );
+  }).join('\n');
+
+  t = t.replace(/\u0001/g,'<b>').replace(/\u0002/g,'</b>').replace(/\n/g,'<br>');
+  return t;
+}
+boot();
+</script>
+</body>
+</html>

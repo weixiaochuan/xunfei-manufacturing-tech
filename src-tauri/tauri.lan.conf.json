@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Pomegranate LAN TEST",
+  "mainBinaryName": "Pomegranate-LAN-TEST",
+  "identifier": "edu.bit.inb.lan-test",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Pomegranate LAN TEST"
+      }
+    ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["pomegranate"]
+      }
+    }
+  },
+  "bundle": {
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": false,
+    "shortDescription": "Pomegranate 局域网测试客户端"
+  }
+}

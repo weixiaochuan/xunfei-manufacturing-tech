@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 3,
+  "id": "com.pomegranate.demo.document-summary",
+  "name": "文档智能总结",
+  "version": "1.0.0",
+  "authorId": "pomegranate-demo-developer",
+  "description": "使用用户在 AI 资源中心已配置的讯飞星辰 Workflow，将粘贴的文档正文整理为 Markdown 总结。",
+  "minAppVersion": "1.8.0",
+  "classification": "feature",
+  "runtimeKind": "xingchen-workflow",
+  "source": "local",
+  "activationEvents": ["onFeature:document-summary"],
+  "supportedScenes": ["learning", "research", "teaching"],
+  "defaultActivation": {
+    "global": true,
+    "scenes": {
+      "learning": true,
+      "research": true,
+      "teaching": true
+    }
+  },
+  "permissions": [
+    "credentials.use",
+    "agents.invoke",
+    "network.xingchen",
+    "ai.invoke"
+  ],
+  "configurationSchema": {
+    "externalAgentId": {
+      "type": "external-agent-reference",
+      "required": true
+    }
+  },
+  "dependencies": {},
+  "conflictsWith": [],
+  "contributes": {
+    "features": [
+      {
+        "id": "document-summary",
+        "title": "文档智能总结",
+        "description": "粘贴总结要求与文档正文，调用已配置的星辰 Workflow 生成 Markdown 总结。",
+        "scenes": ["learning", "research", "teaching"],
+        "capabilities": ["feature", "xingchen.workflow.invoke"],
+        "uiSchema": "ui/feature.json",
+        "handler": {
+          "kind": "declarative",
+          "resource": "ui/feature.json"
+        }
+      }
+    ],
+    "agents": [],
+    "commands": [],
+    "views": [],
+    "tools": [],
+    "enhancements": [],
+    "settings": false
+  },
+  "integrity": {
+    "sha256": null
+  },
+  "signature": {
+    "status": "unsigned",
+    "signer": null
+  }
+}

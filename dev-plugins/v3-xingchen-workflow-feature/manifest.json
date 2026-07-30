@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 3,
+  "id": "com.firstwork.xingchen-workflow-form",
+  "name": "星辰 Workflow 动态表单示例",
+  "version": "1.0.0",
+  "authorId": "firstwork-examples",
+  "description": "通过 AI 资源中心中已配置的 Workflow 执行多字段调用。",
+  "minAppVersion": "1.8.0",
+  "classification": "feature",
+  "runtimeKind": "xingchen-workflow",
+  "source": "local",
+  "activationEvents": ["onFeature:xingchen-dynamic-form"],
+  "supportedScenes": ["global", "learning"],
+  "defaultActivation": {
+    "global": true,
+    "scenes": { "learning": true }
+  },
+  "permissions": [
+    "credentials.use",
+    "agents.invoke",
+    "network.xingchen",
+    "ai.invoke"
+  ],
+  "configurationSchema": {
+    "externalAgentId": {
+      "type": "external-agent-reference",
+      "required": true
+    }
+  },
+  "dependencies": {},
+  "conflictsWith": [],
+  "contributes": {
+    "features": [
+      {
+        "id": "xingchen-dynamic-form",
+        "title": "调用星辰 Workflow",
+        "description": "按字段 key 构造 parameters，由 Rust 后端使用安全凭据调用。",
+        "scenes": ["global", "learning"],
+        "capabilities": ["xingchen.workflow.invoke"],
+        "uiSchema": "ui/feature.json"
+      }
+    ],
+    "agents": [],
+    "commands": [],
+    "views": [],
+    "tools": [],
+    "enhancements": [],
+    "settings": false
+  },
+  "integrity": { "sha256": null },
+  "signature": { "status": "unsigned", "signer": null }
+}
