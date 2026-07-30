@@ -169,14 +169,25 @@ export class OidcOrganizationError extends Error {
 export async function verifyIdTokenWithKey(
   idToken: string,
   key: JWTVerifyGetKey,
-  expected: { issuer: string; audience: string; organization: string },
+  expected: {
+    issuer: string;
+    audience: string;
+    organization: string;
+    nbfClockToleranceSeconds?: number;
+  },
 ): Promise<VerifiedIdToken> {
   const { payload, protectedHeader } = await jwtVerify(idToken, key, {
     algorithms: ["RS256"],
     issuer: expected.issuer,
     audience: expected.audience,
     requiredClaims: ["iss", "sub", "aud", "exp", "iat"],
+    clockTolerance: expected.nbfClockToleranceSeconds ?? 0,
   });
+
+  const now = Math.floor(Date.now() / 1_000);
+  if (typeof payload.exp !== "number" || payload.exp <= now) {
+    throw new Error("OIDC ID Token exp 无效");
+  }
 
   if (protectedHeader.typ !== undefined && protectedHeader.typ !== "JWT") {
     throw new Error("OIDC ID Token typ 无效");
@@ -320,6 +331,7 @@ export function createOidcClient(
         issuer: discovery.issuer,
         audience: config.clientId,
         organization: config.organization,
+        nbfClockToleranceSeconds: config.nbfClockToleranceSeconds ?? 0,
       });
     },
 

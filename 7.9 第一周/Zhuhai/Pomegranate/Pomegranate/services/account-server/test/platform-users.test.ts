@@ -160,6 +160,19 @@ test("wrong organization is rejected before opening a database connection", asyn
   assert.equal(database.getConnectCount(), 0);
 });
 
+test("configured test organization can create platform users", async () => {
+  const database = createFakePool();
+  const user = await findOrCreatePlatformUser(
+    database.pool,
+    createIdentity({ organization: "pomegranate-test" }),
+    "pomegranate-test",
+  );
+
+  assert.equal(user.organization, "pomegranate-test");
+  assert.equal(user.accountNumber, "POME-000001");
+  assert.equal(database.rows.size, 1);
+});
+
 test("blank stable subject is rejected before writing", async () => {
   const database = createFakePool();
   await assert.rejects(

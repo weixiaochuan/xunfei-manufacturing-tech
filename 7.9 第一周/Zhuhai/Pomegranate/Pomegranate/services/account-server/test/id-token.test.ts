@@ -29,19 +29,23 @@ interface TokenOptions {
   issuer?: string;
   audience?: string;
   expirationTime?: number;
+  notBefore?: number;
   signingKey?: CryptoKey;
   typ?: string;
 }
 
 async function signIdToken(options: TokenOptions = {}): Promise<string> {
-  return new SignJWT(options.claims ?? { owner: ORGANIZATION })
+  const token = new SignJWT(options.claims ?? { owner: ORGANIZATION })
     .setProtectedHeader({ alg: "RS256", kid: "primary", typ: options.typ ?? "JWT" })
     .setIssuer(options.issuer ?? ISSUER)
     .setSubject("stable-user-id")
     .setAudience(options.audience ?? AUDIENCE)
     .setIssuedAt(NOW)
-    .setExpirationTime(options.expirationTime ?? NOW + 300)
-    .sign(options.signingKey ?? primaryKeys.privateKey);
+    .setExpirationTime(options.expirationTime ?? NOW + 300);
+  if (options.notBefore !== undefined) {
+    token.setNotBefore(options.notBefore);
+  }
+  return token.sign(options.signingKey ?? primaryKeys.privateKey);
 }
 
 async function verify(token: string) {
@@ -135,6 +139,43 @@ test("rejects an expired ID Token", async () => {
     claims: { owner: ORGANIZATION, name: "alice" },
   });
   await assert.rejects(() => verify(token));
+});
+
+test("allows a future nbf only within an explicit tolerance while keeping exp strict", async () => {
+  const token = await signIdToken({
+    notBefore: NOW + 28_800,
+    expirationTime: NOW + 29_100,
+    claims: { owner: ORGANIZATION, name: "alice" },
+  });
+  await verifyIdTokenWithKey(token, primaryJwks, {
+    issuer: ISSUER,
+    audience: AUDIENCE,
+    organization: ORGANIZATION,
+    nbfClockToleranceSeconds: 28_860,
+  });
+
+  await assert.rejects(() =>
+    verifyIdTokenWithKey(token, primaryJwks, {
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      organization: ORGANIZATION,
+      nbfClockToleranceSeconds: 60,
+    }),
+  );
+
+  const expiredToken = await signIdToken({
+    notBefore: NOW - 60,
+    expirationTime: NOW - 1,
+    claims: { owner: ORGANIZATION, name: "alice" },
+  });
+  await assert.rejects(() =>
+    verifyIdTokenWithKey(expiredToken, primaryJwks, {
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      organization: ORGANIZATION,
+      nbfClockToleranceSeconds: 28_860,
+    }),
+  );
 });
 
 test("rejects an ID Token with an invalid explicit typ", async () => {
