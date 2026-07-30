@@ -25,6 +25,7 @@ use crate::models::{
     PluginSignature, PluginSource, PluginSummaryAgentOption, ProductType,
 };
 use crate::services::credentials::CredentialService;
+pub(crate) use crate::services::plugin_capabilities::VALID_PERMISSIONS;
 use crate::services::xingchen_agent::XingchenAgentService;
 
 const MANIFEST_FILE_V2: &str = "manifest.json";
@@ -32,53 +33,6 @@ const LEGACY_MANIFEST_FILE: &str = "plugin.json";
 const SUPPORTED_SCHEMA_VERSION: u32 = 2;
 const SUMMARY_MODE_KEY: &str = "summaryMode";
 const SUMMARY_EXTERNAL_AGENT_KEY: &str = "summaryExternalAgentId";
-
-pub(crate) const VALID_PERMISSIONS: &[&str] = &[
-    // Phase 1 public permission names.
-    "notes.read",
-    "notes.write",
-    "document.read",
-    "document.write",
-    "tasks.read",
-    "tasks.write",
-    "ai.invoke",
-    "ai.context.read",
-    "ai.context.augment",
-    "ai.session.read",
-    "ui.editor.toolbar",
-    "ui.chat.toolbar",
-    "ui.chat.panel",
-    "planning.files.read",
-    "planning.files.write",
-    "network.request",
-    "files.readSelected",
-    "files.writeSelected",
-    "prompts.register",
-    "views.register",
-    "mcp.connect",
-    "credentials.use",
-    "credentials.configure",
-    "network.xingchen",
-    "agents.invoke",
-    // Existing legacy permission names kept for dev-plugins compatibility.
-    "editor:read",
-    "editor:write",
-    "workspace:read",
-    "workspace:write",
-    "notes:read",
-    "notes:write",
-    "settings:read",
-    "settings:write",
-    "files:read",
-    "files:write",
-    "network:request",
-    "clipboard:read",
-    "clipboard:write",
-    "tasks.subscribe",
-    "taskViews.register",
-    "ai:chat",
-    "ai:models",
-];
 
 pub struct PluginService;
 

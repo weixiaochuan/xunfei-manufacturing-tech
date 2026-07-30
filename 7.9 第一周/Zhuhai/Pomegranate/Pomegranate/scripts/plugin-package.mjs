@@ -2,18 +2,24 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
+import {
+  loadCapabilityRegistry,
+  validateCapabilityRegistry,
+  v3RequestableCapabilities,
+} from "./plugin-capabilities.mjs";
 
 const MAX_FILES = 5000;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 512 * 1024 * 1024;
-const ALLOWED_PERMISSIONS = new Set([
-  "notes.read", "notes.write", "document.read", "document.write", "tasks.read", "tasks.write",
-  "ai.invoke", "ai.context.read", "ai.context.augment", "ai.session.read", "ui.editor.toolbar",
-  "ui.chat.toolbar", "ui.chat.panel", "planning.files.read", "planning.files.write",
-  "network.request", "files.readSelected", "files.writeSelected", "prompts.register",
-  "views.register", "mcp.connect", "credentials.use", "network.xingchen", "agents.invoke",
-]);
+const CAPABILITY_REGISTRY = validateCapabilityRegistry(loadCapabilityRegistry());
+const ALLOWED_PERMISSIONS = new Set(
+  v3RequestableCapabilities(CAPABILITY_REGISTRY).map((item) => item.id),
+);
+export function isV3PermissionAllowed(permission) {
+  return ALLOWED_PERMISSIONS.has(permission);
+}
 const EXECUTABLE_EXTENSIONS = new Set(["js", "mjs", "cjs", "py", "ps1", "bat", "cmd", "exe", "dll", "so", "dylib"]);
 const PRIVATE_EXTENSIONS = new Set(["pem", "p12", "pfx", "key"]);
 const TEXT_EXTENSIONS = new Set(["json", "md", "markdown", "txt", "yaml", "yml", "toml", "xml", "csv"]);
@@ -311,7 +317,7 @@ function verify(path) {
   console.log(`验证通过：${manifest.id} ${manifest.version}（${files.size} 个文件）`);
 }
 
-try {
+if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) try {
   const args = process.argv.slice(2).filter((argument) => argument !== "--");
   const [command, target, output] = args;
   if (!target || !["pack", "verify"].includes(command)) {

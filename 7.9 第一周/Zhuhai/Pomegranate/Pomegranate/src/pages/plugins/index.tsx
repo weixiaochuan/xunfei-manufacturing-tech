@@ -41,42 +41,9 @@ import type {
 } from "@/types";
 import { pluginManager } from "@/services/pluginManager";
 import { notifyDeclarativePluginToolbarChanged } from "@/services/declarativePluginEvents";
+import { PLUGIN_CAPABILITY_PRESENTATION } from "@/generated/pluginCapabilities";
 
 const { Text, Paragraph } = Typography;
-
-const PERMISSION_LABELS: Record<string, string> = {
-  "document.read": "读取当前文档",
-  "document.write": "写入当前文档",
-  "ui.editor.toolbar": "注册编辑器工具栏按钮",
-  "editor:read": "读取编辑器",
-  "editor:write": "修改编辑器",
-  "workspace:read": "读取工作区",
-  "workspace:write": "修改工作区",
-  "notes:read": "读取笔记",
-  "notes:write": "修改笔记",
-  "settings:read": "读取设置",
-  "settings:write": "修改设置",
-  "files:read": "读取文件",
-  "files:write": "写入文件",
-  "network:request": "网络请求",
-  "clipboard:read": "读取剪贴板",
-  "clipboard:write": "写入剪贴板",
-  "notes.read": "读取笔记",
-  "notes.write": "修改笔记",
-  "tasks.read": "读取待办",
-  "tasks.write": "修改待办",
-  "ai.invoke": "调用 AI",
-  "network.request": "受控网络请求",
-  "files.readSelected": "读取用户选择文件",
-  "files.writeSelected": "写入用户选择位置",
-  "prompts.register": "注册 Prompt",
-  "views.register": "注册视图",
-  "mcp.connect": "连接 MCP",
-  "credentials.use": "使用凭据 ID",
-  "agents.invoke": "调用已绑定智能体",
-  "network.xingchen": "访问讯飞星辰服务",
-  "ai.context.augment": "增强 AI 调用上下文",
-};
 
 /** T25: 插件审计日志内联面板 */
 function PluginAuditLog({ pluginId }: { pluginId: string }) {
@@ -538,7 +505,20 @@ function PluginErrorLog() {
 }
 
 function permissionLabel(permission: string) {
-  return PERMISSION_LABELS[permission] ?? permission;
+  return (PLUGIN_CAPABILITY_PRESENTATION as Record<string, { title: string }>)[permission]?.title
+    ?? permission;
+}
+
+function permissionDescription(permission: string) {
+  const presentation = (
+    PLUGIN_CAPABILITY_PRESENTATION as Record<
+      string,
+      { description: string; riskLevel: string; status: string }
+    >
+  )[permission];
+  return presentation
+    ? `${presentation.description}（风险：${presentation.riskLevel}；状态：${presentation.status}）`
+    : permission;
 }
 
 function statusColor(status: string) {
@@ -958,7 +938,7 @@ export default function PluginsPage() {
               {record.permissions.map((permission) => {
                 const granted = record.grantedPermissions.includes(permission);
                 return (
-                  <Tooltip key={permission} title={permission}>
+                  <Tooltip key={permission} title={permissionDescription(permission)}>
                     <Tag color={granted ? "green" : "orange"}>
                       {permissionLabel(permission)}
                     </Tag>
@@ -1138,16 +1118,17 @@ export default function PluginsPage() {
                 ) : (
                   <Space size={[0, 6]} wrap>
                     {selected.permissions.map((permission) => (
-                      <Tag
-                        key={permission}
-                        color={
-                          selected.grantedPermissions.includes(permission)
-                            ? "green"
-                            : "orange"
-                        }
-                      >
-                        {permissionLabel(permission)}
-                      </Tag>
+                      <Tooltip key={permission} title={permissionDescription(permission)}>
+                        <Tag
+                          color={
+                            selected.grantedPermissions.includes(permission)
+                              ? "green"
+                              : "orange"
+                          }
+                        >
+                          {permissionLabel(permission)}
+                        </Tag>
+                      </Tooltip>
                     ))}
                   </Space>
                 )}

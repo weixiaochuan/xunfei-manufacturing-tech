@@ -2184,7 +2184,7 @@ export interface PluginManifestV3 {
   activationEvents: string[];
   supportedScenes: PluginScene[];
   defaultActivation: { global: boolean; scenes: Partial<Record<PluginScene, boolean>> };
-  permissions: string[];
+  permissions: import("@/generated/pluginCapabilities").PluginV3CapabilityId[];
   dependencies: Array<{ id: string; version?: string | null; required: boolean }>;
   conflictsWith: Array<{ id: string; reason?: string | null }>;
   contributes: {

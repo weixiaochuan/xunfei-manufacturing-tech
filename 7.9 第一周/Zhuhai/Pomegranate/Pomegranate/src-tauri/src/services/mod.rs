@@ -47,6 +47,8 @@ pub mod note;
 pub mod orphan_scan;
 pub mod pdf;
 pub mod plugin_platform;
+pub(crate) mod plugin_capabilities;
+mod plugin_capabilities_generated;
 pub mod plugin_rate_limit;
 pub mod plugin_token;
 // 插件系统：元数据管理、manifest 校验、安装/卸载

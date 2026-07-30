@@ -20,7 +20,7 @@ use crate::models::{
     PluginVersionInfo, ResolvedEnhancementContribution, ResolvedPluginContributions,
     SignatureStatus,
 };
-use crate::services::plugins::{PluginService, VALID_PERMISSIONS};
+use crate::services::plugins::PluginService;
 
 const ARCHIVE_EXTENSION: &str = "firstwork-plugin";
 
@@ -867,7 +867,9 @@ fn validate_manifest(manifest: &PluginManifestV3) -> Result<(), AppError> {
                 permission
             )));
         }
-        if !VALID_PERMISSIONS.contains(&permission.as_str()) {
+        if !crate::services::plugin_capabilities::V3_MANIFEST_PERMISSIONS
+            .contains(&permission.as_str())
+        {
             return Err(AppError::InvalidInput(format!(
                 "Manifest 申请了不存在的权限：{}",
                 permission
@@ -1698,6 +1700,27 @@ mod tests {
         let mut incomplete_hybrid = hybrid.clone();
         incomplete_hybrid.contributes.features.clear();
         assert!(validate_manifest(&incomplete_hybrid).is_err());
+    }
+
+    #[test]
+    fn v3_permissions_reject_legacy_reserved_blocked_and_unknown() {
+        let mut manifest = manifest_for("feature", "declarative-ui");
+        manifest.contributes.enhancements.clear();
+        manifest.permissions = vec!["ai.invoke".into()];
+        assert!(validate_manifest(&manifest).is_ok());
+
+        for permission in [
+            "ai:chat",
+            "notes.read",
+            "credentials.configure",
+            "unknown.permission",
+        ] {
+            manifest.permissions = vec![permission.into()];
+            assert!(
+                validate_manifest(&manifest).is_err(),
+                "{permission} must not be accepted by v3"
+            );
+        }
     }
 
     #[test]

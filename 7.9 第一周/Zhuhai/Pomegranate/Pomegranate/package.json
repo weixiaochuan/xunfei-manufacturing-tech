@@ -19,6 +19,10 @@
     "build:win7:debug": "node scripts/build-win7.mjs --debug",
     "plugin:pack": "node scripts/plugin-package.mjs pack",
     "plugin:verify": "node scripts/plugin-package.mjs verify",
+    "plugin:capabilities:generate": "node scripts/plugin-capabilities.mjs generate",
+    "plugin:capabilities:check": "node scripts/plugin-capabilities.mjs check",
+    "test:plugin-capabilities": "node --test scripts/plugin-capabilities.test.mjs",
+    "test:plugin-package": "node --test scripts/plugin-package.test.mjs",
     "test:account-documents": "node --experimental-strip-types --test src/lib/documents/*.test.mjs"
   },
   "dependencies": {
