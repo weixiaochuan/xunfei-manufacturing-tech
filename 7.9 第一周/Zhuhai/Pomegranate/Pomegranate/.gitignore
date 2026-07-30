@@ -66,6 +66,16 @@ analysis/ppt_native_loop/
 /services/account-server/.env.*
 !/services/account-server/.env.example
 
+# Isolated account TEST runtime (credentials and mutable data stay outside Git)
+/.account-test-runtime/
+/account-test-runtime/
+**/casdoor-client-id.tmp
+**/casdoor-client-secret.tmp
+**/postgres-password.tmp
+**/test-users.tmp
+**/casdoor-test-admin.tmp
+**/desktop-data/
+
 # Local account data, workspaces, backups, logs and build artifacts
 user-files/
 backups/
