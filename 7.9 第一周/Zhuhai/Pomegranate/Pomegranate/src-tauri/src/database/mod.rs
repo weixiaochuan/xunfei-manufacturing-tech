@@ -5,6 +5,7 @@ pub mod folders;
 pub mod links;
 pub mod mcp_servers;
 pub mod notes;
+pub mod plugin_authorization_context;
 pub mod plugin_authorizations;
 pub mod plugin_platform;
 pub mod plugins;

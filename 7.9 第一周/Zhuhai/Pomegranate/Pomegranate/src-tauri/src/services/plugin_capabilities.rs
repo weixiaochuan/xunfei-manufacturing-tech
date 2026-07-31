@@ -8,6 +8,33 @@ pub(crate) use super::plugin_capabilities_generated::{
     VALID_PERMISSIONS,
 };
 
+/// 从唯一 canonical registry 解析 capability 语义版本；调用方不得自行猜测默认版本。
+fn capability_semantic_version_from_registry(
+    registry_json: &str,
+    capability_id: &str,
+) -> Result<Option<String>, serde_json::Error> {
+    let registry: serde_json::Value = serde_json::from_str(registry_json)?;
+    Ok(registry["capabilities"]
+        .as_array()
+        .and_then(|capabilities| {
+            capabilities
+                .iter()
+                .find(|capability| capability["id"].as_str() == Some(capability_id))
+        })
+        .and_then(|capability| capability["semanticVersion"].as_str())
+        .filter(|version| !version.trim().is_empty())
+        .map(str::to_owned))
+}
+
+pub(crate) fn canonical_capability_semantic_version(
+    capability_id: &str,
+) -> Result<Option<String>, serde_json::Error> {
+    capability_semantic_version_from_registry(
+        include_str!("../../../config/plugin-capabilities.v1.json"),
+        capability_id,
+    )
+}
+
 pub(crate) fn is_v3_permission_runtime_allowed(permission: &str, runtime_kind: &str) -> bool {
     if V3_PERMISSION_RUNTIME_COMPATIBILITY_EXCEPTIONS.contains(&permission) {
         return true;
@@ -182,16 +209,61 @@ pub(crate) fn evaluate_v3_required_permissions<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_v3_classification_contribution_allowed, is_v3_permission_runtime_allowed,
-        is_v3_runtime_classification_allowed, required_v3_policy_permissions,
-        V3_CLASSIFICATION_CONTRIBUTION_RULES, V3_CONTRIBUTION_REQUIRED_PERMISSIONS,
-        V3_FEATURE_CAPABILITY_REQUIRED_PERMISSIONS, V3_MANIFEST_PERMISSIONS,
-        V3_PERMISSION_RUNTIME_COMPATIBILITY_EXCEPTIONS, V3_PERMISSION_RUNTIME_KINDS,
-        V3_RUNTIME_CLASSIFICATION_RULES, V3_RUNTIME_CONTRIBUTION_REQUIRED_PERMISSIONS,
-        VALID_PERMISSIONS,
+        capability_semantic_version_from_registry, is_v3_classification_contribution_allowed,
+        is_v3_permission_runtime_allowed, is_v3_runtime_classification_allowed,
+        required_v3_policy_permissions, V3_CLASSIFICATION_CONTRIBUTION_RULES,
+        V3_CONTRIBUTION_REQUIRED_PERMISSIONS, V3_FEATURE_CAPABILITY_REQUIRED_PERMISSIONS,
+        V3_MANIFEST_PERMISSIONS, V3_PERMISSION_RUNTIME_COMPATIBILITY_EXCEPTIONS,
+        V3_PERMISSION_RUNTIME_KINDS, V3_RUNTIME_CLASSIFICATION_RULES,
+        V3_RUNTIME_CONTRIBUTION_REQUIRED_PERMISSIONS, VALID_PERMISSIONS,
     };
     use serde_json::Value;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn semantic_version_parser_fails_closed_for_missing_or_invalid_registry_data() {
+        assert!(capability_semantic_version_from_registry("{", "test.capability").is_err());
+        assert_eq!(
+            capability_semantic_version_from_registry("{}", "test.capability").expect("registry"),
+            None
+        );
+        assert_eq!(
+            capability_semantic_version_from_registry(
+                r#"{"capabilities":[{"id":"other.capability","semanticVersion":"1.2.3"}]}"#,
+                "test.capability",
+            )
+            .expect("registry"),
+            None
+        );
+        for semantic_version in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::Value::String(String::new())),
+            Some(serde_json::Value::String("   ".to_string())),
+        ] {
+            let capability = match semantic_version {
+                Some(value) => serde_json::json!({
+                    "id": "test.capability",
+                    "semanticVersion": value
+                }),
+                None => serde_json::json!({"id": "test.capability"}),
+            };
+            let registry = serde_json::json!({"capabilities": [capability]}).to_string();
+            assert_eq!(
+                capability_semantic_version_from_registry(&registry, "test.capability")
+                    .expect("registry"),
+                None
+            );
+        }
+        assert_eq!(
+            capability_semantic_version_from_registry(
+                r#"{"capabilities":[{"id":"test.capability","semanticVersion":"2.4.6"}]}"#,
+                "test.capability",
+            )
+            .expect("registry"),
+            Some("2.4.6".to_string())
+        );
+    }
 
     #[test]
     fn generated_permissions_match_canonical_registry() {

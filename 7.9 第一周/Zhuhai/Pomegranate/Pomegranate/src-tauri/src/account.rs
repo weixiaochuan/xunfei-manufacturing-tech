@@ -12,6 +12,8 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+use crate::error::AppError;
+
 const DESKTOP_LOGIN_PATH: &str = "/auth/login?client=desktop";
 const DESKTOP_EXCHANGE_PATH: &str = "/auth/desktop/exchange";
 const SESSION_PATH: &str = "/auth/session";
@@ -817,6 +819,51 @@ pub(crate) async fn load_account_document_session(
     Ok((token, user))
 }
 
+/// 通过 Account Server 当前 session 取得可信平台账号主体，只返回授权所需的最小 ID。
+pub(crate) async fn verified_platform_user_id(state: &AccountState) -> Result<String, AppError> {
+    let token = match state.credentials.load() {
+        Ok(Some(token)) => token,
+        Ok(None) => {
+            return Err(AppError::PluginAuthorizationAccountUnavailable {
+                reason: "signed_out",
+            })
+        }
+        Err(_) => {
+            return Err(AppError::PluginAuthorizationAccountUnavailable {
+                reason: "credential_unreadable",
+            })
+        }
+    };
+    let user = state
+        .remote
+        .get_session(&token)
+        .await
+        .map_err(|error| match error {
+            RemoteError::Rejected => AppError::PluginAuthorizationAccountVerificationFailed {
+                reason: "session_rejected",
+            },
+            RemoteError::InvalidResponse => {
+                AppError::PluginAuthorizationAccountVerificationFailed {
+                    reason: "invalid_account_response",
+                }
+            }
+            _ => AppError::PluginAuthorizationAccountVerificationFailed {
+                reason: "session_unavailable",
+            },
+        })?;
+    let user = validate_user(user).map_err(|_| {
+        AppError::PluginAuthorizationAccountVerificationFailed {
+            reason: "invalid_account_response",
+        }
+    })?;
+    if user.platform_user_id == "local-demo-buyer" {
+        return Err(AppError::PluginAuthorizationAccountVerificationFailed {
+            reason: "invalid_account_response",
+        });
+    }
+    Ok(user.platform_user_id)
+}
+
 pub(crate) fn account_authorization_header(token: &[u8]) -> Result<HeaderValue, AccountFileError> {
     HttpAccountRemote::authorization_header(token)
         .map_err(|_| AccountFileError::new("signedOut", "登录已失效，请重新登录"))
@@ -1391,6 +1438,22 @@ mod tests {
         }
     }
 
+    struct UnreadableCredentialStore;
+
+    impl SessionCredentialStore for UnreadableCredentialStore {
+        fn save(&self, _token: &[u8]) -> Result<(), CredentialError> {
+            Err(CredentialError)
+        }
+
+        fn load(&self) -> Result<Option<Zeroizing<Vec<u8>>>, CredentialError> {
+            Err(CredentialError)
+        }
+
+        fn delete(&self) -> Result<(), CredentialError> {
+            Err(CredentialError)
+        }
+    }
+
     struct FakeRemote {
         session_result: Mutex<Result<AccountUser, RemoteError>>,
         logout_count: Mutex<usize>,
@@ -1676,6 +1739,80 @@ mod tests {
             restore_session_inner(&state).await,
             AccountLoginResult::Success { user }
         );
+    }
+
+    #[tokio::test]
+    async fn verified_platform_subject_comes_only_from_remote_session() {
+        let credentials = Arc::new(MemoryCredentialStore::default());
+        credentials.save(b"v".repeat(43).as_slice()).unwrap();
+        let (state, _) = test_state(credentials, Ok(test_user_with_id("verified-user")));
+        assert_eq!(
+            verified_platform_user_id(&state).await.unwrap(),
+            "verified-user"
+        );
+    }
+
+    #[tokio::test]
+    async fn verified_platform_subject_fails_closed_without_readable_session() {
+        let credentials = Arc::new(MemoryCredentialStore::default());
+        let (signed_out, _) = test_state(credentials, Ok(test_user()));
+        assert!(matches!(
+            verified_platform_user_id(&signed_out).await,
+            Err(AppError::PluginAuthorizationAccountUnavailable {
+                reason: "signed_out"
+            })
+        ));
+
+        let (_, remote) = test_state(Arc::new(MemoryCredentialStore::default()), Ok(test_user()));
+        let unreadable = AccountState {
+            pending_result: Mutex::new(None),
+            credentials: Arc::new(UnreadableCredentialStore),
+            remote,
+        };
+        assert!(matches!(
+            verified_platform_user_id(&unreadable).await,
+            Err(AppError::PluginAuthorizationAccountUnavailable {
+                reason: "credential_unreadable"
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn verified_platform_subject_rejects_remote_failure_and_invalid_identity() {
+        for (remote_error, reason) in [
+            (RemoteError::Rejected, "session_rejected"),
+            (RemoteError::ServiceUnavailable, "session_unavailable"),
+        ] {
+            let credentials = Arc::new(MemoryCredentialStore::default());
+            credentials.save(b"r".repeat(43).as_slice()).unwrap();
+            let (state, _) = test_state(credentials, Err(remote_error));
+            assert!(matches!(
+                verified_platform_user_id(&state).await,
+                Err(AppError::PluginAuthorizationAccountVerificationFailed {
+                    reason: actual
+                }) if actual == reason
+            ));
+        }
+
+        let credentials = Arc::new(MemoryCredentialStore::default());
+        credentials.save(b"i".repeat(43).as_slice()).unwrap();
+        let (state, _) = test_state(credentials, Ok(test_user_with_id("  ")));
+        assert!(matches!(
+            verified_platform_user_id(&state).await,
+            Err(AppError::PluginAuthorizationAccountVerificationFailed {
+                reason: "invalid_account_response"
+            })
+        ));
+
+        let credentials = Arc::new(MemoryCredentialStore::default());
+        credentials.save(b"d".repeat(43).as_slice()).unwrap();
+        let (state, _) = test_state(credentials, Ok(test_user_with_id("local-demo-buyer")));
+        assert!(matches!(
+            verified_platform_user_id(&state).await,
+            Err(AppError::PluginAuthorizationAccountVerificationFailed {
+                reason: "invalid_account_response"
+            })
+        ));
     }
 
     #[tokio::test]

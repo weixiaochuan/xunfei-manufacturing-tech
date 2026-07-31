@@ -52,6 +52,12 @@ pub enum AppError {
     #[error("正式插件授权主体无效: reason={reason}")]
     PluginAuthorizationSubjectInvalid { reason: &'static str },
 
+    #[error("正式插件授权账号不可用: reason={reason}")]
+    PluginAuthorizationAccountUnavailable { reason: &'static str },
+
+    #[error("正式插件授权账号验证失败: reason={reason}")]
+    PluginAuthorizationAccountVerificationFailed { reason: &'static str },
+
     #[error("正式插件授权上下文无效: reason={reason}")]
     PluginAuthorizationContextInvalid { reason: &'static str },
 
@@ -60,6 +66,9 @@ pub enum AppError {
 
     #[error("capability 不允许写入正式插件授权: reason={reason}")]
     PluginAuthorizationCapabilityInvalid { reason: &'static str },
+
+    #[error("capability 权威语义版本不可用")]
+    PluginAuthorizationCapabilitySemanticVersionUnavailable,
 
     #[error("正式插件授权记录不存在")]
     PluginAuthorizationNotFound,

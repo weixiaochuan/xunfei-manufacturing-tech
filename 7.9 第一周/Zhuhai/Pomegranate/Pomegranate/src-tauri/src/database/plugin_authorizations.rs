@@ -73,6 +73,7 @@ impl PluginAuthorizationContextKind {
         match self {
             Self::Device => "device",
             Self::Installation => "installation",
+            Self::HostInstallation => "host_installation",
         }
     }
 
@@ -80,6 +81,7 @@ impl PluginAuthorizationContextKind {
         match value {
             "device" => Ok(Self::Device),
             "installation" => Ok(Self::Installation),
+            "host_installation" => Ok(Self::HostInstallation),
             _ => Err(stored_invalid("context_kind")),
         }
     }

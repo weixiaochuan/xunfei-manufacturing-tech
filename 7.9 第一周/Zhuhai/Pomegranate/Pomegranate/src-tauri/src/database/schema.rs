@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::error::AppError;
 
 /// 当前 Schema 版本
-pub const SCHEMA_VERSION: i32 = 56;
+pub const SCHEMA_VERSION: i32 = 57;
 
 /// 获取数据库版本
 pub fn get_version(conn: &Connection) -> Result<i32, AppError> {
@@ -86,6 +86,7 @@ pub fn migrate(conn: &Connection) -> Result<(), AppError> {
             53 => migrate_v53_to_v54(conn)?,
             54 => migrate_v54_to_v55(conn)?,
             55 => migrate_v55_to_v56(conn)?,
+            56 => migrate_v56_to_v57(conn)?,
             _ => {
                 return Err(AppError::Custom(format!("未知的数据库版本: {}", version)));
             }
@@ -2985,6 +2986,131 @@ fn migrate_v55_to_v56(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// v56 -> v57: Rust 后端独占的稳定宿主安装身份存储，并让正式授权表承载该 context。
+fn migrate_v56_to_v57(conn: &Connection) -> Result<(), AppError> {
+    log::info!("database migration: v56 -> v57 (host installation identity)");
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        r#"
+        CREATE TABLE host_installation_identity (
+            singleton       INTEGER PRIMARY KEY CHECK(singleton = 1),
+            installation_id TEXT NOT NULL CHECK(length(trim(installation_id)) > 0)
+        );
+
+        ALTER TABLE plugin_capability_authorizations
+            RENAME TO plugin_capability_authorizations_v56;
+
+        CREATE TABLE plugin_capability_authorizations (
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+            subject_kind                TEXT NOT NULL
+                                        CHECK(subject_kind IN ('platform_user','local_profile','administrator')),
+            subject_id                  TEXT NOT NULL CHECK(length(trim(subject_id)) > 0),
+            context_kind                TEXT NOT NULL
+                                        CHECK(context_kind IN ('device','installation','host_installation')),
+            context_id                  TEXT NOT NULL CHECK(length(trim(context_id)) > 0),
+            plugin_id                   TEXT NOT NULL CHECK(length(trim(plugin_id)) > 0),
+            capability_id               TEXT NOT NULL CHECK(length(trim(capability_id)) > 0),
+            capability_semantic_version TEXT
+                                        CHECK(capability_semantic_version IS NULL
+                                              OR length(trim(capability_semantic_version)) > 0),
+            scope_kind                  TEXT NOT NULL CHECK(length(trim(scope_kind)) > 0),
+            scope_key                   TEXT NOT NULL CHECK(length(trim(scope_key)) > 0),
+            state                       TEXT NOT NULL
+                                        CHECK(state IN ('pending','granted','denied','revoked','expired')),
+            source                      TEXT NOT NULL
+                                        CHECK(source IN ('install','on_demand','admin_policy','migration')),
+            lifetime                    TEXT NOT NULL
+                                        CHECK(lifetime IN ('persistent','session','one_shot','policy')),
+            first_authorized_version    TEXT
+                                        CHECK(first_authorized_version IS NULL
+                                              OR length(trim(first_authorized_version)) > 0),
+            last_confirmed_version      TEXT
+                                        CHECK(last_confirmed_version IS NULL
+                                              OR length(trim(last_confirmed_version)) > 0),
+            publisher_identity          TEXT,
+            publisher_binding_status    TEXT NOT NULL
+                                        CHECK(publisher_binding_status IN ('unavailable','unverified','verified')),
+            signature_identity          TEXT,
+            signature_binding_status    TEXT NOT NULL
+                                        CHECK(signature_binding_status IN ('unavailable','unverified','verified')),
+            created_at                  TEXT NOT NULL,
+            updated_at                  TEXT NOT NULL,
+            revoked_at                  TEXT,
+            expires_at                  TEXT,
+            revision                    INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+            CHECK(
+                (publisher_binding_status = 'unavailable' AND publisher_identity IS NULL)
+                OR
+                (publisher_binding_status IN ('unverified','verified')
+                 AND publisher_identity IS NOT NULL
+                 AND length(trim(publisher_identity)) > 0)
+            ),
+            CHECK(
+                (signature_binding_status = 'unavailable' AND signature_identity IS NULL)
+                OR
+                (signature_binding_status IN ('unverified','verified')
+                 AND signature_identity IS NOT NULL
+                 AND length(trim(signature_identity)) > 0)
+            ),
+            CHECK(
+                (state = 'revoked' AND revoked_at IS NOT NULL)
+                OR
+                (state != 'revoked' AND revoked_at IS NULL)
+            ),
+            UNIQUE(
+                subject_kind, subject_id,
+                context_kind, context_id,
+                plugin_id, capability_id,
+                scope_kind, scope_key
+            )
+        );
+
+        INSERT INTO plugin_capability_authorizations (
+            id, subject_kind, subject_id, context_kind, context_id,
+            plugin_id, capability_id, capability_semantic_version,
+            scope_kind, scope_key, state, source, lifetime,
+            first_authorized_version, last_confirmed_version,
+            publisher_identity, publisher_binding_status,
+            signature_identity, signature_binding_status,
+            created_at, updated_at, revoked_at, expires_at, revision
+        )
+        SELECT
+            id, subject_kind, subject_id, context_kind, context_id,
+            plugin_id, capability_id, capability_semantic_version,
+            scope_kind, scope_key, state, source, lifetime,
+            first_authorized_version, last_confirmed_version,
+            publisher_identity, publisher_binding_status,
+            signature_identity, signature_binding_status,
+            created_at, updated_at, revoked_at, expires_at, revision
+        FROM plugin_capability_authorizations_v56;
+
+        DROP TABLE plugin_capability_authorizations_v56;
+
+        CREATE INDEX idx_plugin_capability_authorizations_lookup
+            ON plugin_capability_authorizations(
+                subject_kind, subject_id, context_kind, context_id,
+                plugin_id, capability_id, scope_kind, scope_key
+            );
+        CREATE INDEX idx_plugin_capability_authorizations_plugin
+            ON plugin_capability_authorizations(
+                subject_kind, subject_id, context_kind, context_id,
+                plugin_id, state
+            );
+        CREATE INDEX idx_plugin_capability_authorizations_expiry
+            ON plugin_capability_authorizations(expires_at)
+            WHERE expires_at IS NOT NULL;
+        CREATE INDEX idx_plugin_capability_authorizations_identity
+            ON plugin_capability_authorizations(
+                publisher_binding_status, publisher_identity,
+                signature_binding_status, signature_identity
+            );
+        "#,
+    )?;
+    set_version(&tx, 57)?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod week4_plugin_integration_tests {
     use super::*;
@@ -2992,7 +3118,7 @@ mod week4_plugin_integration_tests {
     use crate::models::MarketplaceProductQuery;
     use crate::services::marketplace::MarketplaceService;
     use crate::services::plugins::PluginService;
-    use rusqlite::params;
+    use rusqlite::{params, types::Value};
     use std::collections::HashSet;
     use std::sync::Mutex;
     use uuid::Uuid;
@@ -3049,6 +3175,132 @@ mod week4_plugin_integration_tests {
         }
         assert_eq!(get_version(conn)?, 42);
         Ok(())
+    }
+
+    fn migrate_fixture_to_v56(conn: &Connection) -> Result<(), AppError> {
+        migrate_fixture_to_v42(conn)?;
+        let migrations: [Migration; 14] = [
+            migrate_v42_to_v43,
+            migrate_v43_to_v44,
+            migrate_v44_to_v45,
+            migrate_v45_to_v46,
+            migrate_v46_to_v47,
+            migrate_v47_to_v48,
+            migrate_v48_to_v49,
+            migrate_v49_to_v50,
+            migrate_v50_to_v51,
+            migrate_v51_to_v52,
+            migrate_v52_to_v53,
+            migrate_v53_to_v54,
+            migrate_v54_to_v55,
+            migrate_v55_to_v56,
+        ];
+        for migration in migrations {
+            migration(conn)?;
+        }
+        assert_eq!(get_version(conn)?, 56);
+        Ok(())
+    }
+
+    const AUTHORIZATION_COLUMNS: &str = "
+        id, subject_kind, subject_id, context_kind, context_id,
+        plugin_id, capability_id, capability_semantic_version,
+        scope_kind, scope_key, state, source, lifetime,
+        first_authorized_version, last_confirmed_version,
+        publisher_identity, publisher_binding_status,
+        signature_identity, signature_binding_status,
+        created_at, updated_at, revoked_at, expires_at, revision";
+
+    fn seed_v56_authorization_records(conn: &Connection) -> Result<(), AppError> {
+        conn.execute_batch(
+            r#"
+            INSERT INTO plugin_capability_authorizations (
+                id, subject_kind, subject_id, context_kind, context_id,
+                plugin_id, capability_id, capability_semantic_version,
+                scope_kind, scope_key, state, source, lifetime,
+                first_authorized_version, last_confirmed_version,
+                publisher_identity, publisher_binding_status,
+                signature_identity, signature_binding_status,
+                created_at, updated_at, revoked_at, expires_at, revision
+            ) VALUES
+            (
+                5601, 'platform_user', 'user-pending', 'device', 'device-pending',
+                'plugin.pending', 'ai.invoke', NULL,
+                'global', 'v1:*', 'pending', 'install', 'persistent',
+                NULL, NULL,
+                NULL, 'unavailable', NULL, 'unavailable',
+                '2026-07-01T00:00:00Z', '2026-07-01T00:01:00Z',
+                NULL, '2026-08-01T00:00:00Z', 2
+            ),
+            (
+                5602, 'platform_user', 'user-granted', 'installation', 'install-granted',
+                'plugin.granted', 'agents.invoke', '2.0.0',
+                'agent', 'v1:agent-42', 'granted', 'on_demand', 'session',
+                '1.0.0', '1.2.0',
+                'publisher-verified', 'verified', 'signature-verified', 'verified',
+                '2026-07-02T00:00:00Z', '2026-07-02T00:01:00Z',
+                NULL, '2026-08-02T00:00:00Z', 3
+            ),
+            (
+                5603, 'administrator', 'admin-denied', 'device', 'device-denied',
+                'plugin.denied', 'credentials.use', '3.1.4',
+                'credential', 'v1:credential-7', 'denied', 'admin_policy', 'policy',
+                NULL, '2.0.0',
+                'publisher-unverified', 'unverified', NULL, 'unavailable',
+                '2026-07-03T00:00:00Z', '2026-07-03T00:01:00Z',
+                NULL, NULL, 4
+            ),
+            (
+                5604, 'local_profile', 'profile-revoked', 'installation', 'install-revoked',
+                'plugin.revoked', 'files.writeSelected', NULL,
+                'file', 'v1:file-selection-9', 'revoked', 'migration', 'persistent',
+                '0.9.0', '1.0.0',
+                NULL, 'unavailable', 'signature-unverified', 'unverified',
+                '2026-07-04T00:00:00Z', '2026-07-04T00:02:00Z',
+                '2026-07-04T00:02:00Z', NULL, 5
+            ),
+            (
+                5605, 'platform_user', 'user-expired', 'device', 'device-expired',
+                'plugin.expired', 'network.xingchen', '4.0.0',
+                'network', 'v1:xingchen', 'expired', 'on_demand', 'one_shot',
+                '3.0.0', '3.1.0',
+                'publisher-expired', 'verified', NULL, 'unavailable',
+                '2026-07-05T00:00:00Z', '2026-07-05T00:03:00Z',
+                NULL, '2026-07-05T00:02:00Z', 6
+            );
+            "#,
+        )?;
+        Ok(())
+    }
+
+    fn authorization_rows(conn: &Connection) -> Result<Vec<Vec<Value>>, AppError> {
+        let sql = format!(
+            "SELECT {AUTHORIZATION_COLUMNS}
+             FROM plugin_capability_authorizations ORDER BY id"
+        );
+        let mut statement = conn.prepare(&sql)?;
+        let rows = statement.query_map([], |row| {
+            (0..24)
+                .map(|index| row.get::<_, Value>(index))
+                .collect::<Result<Vec<_>, _>>()
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    fn schema_object_sql(
+        conn: &Connection,
+        object_type: &str,
+        name: &str,
+    ) -> Result<String, AppError> {
+        Ok(conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = ?1 AND name = ?2",
+            params![object_type, name],
+            |row| row.get(0),
+        )?)
+    }
+
+    fn normalized_sql(sql: &str) -> String {
+        sql.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     fn seed_v42_representative_data(conn: &Connection) -> Result<(), AppError> {
@@ -3377,7 +3629,7 @@ mod week4_plugin_integration_tests {
     }
 
     #[test]
-    fn upgrades_real_v42_fixture_to_v56_without_losing_data() -> Result<(), AppError> {
+    fn upgrades_real_v42_fixture_to_current_without_losing_data() -> Result<(), AppError> {
         let conn = Connection::open_in_memory()?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate_fixture_to_v42(&conn)?;
@@ -3385,7 +3637,7 @@ mod week4_plugin_integration_tests {
 
         migrate(&conn)?;
 
-        assert_eq!(get_version(&conn)?, 56);
+        assert_eq!(get_version(&conn)?, SCHEMA_VERSION);
         assert_v42_data_preserved(&conn)?;
         assert_week4_schema_objects(&conn)?;
         assert_migrated_plugin_relations(&conn)?;
@@ -3441,7 +3693,7 @@ mod week4_plugin_integration_tests {
         conn.execute_batch("DROP TRIGGER week4_abort_product_seed;")?;
         migrate(&conn)?;
 
-        assert_eq!(get_version(&conn)?, 56);
+        assert_eq!(get_version(&conn)?, SCHEMA_VERSION);
         assert_v42_data_preserved(&conn)?;
         assert_week4_schema_objects(&conn)?;
         assert_migrated_plugin_relations(&conn)?;
@@ -3456,6 +3708,7 @@ mod week4_plugin_integration_tests {
         migrate(&conn)?;
         conn.execute_batch(
             r#"
+            DROP TABLE host_installation_identity;
             DROP TABLE plugin_capability_authorizations;
             PRAGMA user_version = 55;
             INSERT INTO plugins (
@@ -3477,7 +3730,7 @@ mod week4_plugin_integration_tests {
 
         migrate(&conn)?;
 
-        assert_eq!(get_version(&conn)?, 56);
+        assert_eq!(get_version(&conn)?, SCHEMA_VERSION);
         let legacy: Vec<(String, i64)> = conn
             .prepare(
                 "SELECT permission, granted FROM plugin_permissions
@@ -3499,9 +3752,9 @@ mod week4_plugin_integration_tests {
         )?;
         assert_eq!(formal_count, 0);
 
-        // 已到 v56 时再次调用统一入口应保持幂等，不创建任何授权。
+        // 已到当前版本时再次调用统一入口应保持幂等，不创建任何授权。
         migrate(&conn)?;
-        assert_eq!(get_version(&conn)?, 56);
+        assert_eq!(get_version(&conn)?, SCHEMA_VERSION);
         let formal_count_after_retry: i64 = conn.query_row(
             "SELECT COUNT(*) FROM plugin_capability_authorizations",
             [],
@@ -3531,6 +3784,166 @@ mod week4_plugin_integration_tests {
         assert_eq!(get_version(&conn)?, 55);
         let columns = list_columns(&conn, "plugin_capability_authorizations")?;
         assert_eq!(columns, vec!["id".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn migrates_real_v56_authorizations_to_v57_without_data_or_index_loss() -> Result<(), AppError>
+    {
+        let conn = Connection::open_in_memory()?;
+        migrate_fixture_to_v56(&conn)?;
+        seed_v56_authorization_records(&conn)?;
+        let rows_before = authorization_rows(&conn)?;
+        assert_eq!(rows_before.len(), 5);
+        let index_names = [
+            "idx_plugin_capability_authorizations_lookup",
+            "idx_plugin_capability_authorizations_plugin",
+            "idx_plugin_capability_authorizations_expiry",
+            "idx_plugin_capability_authorizations_identity",
+        ];
+        let indexes_before = index_names
+            .iter()
+            .map(|name| schema_object_sql(&conn, "index", name).map(|sql| normalized_sql(&sql)))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        migrate(&conn)?;
+
+        assert_eq!(get_version(&conn)?, 57);
+        assert_eq!(authorization_rows(&conn)?, rows_before);
+        let states: Vec<String> = conn
+            .prepare(
+                "SELECT state FROM plugin_capability_authorizations
+                 ORDER BY id",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            states,
+            ["pending", "granted", "denied", "revoked", "expired"]
+        );
+        let identity_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM host_installation_identity",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(identity_count, 0);
+        let indexes_after = index_names
+            .iter()
+            .map(|name| schema_object_sql(&conn, "index", name).map(|sql| normalized_sql(&sql)))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(indexes_after, indexes_before);
+
+        conn.execute(
+            "INSERT INTO plugin_capability_authorizations (
+                subject_kind, subject_id, context_kind, context_id,
+                plugin_id, capability_id, scope_kind, scope_key,
+                state, source, lifetime,
+                publisher_binding_status, signature_binding_status,
+                created_at, updated_at
+             ) VALUES (
+                'platform_user', 'host-user', 'host_installation', 'host-context',
+                'com.example.plugin', 'ai.invoke', 'global', 'v1:*',
+                'pending', 'install', 'persistent',
+                'unavailable', 'unavailable',
+                '2026-07-31T00:00:00Z', '2026-07-31T00:00:00Z'
+             )",
+            [],
+        )?;
+        let duplicate = conn.execute(
+            "INSERT INTO plugin_capability_authorizations (
+                subject_kind, subject_id, context_kind, context_id,
+                plugin_id, capability_id, scope_kind, scope_key,
+                state, source, lifetime,
+                publisher_binding_status, signature_binding_status,
+                created_at, updated_at
+             ) VALUES (
+                'platform_user', 'host-user', 'host_installation', 'host-context',
+                'com.example.plugin', 'ai.invoke', 'global', 'v1:*',
+                'denied', 'on_demand', 'session',
+                'unavailable', 'unavailable',
+                '2026-07-31T00:01:00Z', '2026-07-31T00:01:00Z'
+             )",
+            [],
+        );
+        assert!(matches!(
+            duplicate,
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::ConstraintViolation
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn v57_migration_failure_rolls_back_table_data_indexes_and_version() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        migrate_fixture_to_v56(&conn)?;
+        seed_v56_authorization_records(&conn)?;
+        let rows_before = authorization_rows(&conn)?;
+        let table_sql_before = normalized_sql(&schema_object_sql(
+            &conn,
+            "table",
+            "plugin_capability_authorizations",
+        )?);
+        let index_names = [
+            "idx_plugin_capability_authorizations_lookup",
+            "idx_plugin_capability_authorizations_plugin",
+            "idx_plugin_capability_authorizations_expiry",
+            "idx_plugin_capability_authorizations_identity",
+        ];
+        let indexes_before = index_names
+            .iter()
+            .map(|name| schema_object_sql(&conn, "index", name).map(|sql| normalized_sql(&sql)))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // The blocker makes ALTER TABLE fail after CREATE host_installation_identity ran
+        // inside the same v57 transaction.
+        conn.execute_batch(
+            "CREATE VIEW plugin_capability_authorizations_v56 AS SELECT 1 AS blocker;",
+        )?;
+        let error = migrate(&conn).expect_err("v57 migration must fail at table rename");
+        assert!(
+            error.to_string().contains("already another table")
+                || error.to_string().contains("already exists"),
+            "unexpected migration error: {error}"
+        );
+
+        assert_eq!(get_version(&conn)?, 56);
+        assert_eq!(authorization_rows(&conn)?, rows_before);
+        assert_eq!(
+            normalized_sql(&schema_object_sql(
+                &conn,
+                "table",
+                "plugin_capability_authorizations",
+            )?),
+            table_sql_before
+        );
+        let indexes_after = index_names
+            .iter()
+            .map(|name| schema_object_sql(&conn, "index", name).map(|sql| normalized_sql(&sql)))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(indexes_after, indexes_before);
+        let host_table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'host_installation_identity'",
+            [],
+            |row| row.get(0),
+        )?;
+        let renamed_table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'plugin_capability_authorizations_v56'",
+            [],
+            |row| row.get(0),
+        )?;
+        let blocker_view_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'view' AND name = 'plugin_capability_authorizations_v56'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            (host_table_count, renamed_table_count, blocker_view_count),
+            (0, 0, 1)
+        );
         Ok(())
     }
 }

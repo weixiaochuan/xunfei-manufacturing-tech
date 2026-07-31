@@ -368,6 +368,7 @@ pub enum PluginAuthorizationSubjectKind {
 pub enum PluginAuthorizationContextKind {
     Device,
     Installation,
+    HostInstallation,
 }
 
 /// 正式 capability 授权状态；记录缺失不属于该枚举。
