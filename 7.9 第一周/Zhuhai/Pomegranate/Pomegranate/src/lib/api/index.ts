@@ -1,4 +1,4 @@
-import type { AdminProductModerationInput, AdminReviewInput, AdminVersionModerationInput, AgentMessageInfo, AgentSendMessageInput, AgentSendMessageResult, AgentSessionCreateInput, AgentSessionInfo, AgentTestResult, AgentUsageEvent, AgentWorkflowInvokeInput, AgentWorkflowInvokeResult, BindableXingchenProduct, CredentialCreateInput, CredentialInfo, CredentialUpdateInput, CredentialUsage, DeveloperDashboard, DeveloperEarning, DeveloperProduct, DeveloperProductInput, DeveloperProductVersion, DeveloperSubmitInput, DeveloperUploadPackageInput, DeveloperVersionInput, ExternalAgentConfig, ExternalAgentInput, LocalAccountProfile, LocalAccountUpdateInput, MarketplaceAcquireInput, MarketplaceActionResult, MarketplaceEntitlement, MarketplaceExternalAuthorizationInput, MarketplaceInstallInput, MarketplaceLedgerEntry, MarketplaceMockRole, MarketplaceMockSession, MarketplaceMockTestResult, MarketplaceOrder, MarketplacePackageReport, MarketplacePermissionRejectionInput, MarketplaceProductDetail, MarketplaceProductQuery, MarketplaceProductSummary, MarketplaceRefundInput, MarketplaceReviewInfo, MarketplaceReviewInput, MarketplaceReviewStatus, MarketplaceServiceConfigurationInput, MarketplaceSubmission, MarketplaceUpdateInfo, MarketplaceUpdateInput, NormalizedPluginManifest, PermissionDiff, PluginActivationRule, PluginArchiveInspection, PluginCompatibility, PluginDocumentSummaryAgentFinalizeInput, PluginDocumentSummaryAgentStartInput, PluginDocumentSummaryAgentStartResult, PluginDocumentSummaryCancelInput, PluginDocumentSummaryConfig, PluginDocumentSummaryConfigInput, PluginDocumentSummaryInput, PluginDocumentSummaryInsertInput, PluginDocumentSummaryResult, PluginDocumentToolbarButton, PluginExecutionContext, PluginExecutionLogInput, PluginFeatureInvokeInput, PluginFeatureInvokeResult, PluginInstallArchiveInput, PluginInstallResult, PluginInstallationInfo, PluginIntegrityCheck, PluginPackageInspection, PluginRuntimePolicy, PluginSummaryAgentOption, PluginVersionInfo, ResolvedPluginContributions } from "@/types";
+import type { AdminProductModerationInput, AdminReviewInput, AdminVersionModerationInput, AgentMessageInfo, AgentSendMessageInput, AgentSendMessageResult, AgentSessionCreateInput, AgentSessionInfo, AgentTestResult, AgentUsageEvent, AgentWorkflowInvokeInput, AgentWorkflowInvokeResult, BindableXingchenProduct, CredentialCreateInput, CredentialInfo, CredentialUpdateInput, CredentialUsage, CurrentPluginCapabilityAuthorization, DeveloperDashboard, DeveloperEarning, DeveloperProduct, DeveloperProductInput, DeveloperProductVersion, DeveloperSubmitInput, DeveloperUploadPackageInput, DeveloperVersionInput, ExternalAgentConfig, ExternalAgentInput, LocalAccountProfile, LocalAccountUpdateInput, MarketplaceAcquireInput, MarketplaceActionResult, MarketplaceEntitlement, MarketplaceExternalAuthorizationInput, MarketplaceInstallInput, MarketplaceLedgerEntry, MarketplaceMockRole, MarketplaceMockSession, MarketplaceMockTestResult, MarketplaceOrder, MarketplacePackageReport, MarketplacePermissionRejectionInput, MarketplaceProductDetail, MarketplaceProductQuery, MarketplaceProductSummary, MarketplaceRefundInput, MarketplaceReviewInfo, MarketplaceReviewInput, MarketplaceReviewStatus, MarketplaceServiceConfigurationInput, MarketplaceSubmission, MarketplaceUpdateInfo, MarketplaceUpdateInput, NormalizedPluginManifest, PermissionDiff, PluginActivationRule, PluginArchiveInspection, PluginCapabilityAuthorization, PluginCompatibility, PluginDocumentSummaryAgentFinalizeInput, PluginDocumentSummaryAgentStartInput, PluginDocumentSummaryAgentStartResult, PluginDocumentSummaryCancelInput, PluginDocumentSummaryConfig, PluginDocumentSummaryConfigInput, PluginDocumentSummaryInput, PluginDocumentSummaryInsertInput, PluginDocumentSummaryResult, PluginDocumentToolbarButton, PluginExecutionContext, PluginExecutionLogInput, PluginFeatureInvokeInput, PluginFeatureInvokeResult, PluginInstallArchiveInput, PluginInstallResult, PluginInstallationInfo, PluginIntegrityCheck, PluginPackageInspection, PluginRuntimePolicy, PluginSummaryAgentOption, PluginVersionInfo, ResolvedPluginContributions } from "@/types";
 import { invoke } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 import {
@@ -312,6 +312,35 @@ export const pluginApi: PluginApi = {
     invoke("grant_plugin_permissions", { pluginId, permissions }),
   revokePermissions: (pluginId, permissions) =>
     invoke("revoke_plugin_permissions", { pluginId, permissions }),
+  listFormalAuthorizations: (pluginId) =>
+    invoke("list_current_formal_plugin_capability_authorizations", { pluginId }),
+  requestFormalAuthorization: (pluginId, capabilityId, expiresAt = null) =>
+    invoke("request_current_formal_plugin_capability_authorization", {
+      pluginId,
+      capabilityId,
+      expiresAt,
+    }),
+  grantFormalAuthorization: (pluginId, capabilityId, expiresAt = null) =>
+    invoke("grant_current_formal_plugin_capability_authorization", {
+      pluginId,
+      capabilityId,
+      expiresAt,
+    }),
+  denyFormalAuthorization: (pluginId, capabilityId) =>
+    invoke("deny_current_formal_plugin_capability_authorization", {
+      pluginId,
+      capabilityId,
+    }),
+  revokeFormalAuthorization: (pluginId, capabilityId) =>
+    invoke("revoke_current_formal_plugin_capability_authorization", {
+      pluginId,
+      capabilityId,
+    }),
+  expireFormalAuthorization: (pluginId, capabilityId) =>
+    invoke("expire_current_formal_plugin_capability_authorization", {
+      pluginId,
+      capabilityId,
+    }),
   getSettings: (pluginId) => invoke("get_plugin_settings", { pluginId }),
   setSettings: (pluginId, settings) => invoke("set_plugin_settings", { pluginId, settings }),
   readAsset: (pluginId, relativePath) =>
@@ -1179,6 +1208,31 @@ interface PluginApi {
   getManifest(pluginId: string): Promise<PluginManifest>;
   grantPermissions(pluginId: string, permissions: string[]): Promise<number>;
   revokePermissions(pluginId: string, permissions: string[]): Promise<number>;
+  listFormalAuthorizations(
+    pluginId: string,
+  ): Promise<CurrentPluginCapabilityAuthorization[]>;
+  requestFormalAuthorization(
+    pluginId: string,
+    capabilityId: string,
+    expiresAt?: string | null,
+  ): Promise<PluginCapabilityAuthorization>;
+  grantFormalAuthorization(
+    pluginId: string,
+    capabilityId: string,
+    expiresAt?: string | null,
+  ): Promise<PluginCapabilityAuthorization>;
+  denyFormalAuthorization(
+    pluginId: string,
+    capabilityId: string,
+  ): Promise<PluginCapabilityAuthorization>;
+  revokeFormalAuthorization(
+    pluginId: string,
+    capabilityId: string,
+  ): Promise<PluginCapabilityAuthorization>;
+  expireFormalAuthorization(
+    pluginId: string,
+    capabilityId: string,
+  ): Promise<PluginCapabilityAuthorization>;
   getSettings(pluginId: string): Promise<Record<string, unknown>>;
   setSettings(pluginId: string, settings: unknown): Promise<void>;
   readAsset(pluginId: string, relativePath: string): Promise<string>;

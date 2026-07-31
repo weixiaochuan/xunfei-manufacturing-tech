@@ -70,6 +70,18 @@ pub enum AppError {
     #[error("capability 权威语义版本不可用")]
     PluginAuthorizationCapabilitySemanticVersionUnavailable,
 
+    #[error("插件当前 Manifest 未声明正式授权 capability")]
+    PluginAuthorizationManifestNotDeclared,
+
+    #[error("插件当前版本权限快照不包含正式授权 capability")]
+    PluginAuthorizationSnapshotNotDeclared,
+
+    #[error("正式插件授权 scope 与当前请求不匹配")]
+    PluginAuthorizationScopeMismatch,
+
+    #[error("正式插件授权 capability 语义版本不匹配")]
+    PluginAuthorizationSemanticVersionMismatch,
+
     #[error("正式插件授权记录不存在")]
     PluginAuthorizationNotFound,
 

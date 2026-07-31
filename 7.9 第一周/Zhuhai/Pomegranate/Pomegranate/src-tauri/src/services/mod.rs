@@ -47,6 +47,8 @@ pub mod note;
 pub mod orphan_scan;
 pub mod pdf;
 pub(crate) mod plugin_authorization_context;
+#[cfg(desktop)]
+pub(crate) mod plugin_authorizations;
 pub(crate) mod plugin_capabilities;
 mod plugin_capabilities_generated;
 pub(crate) mod plugin_permission_guard;

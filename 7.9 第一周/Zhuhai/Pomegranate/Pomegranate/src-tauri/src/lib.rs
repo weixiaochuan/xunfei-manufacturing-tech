@@ -1055,6 +1055,18 @@ pub fn run() {
             commands::plugins::get_plugin_manifest,
             commands::plugins::grant_plugin_permissions,
             commands::plugins::revoke_plugin_permissions,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::list_current_formal_plugin_capability_authorizations,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::request_current_formal_plugin_capability_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::grant_current_formal_plugin_capability_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::deny_current_formal_plugin_capability_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::revoke_current_formal_plugin_capability_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::expire_current_formal_plugin_capability_authorization,
             commands::plugins::get_plugin_settings,
             commands::plugins::set_plugin_settings,
             commands::plugins::read_plugin_asset,

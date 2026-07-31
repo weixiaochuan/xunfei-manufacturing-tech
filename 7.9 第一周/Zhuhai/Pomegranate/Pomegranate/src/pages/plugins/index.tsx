@@ -556,10 +556,44 @@ export default function PluginsPage() {
     void scanPlugins();
   }, []);
 
+  async function attachFormalAuthorizationFacts(data: PluginInfo[]) {
+    let firstError: string | null = null;
+    const resolved = await Promise.all(
+      data.map(async (plugin) => {
+        if (plugin.schemaVersion < 3) return plugin;
+        try {
+          const formalAuthorizations =
+            await pluginApi.listFormalAuthorizations(plugin.id);
+          return {
+            ...plugin,
+            formalAuthorizations,
+            formalAuthorizationError: null,
+            // 现有 UI 字段只作为展示适配；数据来自正式表，不回退到 legacy。
+            grantedPermissions: formalAuthorizations
+              .filter((authorization) => authorization.effective)
+              .map((authorization) => authorization.capabilityId),
+          };
+        } catch (error) {
+          firstError ??= String(error);
+          return {
+            ...plugin,
+            formalAuthorizations: [],
+            formalAuthorizationError: String(error),
+            grantedPermissions: [],
+          };
+        }
+      }),
+    );
+    if (firstError) {
+      message.warning(`正式授权状态不可用，已按未授权处理：${firstError}`);
+    }
+    return resolved;
+  }
+
   async function loadPlugins() {
     setLoading(true);
     try {
-      const data = await pluginApi.list();
+      const data = await attachFormalAuthorizationFacts(await pluginApi.list());
       setPlugins(data);
       return data;
     } catch (e) {
@@ -573,7 +607,7 @@ export default function PluginsPage() {
   async function scanPlugins() {
     setLoading(true);
     try {
-      const data = await pluginApi.scan();
+      const data = await attachFormalAuthorizationFacts(await pluginApi.scan());
       setPlugins(data);
       if (selected) {
         setSelected(data.find((p) => p.id === selected.id) ?? null);
@@ -813,7 +847,9 @@ export default function PluginsPage() {
     );
     if (pending.length === 0) return;
     try {
-      await pluginApi.grantPermissions(plugin.id, pending);
+      for (const capabilityId of pending) {
+        await pluginApi.grantFormalAuthorization(plugin.id, capabilityId);
+      }
       notifyDeclarativePluginToolbarChanged();
       message.success("已授权");
       await scanPlugins();
@@ -825,12 +861,34 @@ export default function PluginsPage() {
   async function revokeAll(plugin: PluginInfo) {
     if (plugin.grantedPermissions.length === 0) return;
     try {
-      await pluginApi.revokePermissions(plugin.id, plugin.grantedPermissions);
+      for (const capabilityId of plugin.grantedPermissions) {
+        await pluginApi.revokeFormalAuthorization(plugin.id, capabilityId);
+      }
       notifyDeclarativePluginToolbarChanged();
       message.success("已撤销授权");
       await scanPlugins();
     } catch (e) {
       message.error(`撤销失败：${e}`);
+    }
+  }
+
+  async function denyUndecided(plugin: PluginInfo) {
+    const undecided = (plugin.formalAuthorizations ?? [])
+      .filter(
+        (authorization) =>
+          authorization.status === "missing" ||
+          authorization.status === "pending",
+      )
+      .map((authorization) => authorization.capabilityId);
+    if (undecided.length === 0) return;
+    try {
+      for (const capabilityId of undecided) {
+        await pluginApi.denyFormalAuthorization(plugin.id, capabilityId);
+      }
+      message.success("已记录拒绝");
+      await scanPlugins();
+    } catch (e) {
+      message.error(`拒绝授权失败：${e}`);
     }
   }
 
@@ -1074,6 +1132,19 @@ export default function PluginsPage() {
                 撤销全部授权
               </Button>
               <Button
+                danger
+                disabled={
+                  !(selected.formalAuthorizations ?? []).some(
+                    (authorization) =>
+                      authorization.status === "missing" ||
+                      authorization.status === "pending",
+                  )
+                }
+                onClick={() => denyUndecided(selected)}
+              >
+                拒绝未决权限
+              </Button>
+              <Button
                 type="primary"
                 icon={<ShieldCheck size={14} />}
                 disabled={selected.permissions.every((p) =>
@@ -1117,19 +1188,33 @@ export default function PluginsPage() {
                   <Tag>无权限</Tag>
                 ) : (
                   <Space size={[0, 6]} wrap>
-                    {selected.permissions.map((permission) => (
-                      <Tooltip key={permission} title={permissionDescription(permission)}>
+                    {selected.permissions.map((permission) => {
+                      const authorization = selected.formalAuthorizations?.find(
+                        (item) => item.capabilityId === permission,
+                      );
+                      return (
+                      <Tooltip
+                        key={permission}
+                        title={`${permissionDescription(permission)} · 正式授权状态：${
+                          authorization?.status ?? "missing"
+                        }`}
+                      >
                         <Tag
                           color={
-                            selected.grantedPermissions.includes(permission)
+                            authorization?.effective
                               ? "green"
-                              : "orange"
+                              : authorization?.status === "revoked" ||
+                                  authorization?.status === "denied" ||
+                                  authorization?.status === "expired"
+                                ? "red"
+                                : "orange"
                           }
                         >
-                          {permissionLabel(permission)}
+                          {permissionLabel(permission)} · {authorization?.status ?? "missing"}
                         </Tag>
                       </Tooltip>
-                    ))}
+                      );
+                    })}
                   </Space>
                 )}
               </div>

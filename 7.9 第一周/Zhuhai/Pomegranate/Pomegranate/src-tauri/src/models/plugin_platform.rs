@@ -489,6 +489,35 @@ pub struct PendingPluginCapabilityAuthorization {
     pub expires_at: Option<String>,
 }
 
+/// 当前可信主体在当前插件版本上的正式授权读取结果。
+///
+/// `Missing` 与五种持久化状态分开表达；`effective` 只在状态、到期时间、
+/// capability 语义版本、Manifest 声明和版本快照全部一致时为 true。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CurrentPluginCapabilityAuthorizationStatus {
+    Missing,
+    Pending,
+    Granted,
+    Denied,
+    Revoked,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentPluginCapabilityAuthorization {
+    pub plugin_id: String,
+    pub plugin_version: String,
+    pub capability_id: String,
+    pub capability_semantic_version: String,
+    pub scope: PluginAuthorizationScope,
+    pub status: CurrentPluginCapabilityAuthorizationStatus,
+    pub effective: bool,
+    pub revision: Option<i64>,
+    pub expires_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginExecutionContext {

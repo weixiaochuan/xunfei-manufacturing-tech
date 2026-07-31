@@ -281,6 +281,28 @@ impl Database {
         read_current_version_capability_snapshot(&conn, plugin_id)
     }
 
+    /// 在同一 SQLite 读取快照中取得 Manifest 声明与版本权限快照。
+    ///
+    /// Service 层需要先区分“Manifest 未声明”和“快照不包含”，再对完整集合执行
+    /// fail-closed 一致性检查，因此这里不提前合并两类事实，也不读取 legacy 授权。
+    pub(crate) fn current_plugin_capability_contract(
+        &self,
+        plugin_id: &str,
+    ) -> Result<
+        (
+            CurrentManifestCapabilityDeclaration,
+            InstalledVersionCapabilitySnapshot,
+        ),
+        AppError,
+    > {
+        let mut conn = self.conn_lock()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let manifest = read_current_manifest_capability_declaration(&tx, plugin_id)?;
+        let snapshot = read_current_version_capability_snapshot(&tx, plugin_id)?;
+        tx.commit()?;
+        Ok((manifest, snapshot))
+    }
+
     /// 读取单个 capability 的 legacy 布尔授权兼容事实。
     pub fn current_legacy_capability_authorization(
         &self,

@@ -228,6 +228,42 @@ export interface PluginInfo {
   blockedReason: string | null;
   rawInvokeAllowed: boolean;
   installation: PluginInstallationInfo | null;
+  /** 由正式授权查询回填；不得由 legacy 布尔授权推断。 */
+  formalAuthorizations?: CurrentPluginCapabilityAuthorization[];
+  formalAuthorizationError?: string | null;
+}
+
+export type CurrentPluginCapabilityAuthorizationStatus =
+  | "missing"
+  | "pending"
+  | "granted"
+  | "denied"
+  | "revoked"
+  | "expired";
+
+export interface PluginAuthorizationScope {
+  kind: string;
+  key: string;
+}
+
+export interface CurrentPluginCapabilityAuthorization {
+  pluginId: string;
+  pluginVersion: string;
+  capabilityId: string;
+  capabilitySemanticVersion: string;
+  scope: PluginAuthorizationScope;
+  status: CurrentPluginCapabilityAuthorizationStatus;
+  effective: boolean;
+  revision: number | null;
+  expiresAt: string | null;
+}
+
+export interface PluginCapabilityAuthorization {
+  id: number;
+  pluginId: string;
+  capabilityId: string;
+  state: Exclude<CurrentPluginCapabilityAuthorizationStatus, "missing">;
+  revision: number;
 }
 export interface PluginAuditLogEntry {
   id: number;
