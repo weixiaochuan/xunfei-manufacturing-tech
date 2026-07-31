@@ -71,6 +71,13 @@ jobs:
         with:
           workspaces: '7.9 第一周/Zhuhai/Pomegranate/Pomegranate/src-tauri -> target'
 
+      - name: Build Linux kb-mcp sidecar
+        working-directory: '7.9 第一周/Zhuhai/Pomegranate/Pomegranate'
+        run: |
+          npm run build:mcp -- --target x86_64-unknown-linux-gnu
+          test -x src-tauri/binaries/kb-mcp-x86_64-unknown-linux-gnu
+          file src-tauri/binaries/kb-mcp-x86_64-unknown-linux-gnu
+
       - name: Test generated registry consistency
         working-directory: '7.9 第一周/Zhuhai/Pomegranate/Pomegranate/src-tauri'
         run: cargo test services::plugin_capabilities::tests
