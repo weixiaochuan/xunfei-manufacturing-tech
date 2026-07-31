@@ -139,7 +139,7 @@ fn current_target(
     })
 }
 
-fn list_current_formal_plugin_capability_authorizations_for_actor(
+pub(super) fn list_current_formal_plugin_capability_authorizations_for_actor(
     db: &Database,
     subject: &PluginAuthorizationSubject,
     context: &PluginAuthorizationContext,

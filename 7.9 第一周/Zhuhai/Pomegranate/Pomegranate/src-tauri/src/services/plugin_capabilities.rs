@@ -35,6 +35,97 @@ pub(crate) fn canonical_capability_semantic_version(
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CanonicalCapabilityPolicy {
+    pub status: String,
+    pub runtime_kinds: Vec<String>,
+    pub plugin_sources: Vec<String>,
+}
+
+/// 从 A1 canonical registry 读取运行时授权策略；解析失败必须由调用方 fail-closed。
+pub(crate) fn canonical_capability_policy(
+    capability_id: &str,
+) -> Result<Option<CanonicalCapabilityPolicy>, serde_json::Error> {
+    capability_policy_from_registry(
+        include_str!("../../../config/plugin-capabilities.v1.json"),
+        capability_id,
+    )
+}
+
+fn invalid_registry(reason: &str) -> serde_json::Error {
+    serde_json::Error::io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        reason.to_string(),
+    ))
+}
+
+/// 严格解析运行时 policy。关键字段缺失、类型错误或空集合都属于 registry 损坏，
+/// 不能被解释为“不限制 runtime/source”。
+fn capability_policy_from_registry(
+    registry_json: &str,
+    capability_id: &str,
+) -> Result<Option<CanonicalCapabilityPolicy>, serde_json::Error> {
+    let registry: serde_json::Value = serde_json::from_str(registry_json)?;
+    let capabilities = registry
+        .get("capabilities")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| invalid_registry("capabilities_not_array"))?;
+    let Some(item) = capabilities
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_str) == Some(capability_id))
+    else {
+        return Ok(None);
+    };
+    let status = item
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| invalid_registry("capability_status_missing"))?
+        .to_string();
+    let parse_non_empty_strings = |field: &'static str| -> Result<Vec<String>, serde_json::Error> {
+        let values = item
+            .get(field)
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| invalid_registry(&format!("{field}_not_array")))?;
+        if values.is_empty() {
+            return Err(invalid_registry(&format!("{field}_empty")));
+        }
+        values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| invalid_registry(&format!("{field}_invalid_item")))
+            })
+            .collect()
+    };
+    let (runtime_kinds, plugin_sources) = if matches!(status.as_str(), "active" | "restricted") {
+        (
+            parse_non_empty_strings("runtimeKinds")?,
+            parse_non_empty_strings("pluginSources")?,
+        )
+    } else {
+        // 非准入状态只用于给出稳定拒绝原因；其空策略集合不能遮蔽 blocked/reserved/legacy。
+        (
+            item.get("runtimeKinds")
+                .and_then(serde_json::Value::as_array)
+                .map(|_| Vec::new())
+                .unwrap_or_default(),
+            item.get("pluginSources")
+                .and_then(serde_json::Value::as_array)
+                .map(|_| Vec::new())
+                .unwrap_or_default(),
+        )
+    };
+    Ok(Some(CanonicalCapabilityPolicy {
+        status,
+        runtime_kinds,
+        plugin_sources,
+    }))
+}
+
 pub(crate) fn is_v3_permission_runtime_allowed(permission: &str, runtime_kind: &str) -> bool {
     if V3_PERMISSION_RUNTIME_COMPATIBILITY_EXCEPTIONS.contains(&permission) {
         return true;
@@ -209,13 +300,14 @@ pub(crate) fn evaluate_v3_required_permissions<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        capability_semantic_version_from_registry, is_v3_classification_contribution_allowed,
-        is_v3_permission_runtime_allowed, is_v3_runtime_classification_allowed,
-        required_v3_policy_permissions, V3_CLASSIFICATION_CONTRIBUTION_RULES,
-        V3_CONTRIBUTION_REQUIRED_PERMISSIONS, V3_FEATURE_CAPABILITY_REQUIRED_PERMISSIONS,
-        V3_MANIFEST_PERMISSIONS, V3_PERMISSION_RUNTIME_COMPATIBILITY_EXCEPTIONS,
-        V3_PERMISSION_RUNTIME_KINDS, V3_RUNTIME_CLASSIFICATION_RULES,
-        V3_RUNTIME_CONTRIBUTION_REQUIRED_PERMISSIONS, VALID_PERMISSIONS,
+        capability_policy_from_registry, capability_semantic_version_from_registry,
+        is_v3_classification_contribution_allowed, is_v3_permission_runtime_allowed,
+        is_v3_runtime_classification_allowed, required_v3_policy_permissions,
+        V3_CLASSIFICATION_CONTRIBUTION_RULES, V3_CONTRIBUTION_REQUIRED_PERMISSIONS,
+        V3_FEATURE_CAPABILITY_REQUIRED_PERMISSIONS, V3_MANIFEST_PERMISSIONS,
+        V3_PERMISSION_RUNTIME_COMPATIBILITY_EXCEPTIONS, V3_PERMISSION_RUNTIME_KINDS,
+        V3_RUNTIME_CLASSIFICATION_RULES, V3_RUNTIME_CONTRIBUTION_REQUIRED_PERMISSIONS,
+        VALID_PERMISSIONS,
     };
     use serde_json::Value;
     use std::collections::BTreeSet;
@@ -263,6 +355,20 @@ mod tests {
             .expect("registry"),
             Some("2.4.6".to_string())
         );
+    }
+
+    #[test]
+    fn runtime_policy_parser_fails_closed_for_missing_or_malformed_security_fields() {
+        for registry in [
+            r#"{}"#,
+            r#"{"capabilities":{}}"#,
+            r#"{"capabilities":[{"id":"ai.invoke","runtimeKinds":["xingchen-workflow"],"pluginSources":["local"]}]}"#,
+            r#"{"capabilities":[{"id":"ai.invoke","status":"restricted","runtimeKinds":[],"pluginSources":["local"]}]}"#,
+            r#"{"capabilities":[{"id":"ai.invoke","status":"restricted","runtimeKinds":["xingchen-workflow"],"pluginSources":[]}]}"#,
+            r#"{"capabilities":[{"id":"ai.invoke","status":"restricted","runtimeKinds":[1],"pluginSources":["local"]}]}"#,
+        ] {
+            assert!(capability_policy_from_registry(registry, "ai.invoke").is_err());
+        }
     }
 
     #[test]

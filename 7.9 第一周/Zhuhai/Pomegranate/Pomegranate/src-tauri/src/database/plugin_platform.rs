@@ -29,6 +29,15 @@ pub(crate) struct CurrentPluginAuthorizationSnapshot {
     pub grant_states: Vec<(String, Option<bool>)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MarketplacePluginSecurityState {
+    pub product_status: String,
+    pub version_status: String,
+    pub signature_status: String,
+    pub installation_status: String,
+    pub installed_version: String,
+}
+
 fn enum_value<T: serde::Serialize>(value: &T, fallback: &str) -> String {
     serde_json::to_value(value)
         .ok()
@@ -196,6 +205,35 @@ fn read_legacy_capability_authorization(
 }
 
 impl Database {
+    /// 读取 marketplace 插件现有的产品、版本、签名和安装状态。
+    /// source=marketplace 时缺少该绑定本身就是安全证据缺失，Guard 必须 fail-closed。
+    pub(crate) fn marketplace_plugin_security_state(
+        &self,
+        plugin_id: &str,
+    ) -> Result<Option<MarketplacePluginSecurityState>, AppError> {
+        let conn = self.conn_lock()?;
+        conn.query_row(
+            "SELECT p.status, COALESCE(pv.status, ''), COALESCE(pv.signature_status, ''),
+                    COALESCE(pi.status, ''), pi.installed_version
+             FROM plugin_installations pi
+             JOIN products p ON p.id = pi.product_id
+             LEFT JOIN product_versions pv ON pv.id = pi.product_version_id
+             WHERE pi.plugin_id = ?1",
+            [plugin_id],
+            |row| {
+                Ok(MarketplacePluginSecurityState {
+                    product_status: row.get(0)?,
+                    version_status: row.get(1)?,
+                    signature_status: row.get(2)?,
+                    installation_status: row.get(3)?,
+                    installed_version: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(AppError::from)
+    }
+
     /// 在同一连接锁内读取运行时授权所需的当前状态。
     ///
     /// `manifest_json` 是当前活动版本的权威声明；`plugin_permissions.granted` 仅作为
