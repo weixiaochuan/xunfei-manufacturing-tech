@@ -49,6 +49,36 @@ pub enum AppError {
     #[error("插件当前 Manifest 与版本权限快照语义不一致: plugin={plugin_id} version={version}")]
     PluginPermissionSnapshotMismatch { plugin_id: String, version: String },
 
+    #[error("正式插件授权主体无效: reason={reason}")]
+    PluginAuthorizationSubjectInvalid { reason: &'static str },
+
+    #[error("正式插件授权上下文无效: reason={reason}")]
+    PluginAuthorizationContextInvalid { reason: &'static str },
+
+    #[error("正式插件授权 scope 无效: reason={reason}")]
+    PluginAuthorizationScopeInvalid { reason: &'static str },
+
+    #[error("capability 不允许写入正式插件授权: reason={reason}")]
+    PluginAuthorizationCapabilityInvalid { reason: &'static str },
+
+    #[error("正式插件授权记录不存在")]
+    PluginAuthorizationNotFound,
+
+    #[error("正式插件授权状态转换无效: from={from} to={to}")]
+    PluginAuthorizationTransitionInvalid {
+        from: &'static str,
+        to: &'static str,
+    },
+
+    #[error("正式插件授权并发冲突")]
+    PluginAuthorizationRevisionConflict,
+
+    #[error("正式插件授权时间无效: field={field}")]
+    PluginAuthorizationTimeInvalid { field: &'static str },
+
+    #[error("正式插件授权存储记录损坏: reason={reason}")]
+    PluginAuthorizationStoredRecordInvalid { reason: &'static str },
+
     #[error("{0}")]
     Custom(String),
 }

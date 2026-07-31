@@ -353,6 +353,141 @@ pub struct CurrentPluginPermissionFacts {
     pub legacy_authorizations: Vec<LegacyCapabilityAuthorizationFact>,
 }
 
+/// 正式 capability 授权主体类型。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginAuthorizationSubjectKind {
+    PlatformUser,
+    LocalProfile,
+    Administrator,
+}
+
+/// 正式 capability 授权的设备或安装上下文类型。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginAuthorizationContextKind {
+    Device,
+    Installation,
+}
+
+/// 正式 capability 授权状态；记录缺失不属于该枚举。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginAuthorizationState {
+    Pending,
+    Granted,
+    Denied,
+    Revoked,
+    Expired,
+}
+
+/// 正式 capability 授权决定的来源。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginAuthorizationSource {
+    Install,
+    OnDemand,
+    AdminPolicy,
+    Migration,
+}
+
+/// 正式 capability 授权的生命周期类型。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginAuthorizationLifetime {
+    Persistent,
+    Session,
+    OneShot,
+    Policy,
+}
+
+/// 发布者或签名身份快照的可信绑定状态。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginAuthorizationIdentityBindingStatus {
+    Unavailable,
+    Unverified,
+    Verified,
+}
+
+/// 调用方显式提供的授权主体，DAO 不负责从账号或配置推断。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginAuthorizationSubject {
+    pub kind: PluginAuthorizationSubjectKind,
+    pub id: String,
+}
+
+/// 调用方显式提供的稳定设备或安装上下文。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginAuthorizationContext {
+    pub kind: PluginAuthorizationContextKind,
+    pub id: String,
+}
+
+/// capability scope 的规范化身份；本批只存储，不解释资源是否落入 scope。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginAuthorizationScope {
+    pub kind: String,
+    pub key: String,
+}
+
+/// 不信任 Manifest 自报值的发布者或签名身份快照。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginAuthorizationIdentityBinding {
+    pub identity: Option<String>,
+    pub status: PluginAuthorizationIdentityBindingStatus,
+}
+
+/// 一条正式 capability 授权事实。
+///
+/// 该类型不读取或表示 `plugin_permissions.granted`；legacy 兼容事实由
+/// `LegacyCapabilityAuthorizationFact` 单独表达。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCapabilityAuthorization {
+    pub id: i64,
+    pub subject: PluginAuthorizationSubject,
+    pub context: PluginAuthorizationContext,
+    pub plugin_id: String,
+    pub capability_id: String,
+    pub capability_semantic_version: Option<String>,
+    pub scope: PluginAuthorizationScope,
+    pub state: PluginAuthorizationState,
+    pub source: PluginAuthorizationSource,
+    pub lifetime: PluginAuthorizationLifetime,
+    pub first_authorized_version: Option<String>,
+    pub last_confirmed_version: Option<String>,
+    pub publisher: PluginAuthorizationIdentityBinding,
+    pub signature: PluginAuthorizationIdentityBinding,
+    pub created_at: String,
+    pub updated_at: String,
+    pub revoked_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub revision: i64,
+}
+
+/// 创建或刷新 pending 正式授权请求所需的完整、显式输入。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingPluginCapabilityAuthorization {
+    pub subject: PluginAuthorizationSubject,
+    pub context: PluginAuthorizationContext,
+    pub plugin_id: String,
+    pub capability_id: String,
+    pub capability_semantic_version: Option<String>,
+    pub scope: PluginAuthorizationScope,
+    pub source: PluginAuthorizationSource,
+    pub lifetime: PluginAuthorizationLifetime,
+    pub last_confirmed_version: Option<String>,
+    pub publisher: PluginAuthorizationIdentityBinding,
+    pub signature: PluginAuthorizationIdentityBinding,
+    pub expires_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginExecutionContext {
