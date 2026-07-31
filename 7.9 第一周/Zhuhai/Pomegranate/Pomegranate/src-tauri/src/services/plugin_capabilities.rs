@@ -40,6 +40,106 @@ pub(crate) struct CanonicalCapabilityPolicy {
     pub status: String,
     pub runtime_kinds: Vec<String>,
     pub plugin_sources: Vec<String>,
+    pub scope_type: CanonicalScopeType,
+    pub scope_schema_version: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CanonicalScopeType {
+    Application,
+    ApplicationEvents,
+    BoundAgent,
+    BoundCredential,
+    CurrentDocument,
+    CurrentEditor,
+    CurrentWindow,
+    DeclaredEndpoint,
+    Feature,
+    None,
+    PlanningWorkspace,
+    Plugin,
+    PluginRequest,
+    Session,
+    SystemClipboard,
+    Unspecified,
+    UserSelectedResource,
+    Workspace,
+    XingchenService,
+}
+
+impl CanonicalScopeType {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Application => "application",
+            Self::ApplicationEvents => "application-events",
+            Self::BoundAgent => "bound-agent",
+            Self::BoundCredential => "bound-credential",
+            Self::CurrentDocument => "current-document",
+            Self::CurrentEditor => "current-editor",
+            Self::CurrentWindow => "current-window",
+            Self::DeclaredEndpoint => "declared-endpoint",
+            Self::Feature => "feature",
+            Self::None => "none",
+            Self::PlanningWorkspace => "planning-workspace",
+            Self::Plugin => "plugin",
+            Self::PluginRequest => "plugin-request",
+            Self::Session => "session",
+            Self::SystemClipboard => "system-clipboard",
+            Self::Unspecified => "unspecified",
+            Self::UserSelectedResource => "user-selected-resource",
+            Self::Workspace => "workspace",
+            Self::XingchenService => "xingchen-service",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, serde_json::Error> {
+        match value {
+            "application" => Ok(Self::Application),
+            "application-events" => Ok(Self::ApplicationEvents),
+            "bound-agent" => Ok(Self::BoundAgent),
+            "bound-credential" => Ok(Self::BoundCredential),
+            "current-document" => Ok(Self::CurrentDocument),
+            "current-editor" => Ok(Self::CurrentEditor),
+            "current-window" => Ok(Self::CurrentWindow),
+            "declared-endpoint" => Ok(Self::DeclaredEndpoint),
+            "feature" => Ok(Self::Feature),
+            "none" => Ok(Self::None),
+            "planning-workspace" => Ok(Self::PlanningWorkspace),
+            "plugin" => Ok(Self::Plugin),
+            "plugin-request" => Ok(Self::PluginRequest),
+            "session" => Ok(Self::Session),
+            "system-clipboard" => Ok(Self::SystemClipboard),
+            "unspecified" => Ok(Self::Unspecified),
+            "user-selected-resource" => Ok(Self::UserSelectedResource),
+            "workspace" => Ok(Self::Workspace),
+            "xingchen-service" => Ok(Self::XingchenService),
+            _ => Err(invalid_registry("capability_scope_type_unknown")),
+        }
+    }
+
+    fn scope_schema_type(self) -> &'static str {
+        match self {
+            Self::None => "not-applicable",
+            Self::Application
+            | Self::ApplicationEvents
+            | Self::BoundAgent
+            | Self::BoundCredential
+            | Self::CurrentDocument
+            | Self::CurrentEditor
+            | Self::CurrentWindow
+            | Self::DeclaredEndpoint
+            | Self::Feature
+            | Self::PlanningWorkspace
+            | Self::Plugin
+            | Self::PluginRequest
+            | Self::Session
+            | Self::SystemClipboard
+            | Self::Unspecified
+            | Self::UserSelectedResource
+            | Self::Workspace
+            | Self::XingchenService => self.as_str(),
+        }
+    }
 }
 
 /// 从 A1 canonical registry 读取运行时授权策略；解析失败必须由调用方 fail-closed。
@@ -82,6 +182,33 @@ fn capability_policy_from_registry(
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| invalid_registry("capability_status_missing"))?
         .to_string();
+    let scope_type = item
+        .get("scopeType")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| invalid_registry("capability_scope_type_missing"))
+        .and_then(CanonicalScopeType::parse)?;
+    let scope_schema = item
+        .get("scopeSchema")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| invalid_registry("capability_scope_schema_missing"))?;
+    let scope_schema_type = scope_schema
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| invalid_registry("capability_scope_schema_type_missing"))?;
+    if scope_schema_type != scope_type.scope_schema_type() {
+        return Err(invalid_registry("capability_scope_schema_type_mismatch"));
+    }
+    let scope_schema_version = scope_schema
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| invalid_registry("capability_scope_schema_version_missing"))?;
+    if scope_schema_version != 1 {
+        return Err(invalid_registry(
+            "capability_scope_schema_version_unsupported",
+        ));
+    }
     let parse_non_empty_strings = |field: &'static str| -> Result<Vec<String>, serde_json::Error> {
         let values = item
             .get(field)
@@ -123,6 +250,8 @@ fn capability_policy_from_registry(
         status,
         runtime_kinds,
         plugin_sources,
+        scope_type,
+        scope_schema_version,
     }))
 }
 
@@ -302,7 +431,7 @@ mod tests {
     use super::{
         capability_policy_from_registry, capability_semantic_version_from_registry,
         is_v3_classification_contribution_allowed, is_v3_permission_runtime_allowed,
-        is_v3_runtime_classification_allowed, required_v3_policy_permissions,
+        is_v3_runtime_classification_allowed, required_v3_policy_permissions, CanonicalScopeType,
         V3_CLASSIFICATION_CONTRIBUTION_RULES, V3_CONTRIBUTION_REQUIRED_PERMISSIONS,
         V3_FEATURE_CAPABILITY_REQUIRED_PERMISSIONS, V3_MANIFEST_PERMISSIONS,
         V3_PERMISSION_RUNTIME_COMPATIBILITY_EXCEPTIONS, V3_PERMISSION_RUNTIME_KINDS,
@@ -368,6 +497,95 @@ mod tests {
             r#"{"capabilities":[{"id":"ai.invoke","status":"restricted","runtimeKinds":[1],"pluginSources":["local"]}]}"#,
         ] {
             assert!(capability_policy_from_registry(registry, "ai.invoke").is_err());
+        }
+    }
+
+    #[test]
+    fn scope_policy_is_loaded_from_registry_and_rejects_malformed_fixtures() {
+        for (capability, expected) in [
+            ("credentials.use", CanonicalScopeType::BoundCredential),
+            ("agents.invoke", CanonicalScopeType::BoundAgent),
+            ("network.xingchen", CanonicalScopeType::XingchenService),
+            ("ai.invoke", CanonicalScopeType::Feature),
+        ] {
+            let policy = super::canonical_capability_policy(capability)
+                .expect("canonical registry")
+                .expect("capability policy");
+            assert_eq!(policy.scope_type, expected);
+            assert_eq!(policy.scope_schema_version, 1);
+        }
+
+        let valid = serde_json::json!({
+            "capabilities": [{
+                "id": "ai.invoke",
+                "status": "restricted",
+                "runtimeKinds": ["xingchen-workflow"],
+                "pluginSources": ["local"],
+                "scopeType": "feature",
+                "scopeSchema": {"type": "feature", "version": 1}
+            }]
+        });
+        let mutations = [
+            serde_json::json!(null),
+            serde_json::json!(42),
+            serde_json::json!("future-scope"),
+        ];
+        for scope_type in mutations {
+            let mut fixture = valid.clone();
+            fixture["capabilities"][0]["scopeType"] = scope_type;
+            assert!(capability_policy_from_registry(&fixture.to_string(), "ai.invoke").is_err());
+        }
+        for scope_schema in [
+            serde_json::json!(null),
+            serde_json::json!({"type": "feature"}),
+            serde_json::json!({"type": "bound-agent", "version": 1}),
+            serde_json::json!({"type": "feature", "version": 2}),
+        ] {
+            let mut fixture = valid.clone();
+            fixture["capabilities"][0]["scopeSchema"] = scope_schema;
+            assert!(capability_policy_from_registry(&fixture.to_string(), "ai.invoke").is_err());
+        }
+
+        let none_valid = serde_json::json!({
+            "capabilities": [{
+                "id": "credentials.configure",
+                "status": "blocked",
+                "runtimeKinds": [],
+                "pluginSources": [],
+                "scopeType": "none",
+                "scopeSchema": {"type": "not-applicable", "version": 1}
+            }]
+        });
+        let policy =
+            capability_policy_from_registry(&none_valid.to_string(), "credentials.configure")
+                .expect("none policy")
+                .expect("none capability");
+        assert_eq!(policy.scope_type, CanonicalScopeType::None);
+
+        let mut none_mismatch = none_valid.clone();
+        none_mismatch["capabilities"][0]["scopeSchema"]["type"] = serde_json::json!("none");
+        assert!(capability_policy_from_registry(
+            &none_mismatch.to_string(),
+            "credentials.configure"
+        )
+        .is_err());
+
+        let canonical: Value =
+            serde_json::from_str(include_str!("../../../config/plugin-capabilities.v1.json"))
+                .expect("canonical registry JSON");
+        for capability in canonical["capabilities"]
+            .as_array()
+            .expect("canonical capabilities")
+        {
+            let id = capability["id"].as_str().expect("canonical capability id");
+            assert!(
+                capability_policy_from_registry(
+                    include_str!("../../../config/plugin-capabilities.v1.json"),
+                    id,
+                )
+                .is_ok(),
+                "canonical policy must load: {id}"
+            );
         }
     }
 

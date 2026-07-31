@@ -12,8 +12,9 @@ use crate::models::{
 
 use super::plugin_authorization_context::{
     resolve_host_installation_context, resolve_verified_platform_subject,
+    trusted_scope_audit_summary, TrustedResourceScope,
 };
-use super::plugin_authorizations::list_current_formal_plugin_capability_authorizations_for_actor;
+use super::plugin_authorizations::current_formal_plugin_capability_authorization_for_actor_and_scope;
 use super::plugin_capabilities::{canonical_capability_policy, is_v3_permission_runtime_allowed};
 use super::plugin_rate_limit::PluginRateLimiter;
 use super::plugins::PluginService;
@@ -102,13 +103,42 @@ impl PluginGuardDenyCode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PluginGuardDeny {
-    pub code: PluginGuardDenyCode,
-    pub safe_message: &'static str,
-    pub internal_diagnostic: String,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PluginGuardPublicRejection {
+    pub code: &'static str,
+    pub message: &'static str,
     pub correlation_id: String,
-    pub audited: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct PluginGuardDeny {
+    code: PluginGuardDenyCode,
+    safe_message: &'static str,
+    internal_diagnostic: String,
+    correlation_id: String,
+    audited: bool,
+}
+
+impl std::fmt::Debug for PluginGuardDeny {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PluginGuardDeny")
+            .field("code", &self.code)
+            .field("correlation_id", &self.correlation_id)
+            .field("audited", &self.audited)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PluginGuardDeny {
+    pub(crate) fn public_envelope(&self) -> PluginGuardPublicRejection {
+        PluginGuardPublicRejection {
+            code: self.code.as_str(),
+            message: self.safe_message,
+            correlation_id: self.correlation_id.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +169,7 @@ pub(crate) struct TrustedPluginCall {
     expected_version: Option<String>,
     scene: PluginScene,
     correlation_id: String,
+    resource_scope: TrustedResourceScope,
     token_requirement: GuardTokenRequirement,
     rate_limit: GuardRateLimit,
 }
@@ -150,6 +181,7 @@ impl TrustedPluginCall {
         expected_version: Option<String>,
         scene: PluginScene,
         correlation_id: impl Into<String>,
+        resource_scope: TrustedResourceScope,
     ) -> Self {
         Self {
             plugin_id: plugin_id.into(),
@@ -157,6 +189,7 @@ impl TrustedPluginCall {
             expected_version,
             scene,
             correlation_id: correlation_id.into(),
+            resource_scope,
             token_requirement: GuardTokenRequirement::NotUsed,
             rate_limit: GuardRateLimit::None,
         }
@@ -447,6 +480,17 @@ fn evaluate(
             "plugin source is not admitted",
         ));
     }
+    if policy.scope_type.as_str() != call.resource_scope.scope_type() {
+        return Err(deny(
+            call,
+            PluginGuardDenyCode::ScopeMismatch,
+            "registry scope type does not match trusted resource scope",
+        ));
+    }
+    let requested_scope = call
+        .resource_scope
+        .canonical_scope()
+        .map_err(|error| mapped_error(call, error))?;
     if current.manifest.source == PluginSource::Marketplace {
         let state = db
             .marketplace_plugin_security_state(&call.plugin_id)
@@ -558,23 +602,22 @@ fn evaluate(
         ));
     }
 
-    let authorizations = list_current_formal_plugin_capability_authorizations_for_actor(
+    let authorization = current_formal_plugin_capability_authorization_for_actor_and_scope(
         db,
         subject,
         host_context,
         &call.plugin_id,
+        &call.capability_id,
+        &call.resource_scope,
     )
     .map_err(|error| mapped_error(call, error))?;
-    let authorization = authorizations
-        .iter()
-        .find(|item| item.capability_id == call.capability_id)
-        .ok_or_else(|| {
-            deny(
-                call,
-                PluginGuardDenyCode::AuthorizationMissing,
-                "formal authorization view missing",
-            )
-        })?;
+    if authorization.scope != requested_scope {
+        return Err(deny(
+            call,
+            PluginGuardDenyCode::StoredDataInvalid,
+            "authorization service returned a different scope",
+        ));
+    }
     let code = match authorization.status {
         CurrentPluginCapabilityAuthorizationStatus::Missing => {
             Some(PluginGuardDenyCode::AuthorizationMissing)
@@ -681,7 +724,8 @@ fn write_decision_audit(
         "scene": call.scene.as_str(),
         "subjectKind": enum_string(&subject.kind),
         "hostContextKind": enum_string(&context.kind),
-        "scope": "global:v1:*",
+        "scopeType": call.resource_scope.scope_type(),
+        "scopeDigest": trusted_scope_audit_summary(&call.resource_scope),
         "decision": decision,
         "denyCode": deny_code,
         "correlationId": call.correlation_id,
@@ -708,6 +752,8 @@ fn audit_untrusted_context_failure(
         "scene": call.scene.as_str(),
         "subjectKind": "unresolved",
         "hostContextKind": "unresolved",
+        "scopeType": call.resource_scope.scope_type(),
+        "scopeDigest": trusted_scope_audit_summary(&call.resource_scope),
         "decision": "deny",
         "denyCode": denied.code.as_str(),
         "correlationId": call.correlation_id,
@@ -815,9 +861,7 @@ mod tests {
         PluginAuthorizationSource, PluginAuthorizationSubjectKind, PluginClassification,
         PluginRuntimeKind, PluginSource,
     };
-    use crate::services::plugin_authorization_context::{
-        canonicalize_authorization_scope, resolve_capability_semantic_version,
-    };
+    use crate::services::plugin_authorization_context::resolve_capability_semantic_version;
     use uuid::Uuid;
 
     struct Fixture {
@@ -876,7 +920,15 @@ mod tests {
         };
         let context = resolve_host_installation_context(&db).expect("host context");
         if grant {
-            grant_formal(&db, &subject, &context, &manifest.id, capability, None);
+            grant_formal(
+                &db,
+                &subject,
+                &context,
+                &manifest.id,
+                capability,
+                &trusted_scope_for(capability),
+                None,
+            );
         }
         Fixture {
             db,
@@ -893,10 +945,18 @@ mod tests {
         context: &PluginAuthorizationContext,
         plugin_id: &str,
         capability: &str,
+        trusted_scope: &TrustedResourceScope,
         expires_at: Option<String>,
     ) {
-        let (scope, pending) =
-            create_pending(db, subject, context, plugin_id, capability, expires_at);
+        let (scope, pending) = create_pending(
+            db,
+            subject,
+            context,
+            plugin_id,
+            capability,
+            trusted_scope,
+            expires_at,
+        );
         db.grant_pending_formal_plugin_capability_authorization(
             subject,
             context,
@@ -915,12 +975,13 @@ mod tests {
         context: &PluginAuthorizationContext,
         plugin_id: &str,
         capability: &str,
+        trusted_scope: &TrustedResourceScope,
         expires_at: Option<String>,
     ) -> (
         crate::models::PluginAuthorizationScope,
         crate::models::PluginCapabilityAuthorization,
     ) {
-        let scope = canonicalize_authorization_scope("global", "v1:*").expect("scope");
+        let scope = trusted_scope.canonical_scope().expect("scope");
         let unavailable = PluginAuthorizationIdentityBinding {
             identity: None,
             status: PluginAuthorizationIdentityBindingStatus::Unavailable,
@@ -1027,7 +1088,34 @@ mod tests {
             Some("1.0.0".into()),
             PluginScene::Global,
             "a3-test-correlation",
+            trusted_scope_for(capability),
         )
+    }
+
+    fn trusted_scope_for(capability: &str) -> TrustedResourceScope {
+        match capability {
+            "credentials.use" => TrustedResourceScope::bound_credential(
+                "credential-record-a",
+                "xingchen",
+                "xingchen-api",
+                "credential-binding-fingerprint-a",
+            ),
+            "agents.invoke" => TrustedResourceScope::bound_agent(
+                "external-agent-a",
+                "agent-configuration-fingerprint-a",
+            ),
+            "network.xingchen" => TrustedResourceScope::xingchen_service(
+                "external-agent-a",
+                "workflow-a",
+                "xingchen-configuration-fingerprint-a",
+            ),
+            "ai.invoke" => TrustedResourceScope::feature(
+                "com.firstwork.a3-guard",
+                "feature-a",
+                "feature-contribution-fingerprint-a",
+            ),
+            _ => TrustedResourceScope::global(),
+        }
     }
 
     #[test]
@@ -1299,6 +1387,7 @@ mod tests {
             &pending.context,
             "com.firstwork.a3-guard",
             "ai.invoke",
+            &trusted_scope_for("ai.invoke"),
             None,
         );
         assert_eq!(
@@ -1315,6 +1404,7 @@ mod tests {
             &denied.context,
             "com.firstwork.a3-guard",
             "ai.invoke",
+            &trusted_scope_for("ai.invoke"),
             None,
         );
         denied
@@ -1336,7 +1426,9 @@ mod tests {
         );
 
         let revoked = setup("ai.invoke", true);
-        let scope = canonicalize_authorization_scope("global", "v1:*").expect("scope");
+        let scope = trusted_scope_for("ai.invoke")
+            .canonical_scope()
+            .expect("scope");
         let record = revoked
             .db
             .get_formal_plugin_capability_authorization(
@@ -1373,6 +1465,7 @@ mod tests {
             &expired.context,
             "com.firstwork.a3-guard",
             "ai.invoke",
+            &trusted_scope_for("ai.invoke"),
             Some("2000-01-01T00:00:00Z".into()),
         );
         assert_eq!(
@@ -1400,7 +1493,7 @@ mod tests {
             authorize(&scope, call("ai.invoke"))
                 .expect_err("scope")
                 .code,
-            PluginGuardDenyCode::ScopeMismatch
+            PluginGuardDenyCode::StoredDataInvalid
         );
 
         let semantic = setup("ai.invoke", true);
@@ -1514,5 +1607,157 @@ mod tests {
         let denied = authorize(&audit, call("ai.invoke")).expect_err("audit unavailable");
         assert_eq!(denied.code, PluginGuardDenyCode::AuditWriteFailed);
         assert!(!denied.audited);
+    }
+
+    #[test]
+    fn resource_a_grant_rejects_resource_b_and_global_fallback() {
+        let fixture = setup("ai.invoke", true);
+        let resource_b = TrustedResourceScope::feature(
+            "com.firstwork.a3-guard",
+            "feature-b",
+            "feature-contribution-fingerprint-b",
+        );
+        let call_b = TrustedPluginCall::internal(
+            "com.firstwork.a3-guard",
+            "ai.invoke",
+            Some("1.0.0".into()),
+            PluginScene::Global,
+            "resource-b-correlation",
+            resource_b,
+        );
+        assert_eq!(
+            authorize(&fixture, call_b)
+                .expect_err("resource B must not use resource A grant")
+                .code,
+            PluginGuardDenyCode::ScopeMismatch
+        );
+
+        let global_only = setup("ai.invoke", false);
+        grant_formal(
+            &global_only.db,
+            &global_only.subject,
+            &global_only.context,
+            "com.firstwork.a3-guard",
+            "ai.invoke",
+            &TrustedResourceScope::global(),
+            None,
+        );
+        assert_eq!(
+            authorize(&global_only, call("ai.invoke"))
+                .expect_err("global grant cannot cover restricted feature")
+                .code,
+            PluginGuardDenyCode::ScopeMismatch
+        );
+    }
+
+    #[test]
+    fn registry_scope_type_mismatch_is_denied_before_authorization_lookup() {
+        let fixture = setup("ai.invoke", true);
+        let wrong_scope = TrustedResourceScope::bound_agent(
+            "external-agent-a",
+            "agent-configuration-fingerprint-a",
+        );
+        let wrong_call = TrustedPluginCall::internal(
+            "com.firstwork.a3-guard",
+            "ai.invoke",
+            Some("1.0.0".into()),
+            PluginScene::Global,
+            "wrong-scope-correlation",
+            wrong_scope,
+        );
+        assert_eq!(
+            authorize(&fixture, wrong_call)
+                .expect_err("registry scope mismatch")
+                .code,
+            PluginGuardDenyCode::ScopeMismatch
+        );
+    }
+
+    #[test]
+    fn public_rejection_and_scope_audit_are_minimal_and_redacted() {
+        let fixture = setup("credentials.use", false);
+        let denied = authorize(&fixture, call("credentials.use")).expect_err("missing grant");
+        let debug = format!("{denied:?}");
+        let public = denied.public_envelope();
+        let serialized = serde_json::to_string(&public).expect("public rejection");
+        assert!(serialized.contains("authorization_missing"));
+        assert!(serialized.contains("a3-test-correlation"));
+        for secret in [
+            "test-user",
+            "credential-record-a",
+            "credential-binding-fingerprint-a",
+            "xingchen-api",
+            "SELECT",
+            "C:/",
+            "internal_diagnostic",
+        ] {
+            assert!(!serialized.contains(secret));
+            assert!(!debug.contains(secret));
+        }
+        assert!(debug.contains("AuthorizationMissing"));
+        assert!(debug.contains("a3-test-correlation"));
+
+        let logs = fixture
+            .db
+            .get_plugin_audit_log("com.firstwork.a3-guard", 10)
+            .expect("audit");
+        let target = logs[0].3.as_deref().expect("audit target");
+        assert!(target.contains("\"scopeType\":\"bound-credential\""));
+        assert!(target.contains("\"scopeDigest\":"));
+        for secret in [
+            "test-user",
+            "credential-record-a",
+            "credential-binding-fingerprint-a",
+            "xingchen-api",
+            "v1:",
+            "internal_diagnostic",
+        ] {
+            assert!(!target.contains(secret));
+        }
+    }
+
+    #[test]
+    fn invalid_scope_rejection_audit_has_stable_redacted_digest() {
+        fn reject_and_read_digest() -> String {
+            let fixture = setup("ai.invoke", false);
+            let raw_resource = "feature-sensitive-resource";
+            let invalid_scope =
+                TrustedResourceScope::feature("com.firstwork.a3-guard", "", raw_resource);
+            let invalid_call = TrustedPluginCall::internal(
+                "com.firstwork.a3-guard",
+                "ai.invoke",
+                Some("1.0.0".into()),
+                PluginScene::Global,
+                "invalid-scope-correlation",
+                invalid_scope,
+            );
+            let denied = authorize(&fixture, invalid_call).expect_err("invalid scope");
+            assert_eq!(denied.code, PluginGuardDenyCode::ScopeMismatch);
+            assert!(denied.audited);
+
+            let logs = fixture
+                .db
+                .get_plugin_audit_log("com.firstwork.a3-guard", 10)
+                .expect("audit");
+            let target = logs[0].3.as_deref().expect("audit target");
+            let value: serde_json::Value = serde_json::from_str(target).expect("audit JSON");
+            let digest = value["scopeDigest"]
+                .as_str()
+                .expect("invalid scope digest must be non-empty");
+            assert_eq!(digest.len(), 16);
+            for sensitive in [
+                raw_resource,
+                "scope_field_empty",
+                "internal_diagnostic",
+                "v1:",
+                "token",
+                "credential",
+            ] {
+                assert!(!target.contains(sensitive));
+            }
+            digest.to_string()
+        }
+
+        assert_eq!(reject_and_read_digest(), reject_and_read_digest());
     }
 }

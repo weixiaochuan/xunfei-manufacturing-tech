@@ -13,8 +13,9 @@ use crate::models::{
 
 use super::plugin_authorization_context::{
     canonicalize_authorization_scope, resolve_capability_semantic_version,
-    resolve_host_installation_context, resolve_verified_platform_subject,
+    resolve_host_installation_context, resolve_verified_platform_subject, TrustedResourceScope,
 };
+use super::plugin_capabilities::canonical_capability_policy;
 
 const GLOBAL_SCOPE_KIND: &str = "global";
 const GLOBAL_SCOPE_KEY: &str = "v1:*";
@@ -110,6 +111,20 @@ fn current_target(
     plugin_id: &str,
     capability_id: &str,
 ) -> Result<CurrentCapabilityTarget, AppError> {
+    current_target_with_scope(
+        db,
+        plugin_id,
+        capability_id,
+        canonicalize_authorization_scope(GLOBAL_SCOPE_KIND, GLOBAL_SCOPE_KEY)?,
+    )
+}
+
+fn current_target_with_scope(
+    db: &Database,
+    plugin_id: &str,
+    capability_id: &str,
+    scope: PluginAuthorizationScope,
+) -> Result<CurrentCapabilityTarget, AppError> {
     let capability_semantic_version = resolve_capability_semantic_version(capability_id)?;
     let (manifest, snapshot) = db.current_plugin_capability_contract(plugin_id)?;
     if !manifest
@@ -135,8 +150,135 @@ fn current_target(
     Ok(CurrentCapabilityTarget {
         plugin_version: manifest.version,
         capability_semantic_version,
-        scope: canonicalize_authorization_scope(GLOBAL_SCOPE_KIND, GLOBAL_SCOPE_KEY)?,
+        scope,
     })
+}
+
+fn trusted_target(
+    db: &Database,
+    plugin_id: &str,
+    capability_id: &str,
+    trusted_scope: &TrustedResourceScope,
+) -> Result<CurrentCapabilityTarget, AppError> {
+    let policy = canonical_capability_policy(capability_id)
+        .map_err(|_| AppError::PluginAuthorizationScopeInvalid {
+            reason: "registry_scope_policy_invalid",
+        })?
+        .ok_or(AppError::PluginAuthorizationCapabilityInvalid {
+            reason: "capability_not_admitted",
+        })?;
+    if policy.scope_type.as_str() != trusted_scope.scope_type() {
+        return Err(AppError::PluginAuthorizationScopeMismatch);
+    }
+    current_target_with_scope(
+        db,
+        plugin_id,
+        capability_id,
+        trusted_scope.canonical_scope()?,
+    )
+}
+
+pub(super) fn current_formal_plugin_capability_authorization_for_actor_and_scope(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    trusted_scope: &TrustedResourceScope,
+) -> Result<CurrentPluginCapabilityAuthorization, AppError> {
+    let target = trusted_target(db, plugin_id, capability_id, trusted_scope)?;
+    current_view_for_target(db, subject, context, plugin_id, capability_id, &target)
+}
+
+pub(super) fn list_formal_plugin_capability_authorizations_for_actor(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+) -> Result<Vec<PluginCapabilityAuthorization>, AppError> {
+    let records = db.list_formal_plugin_capability_authorizations(subject, context, plugin_id)?;
+    for record in &records {
+        validate_stored_scope(&record.scope)?;
+    }
+    Ok(records)
+}
+
+pub(super) fn request_for_actor_and_scope(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    trusted_scope: &TrustedResourceScope,
+    expires_at: Option<String>,
+) -> Result<PluginCapabilityAuthorization, AppError> {
+    let target = trusted_target(db, plugin_id, capability_id, trusted_scope)?;
+    request_for_target(
+        db,
+        subject,
+        context,
+        plugin_id,
+        capability_id,
+        target,
+        expires_at,
+    )
+}
+
+pub(super) fn grant_for_actor_and_scope(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    trusted_scope: &TrustedResourceScope,
+    expires_at: Option<String>,
+) -> Result<PluginCapabilityAuthorization, AppError> {
+    let target = trusted_target(db, plugin_id, capability_id, trusted_scope)?;
+    grant_for_target(
+        db,
+        subject,
+        context,
+        plugin_id,
+        capability_id,
+        target,
+        expires_at,
+    )
+}
+
+pub(super) fn deny_for_actor_and_scope(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    trusted_scope: &TrustedResourceScope,
+) -> Result<PluginCapabilityAuthorization, AppError> {
+    let target = trusted_target(db, plugin_id, capability_id, trusted_scope)?;
+    deny_for_target(db, subject, context, plugin_id, capability_id, target)
+}
+
+pub(super) fn revoke_for_actor_and_scope(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    trusted_scope: &TrustedResourceScope,
+) -> Result<PluginCapabilityAuthorization, AppError> {
+    let target = trusted_target(db, plugin_id, capability_id, trusted_scope)?;
+    revoke_for_target(db, subject, context, plugin_id, capability_id, target)
+}
+
+pub(super) fn expire_for_actor_and_scope(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    trusted_scope: &TrustedResourceScope,
+) -> Result<PluginCapabilityAuthorization, AppError> {
+    let target = trusted_target(db, plugin_id, capability_id, trusted_scope)?;
+    expire_for_target(db, subject, context, plugin_id, capability_id, target)
 }
 
 pub(super) fn list_current_formal_plugin_capability_authorizations_for_actor(
@@ -229,6 +371,53 @@ fn view_for_capability(
     })
 }
 
+fn current_view_for_target(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    target: &CurrentCapabilityTarget,
+) -> Result<CurrentPluginCapabilityAuthorization, AppError> {
+    let record = exact_record(db, subject, context, plugin_id, capability_id, target, true)?;
+    let Some(record) = record else {
+        return Ok(CurrentPluginCapabilityAuthorization {
+            plugin_id: plugin_id.to_string(),
+            plugin_version: target.plugin_version.clone(),
+            capability_id: capability_id.to_string(),
+            capability_semantic_version: target.capability_semantic_version.clone(),
+            scope: target.scope.clone(),
+            status: CurrentPluginCapabilityAuthorizationStatus::Missing,
+            effective: false,
+            revision: None,
+            expires_at: None,
+        });
+    };
+    let expired_now = record.state == PluginAuthorizationState::Granted
+        && record
+            .expires_at
+            .as_deref()
+            .map(parse_utc)
+            .transpose()?
+            .is_some_and(|expires_at| expires_at <= Utc::now());
+    let status = if expired_now {
+        CurrentPluginCapabilityAuthorizationStatus::Expired
+    } else {
+        status_from_state(record.state)
+    };
+    Ok(CurrentPluginCapabilityAuthorization {
+        plugin_id: plugin_id.to_string(),
+        plugin_version: target.plugin_version.clone(),
+        capability_id: capability_id.to_string(),
+        capability_semantic_version: target.capability_semantic_version.clone(),
+        scope: target.scope.clone(),
+        status,
+        effective: status == CurrentPluginCapabilityAuthorizationStatus::Granted,
+        revision: Some(record.revision),
+        expires_at: record.expires_at,
+    })
+}
+
 fn request_for_actor(
     db: &Database,
     subject: &PluginAuthorizationSubject,
@@ -238,7 +427,35 @@ fn request_for_actor(
     expires_at: Option<String>,
 ) -> Result<PluginCapabilityAuthorization, AppError> {
     let target = current_target(db, plugin_id, capability_id)?;
-    if let Some(record) = current_record(db, subject, context, plugin_id, capability_id, &target)? {
+    request_for_target(
+        db,
+        subject,
+        context,
+        plugin_id,
+        capability_id,
+        target,
+        expires_at,
+    )
+}
+
+fn request_for_target(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    target: CurrentCapabilityTarget,
+    expires_at: Option<String>,
+) -> Result<PluginCapabilityAuthorization, AppError> {
+    if let Some(record) = exact_record(
+        db,
+        subject,
+        context,
+        plugin_id,
+        capability_id,
+        &target,
+        false,
+    )? {
         if record.state == PluginAuthorizationState::Pending {
             return Ok(record);
         }
@@ -267,7 +484,35 @@ fn grant_for_actor(
     expires_at: Option<String>,
 ) -> Result<PluginCapabilityAuthorization, AppError> {
     let target = current_target(db, plugin_id, capability_id)?;
-    let pending = match current_record(db, subject, context, plugin_id, capability_id, &target)? {
+    grant_for_target(
+        db,
+        subject,
+        context,
+        plugin_id,
+        capability_id,
+        target,
+        expires_at,
+    )
+}
+
+fn grant_for_target(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    target: CurrentCapabilityTarget,
+    expires_at: Option<String>,
+) -> Result<PluginCapabilityAuthorization, AppError> {
+    let pending = match exact_record(
+        db,
+        subject,
+        context,
+        plugin_id,
+        capability_id,
+        &target,
+        false,
+    )? {
         Some(record) if record.state == PluginAuthorizationState::Granted => return Ok(record),
         Some(record) if record.state == PluginAuthorizationState::Pending => record,
         Some(record) => {
@@ -307,7 +552,26 @@ fn deny_for_actor(
     capability_id: &str,
 ) -> Result<PluginCapabilityAuthorization, AppError> {
     let target = current_target(db, plugin_id, capability_id)?;
-    let pending = match current_record(db, subject, context, plugin_id, capability_id, &target)? {
+    deny_for_target(db, subject, context, plugin_id, capability_id, target)
+}
+
+fn deny_for_target(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    target: CurrentCapabilityTarget,
+) -> Result<PluginCapabilityAuthorization, AppError> {
+    let pending = match exact_record(
+        db,
+        subject,
+        context,
+        plugin_id,
+        capability_id,
+        &target,
+        false,
+    )? {
         Some(record) if record.state == PluginAuthorizationState::Denied => return Ok(record),
         Some(record) if record.state == PluginAuthorizationState::Pending => record,
         Some(record) => {
@@ -339,8 +603,27 @@ fn revoke_for_actor(
     capability_id: &str,
 ) -> Result<PluginCapabilityAuthorization, AppError> {
     let target = current_target(db, plugin_id, capability_id)?;
-    let record = current_record(db, subject, context, plugin_id, capability_id, &target)?
-        .ok_or(AppError::PluginAuthorizationNotFound)?;
+    revoke_for_target(db, subject, context, plugin_id, capability_id, target)
+}
+
+fn revoke_for_target(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    target: CurrentCapabilityTarget,
+) -> Result<PluginCapabilityAuthorization, AppError> {
+    let record = exact_record(
+        db,
+        subject,
+        context,
+        plugin_id,
+        capability_id,
+        &target,
+        true,
+    )?
+    .ok_or(AppError::PluginAuthorizationNotFound)?;
     if record.state == PluginAuthorizationState::Revoked {
         return Ok(record);
     }
@@ -362,8 +645,27 @@ fn expire_for_actor(
     capability_id: &str,
 ) -> Result<PluginCapabilityAuthorization, AppError> {
     let target = current_target(db, plugin_id, capability_id)?;
-    let record = current_record(db, subject, context, plugin_id, capability_id, &target)?
-        .ok_or(AppError::PluginAuthorizationNotFound)?;
+    expire_for_target(db, subject, context, plugin_id, capability_id, target)
+}
+
+fn expire_for_target(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    target: CurrentCapabilityTarget,
+) -> Result<PluginCapabilityAuthorization, AppError> {
+    let record = exact_record(
+        db,
+        subject,
+        context,
+        plugin_id,
+        capability_id,
+        &target,
+        true,
+    )?
+    .ok_or(AppError::PluginAuthorizationNotFound)?;
     if record.state == PluginAuthorizationState::Expired {
         return Ok(record);
     }
@@ -377,28 +679,49 @@ fn expire_for_actor(
     )
 }
 
-fn current_record(
+fn exact_record(
     db: &Database,
     subject: &PluginAuthorizationSubject,
     context: &PluginAuthorizationContext,
     plugin_id: &str,
     capability_id: &str,
     target: &CurrentCapabilityTarget,
+    mismatch_if_other_scope: bool,
 ) -> Result<Option<PluginCapabilityAuthorization>, AppError> {
-    let records = db.list_formal_plugin_capability_authorizations(subject, context, plugin_id)?;
-    let mut capability_records = records
-        .into_iter()
-        .filter(|record| record.capability_id == capability_id);
-    let record = capability_records
-        .clone()
-        .find(|record| record.scope == target.scope);
-    if record.is_none() && capability_records.next().is_some() {
-        return Err(AppError::PluginAuthorizationScopeMismatch);
-    }
+    let record = db.get_formal_plugin_capability_authorization(
+        subject,
+        context,
+        plugin_id,
+        capability_id,
+        &target.scope,
+    )?;
     if let Some(record) = record.as_ref() {
+        validate_stored_scope(&record.scope)?;
         validate_record_semantic_version(record, &target.capability_semantic_version)?;
+        return Ok(Some(record.clone()));
     }
-    Ok(record)
+    if mismatch_if_other_scope {
+        let records =
+            db.list_formal_plugin_capability_authorizations(subject, context, plugin_id)?;
+        let mut found_other = false;
+        for candidate in records
+            .iter()
+            .filter(|candidate| candidate.capability_id == capability_id)
+        {
+            validate_stored_scope(&candidate.scope)?;
+            found_other = true;
+        }
+        if found_other {
+            return Err(AppError::PluginAuthorizationScopeMismatch);
+        }
+    }
+    Ok(None)
+}
+
+fn validate_stored_scope(scope: &PluginAuthorizationScope) -> Result<(), AppError> {
+    canonicalize_authorization_scope(&scope.kind, &scope.key)
+        .map(|_| ())
+        .map_err(|_| AppError::PluginAuthorizationStoredRecordInvalid { reason: "scope" })
 }
 
 fn pending_input(
@@ -910,5 +1233,179 @@ mod tests {
             CurrentPluginCapabilityAuthorizationStatus::Revoked
         );
         assert!(!view[0].effective);
+    }
+
+    fn feature_scope(feature_id: &str, fingerprint: &str) -> TrustedResourceScope {
+        TrustedResourceScope::feature("com.firstwork.formal-auth-service", feature_id, fingerprint)
+    }
+
+    #[test]
+    fn exact_resource_scopes_coexist_and_mutations_only_touch_the_target() {
+        let (db, subject, context) = setup(&["ai.invoke"]);
+        let scope_a = feature_scope("feature-a", "fingerprint-a");
+        let scope_b = feature_scope("feature-b", "fingerprint-b");
+
+        let granted_a = grant_for_actor_and_scope(
+            &db,
+            &subject,
+            &context,
+            "com.firstwork.formal-auth-service",
+            "ai.invoke",
+            &scope_a,
+            None,
+        )
+        .expect("grant resource A");
+        let pending_b = request_for_actor_and_scope(
+            &db,
+            &subject,
+            &context,
+            "com.firstwork.formal-auth-service",
+            "ai.invoke",
+            &scope_b,
+            None,
+        )
+        .expect("request resource B");
+        assert_ne!(granted_a.scope, pending_b.scope);
+
+        let view_a = current_formal_plugin_capability_authorization_for_actor_and_scope(
+            &db,
+            &subject,
+            &context,
+            "com.firstwork.formal-auth-service",
+            "ai.invoke",
+            &scope_a,
+        )
+        .expect("read A");
+        let view_b = current_formal_plugin_capability_authorization_for_actor_and_scope(
+            &db,
+            &subject,
+            &context,
+            "com.firstwork.formal-auth-service",
+            "ai.invoke",
+            &scope_b,
+        )
+        .expect("read B");
+        assert_eq!(
+            view_a.status,
+            CurrentPluginCapabilityAuthorizationStatus::Granted
+        );
+        assert_eq!(
+            view_b.status,
+            CurrentPluginCapabilityAuthorizationStatus::Pending
+        );
+
+        deny_for_actor_and_scope(
+            &db,
+            &subject,
+            &context,
+            "com.firstwork.formal-auth-service",
+            "ai.invoke",
+            &scope_b,
+        )
+        .expect("deny B");
+        revoke_for_actor_and_scope(
+            &db,
+            &subject,
+            &context,
+            "com.firstwork.formal-auth-service",
+            "ai.invoke",
+            &scope_a,
+        )
+        .expect("revoke A");
+        let records = list_formal_plugin_capability_authorizations_for_actor(
+            &db,
+            &subject,
+            &context,
+            "com.firstwork.formal-auth-service",
+        )
+        .expect("list exact records");
+        assert_eq!(records.len(), 2);
+        assert!(records
+            .iter()
+            .any(|record| record.state == PluginAuthorizationState::Denied));
+        assert!(records
+            .iter()
+            .any(|record| record.state == PluginAuthorizationState::Revoked));
+    }
+
+    #[test]
+    fn global_grant_never_authorizes_a_restricted_resource_scope() {
+        let (db, subject, context) = setup(&["ai.invoke"]);
+        grant_for_actor(
+            &db,
+            &subject,
+            &context,
+            "com.firstwork.formal-auth-service",
+            "ai.invoke",
+            None,
+        )
+        .expect("legacy-compatible global grant");
+        let error = current_formal_plugin_capability_authorization_for_actor_and_scope(
+            &db,
+            &subject,
+            &context,
+            "com.firstwork.formal-auth-service",
+            "ai.invoke",
+            &feature_scope("feature-a", "fingerprint-a"),
+        )
+        .expect_err("global cannot cover feature resource");
+        assert!(matches!(error, AppError::PluginAuthorizationScopeMismatch));
+    }
+
+    #[test]
+    fn exact_resource_expiry_and_damaged_stored_scope_fail_closed() {
+        let (db, subject, context) = setup(&["ai.invoke"]);
+        let scope = feature_scope("feature-a", "fingerprint-a");
+        let expired_at =
+            (Utc::now() - Duration::minutes(1)).to_rfc3339_opts(SecondsFormat::Secs, true);
+        grant_for_actor_and_scope(
+            &db,
+            &subject,
+            &context,
+            "com.firstwork.formal-auth-service",
+            "ai.invoke",
+            &scope,
+            Some(expired_at),
+        )
+        .expect("grant expired resource");
+        let expired = current_formal_plugin_capability_authorization_for_actor_and_scope(
+            &db,
+            &subject,
+            &context,
+            "com.firstwork.formal-auth-service",
+            "ai.invoke",
+            &scope,
+        )
+        .expect("read expired resource");
+        assert_eq!(
+            expired.status,
+            CurrentPluginCapabilityAuthorizationStatus::Expired
+        );
+        expire_for_actor_and_scope(
+            &db,
+            &subject,
+            &context,
+            "com.firstwork.formal-auth-service",
+            "ai.invoke",
+            &scope,
+        )
+        .expect("persist exact expiry");
+
+        db.conn_lock()
+            .expect("connection")
+            .execute(
+                "UPDATE plugin_capability_authorizations SET scope_key = 'v2:corrupt'",
+                [],
+            )
+            .expect("damage stored scope");
+        assert!(matches!(
+            list_formal_plugin_capability_authorizations_for_actor(
+                &db,
+                &subject,
+                &context,
+                "com.firstwork.formal-auth-service"
+            ),
+            Err(AppError::PluginAuthorizationStoredRecordInvalid { reason: "scope" })
+        ));
     }
 }
