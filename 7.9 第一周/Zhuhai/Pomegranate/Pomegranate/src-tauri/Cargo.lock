@@ -2847,6 +2847,7 @@ dependencies = [
  "html2md",
  "kb-core",
  "keyring",
+ "libc",
  "log",
  "pdf-extract",
  "pdfium-render",

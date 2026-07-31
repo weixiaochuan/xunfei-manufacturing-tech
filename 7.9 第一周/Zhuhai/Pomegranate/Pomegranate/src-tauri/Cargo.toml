@@ -124,6 +124,10 @@ calamine = "0.28"
 # 移动端按 T-M013 后再决策）
 docx-rs = "0.4"
 
+[target.'cfg(unix)'.dependencies]
+# Unix 会话停止逻辑直接调用 libc::kill，必须声明为主 crate 的直接依赖。
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 # 下载保存时通过 MoveFileExW 原子替换目标文件，避免覆盖过程中留下半个文件。
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
