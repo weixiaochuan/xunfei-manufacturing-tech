@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use tauri::{AppHandle, State};
 
+use crate::account::AccountState;
 use crate::models::{
     AgentSendMessageInput, AgentSessionCreateInput, AgentWorkflowInvokeInput,
     NormalizedPluginManifest, PermissionDiff, PluginActivationRule, PluginArchiveInspection,
@@ -24,6 +25,7 @@ use crate::models::{
 };
 use crate::services::plugin_platform::PluginPlatformService;
 use crate::services::plugins::PluginService;
+use crate::services::resource_ownership::resolve_resource_owner;
 use crate::services::xingchen_agent::XingchenAgentService;
 use crate::state::AppState;
 
@@ -391,8 +393,12 @@ pub fn plugin_record_execution(
 pub async fn plugin_feature_invoke_xingchen(
     app: AppHandle,
     state: State<'_, AppState>,
+    account: State<'_, AccountState>,
     input: PluginFeatureInvokeInput,
 ) -> Result<PluginFeatureInvokeResult, String> {
+    let owner = resolve_resource_owner(&state.db, &account)
+        .await
+        .map_err(|error| error.to_string())?;
     let started = Instant::now();
     let audit_request_id = format!("plugin-feature-{}", uuid::Uuid::new_v4());
     let spec = PluginPlatformService::prepare_feature_invocation(
@@ -405,6 +411,7 @@ pub async fn plugin_feature_invoke_xingchen(
     let feature_id = input.feature_id.clone();
     let result = XingchenAgentService::invoke_workflow(
         app,
+        owner,
         AgentWorkflowInvokeInput {
             external_agent_id: input.external_agent_id,
             parameters: input.parameters,
@@ -475,29 +482,41 @@ pub fn plugin_document_summary_insert(
 }
 
 #[tauri::command]
-pub fn plugin_document_summary_agents(
+pub async fn plugin_document_summary_agents(
     state: State<'_, AppState>,
+    account: State<'_, AccountState>,
     plugin_id: String,
 ) -> Result<Vec<PluginSummaryAgentOption>, String> {
-    PluginService::document_summary_agents(&state.db, &state.data_dir, &plugin_id)
+    let owner = resolve_resource_owner(&state.db, &account)
+        .await
+        .map_err(|error| error.to_string())?;
+    PluginService::document_summary_agents(&state.db, &state.data_dir, &owner, &plugin_id)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn plugin_document_summary_config_get(
+pub async fn plugin_document_summary_config_get(
     state: State<'_, AppState>,
+    account: State<'_, AccountState>,
     plugin_id: String,
 ) -> Result<PluginDocumentSummaryConfig, String> {
-    PluginService::get_document_summary_config(&state.db, &state.data_dir, &plugin_id)
+    let owner = resolve_resource_owner(&state.db, &account)
+        .await
+        .map_err(|error| error.to_string())?;
+    PluginService::get_document_summary_config(&state.db, &state.data_dir, &owner, &plugin_id)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn plugin_document_summary_config_set(
+pub async fn plugin_document_summary_config_set(
     state: State<'_, AppState>,
+    account: State<'_, AccountState>,
     input: PluginDocumentSummaryConfigInput,
 ) -> Result<PluginDocumentSummaryConfig, String> {
-    PluginService::set_document_summary_config(&state.db, &state.data_dir, input)
+    let owner = resolve_resource_owner(&state.db, &account)
+        .await
+        .map_err(|error| error.to_string())?;
+    PluginService::set_document_summary_config(&state.db, &state.data_dir, &owner, input)
         .map_err(|e| e.to_string())
 }
 
@@ -505,16 +524,25 @@ pub fn plugin_document_summary_config_set(
 pub async fn plugin_document_summary_agent_start(
     app: AppHandle,
     state: State<'_, AppState>,
+    account: State<'_, AccountState>,
     input: PluginDocumentSummaryAgentStartInput,
 ) -> Result<PluginDocumentSummaryAgentStartResult, String> {
+    let owner = resolve_resource_owner(&state.db, &account)
+        .await
+        .map_err(|error| error.to_string())?;
     let plugin_id = input.plugin_id.clone();
     let plugin_system_context = input.plugin_system_context.clone();
     let plugin_contribution_ids = input.plugin_contribution_ids.clone();
-    let (agent, title, prompt) =
-        PluginService::prepare_document_summary_agent_start(&state.db, &state.data_dir, input)
-            .map_err(|e| e.to_string())?;
+    let (agent, title, prompt) = PluginService::prepare_document_summary_agent_start(
+        &state.db,
+        &state.data_dir,
+        &owner,
+        input,
+    )
+    .map_err(|e| e.to_string())?;
     let session = XingchenAgentService::create_session(
         &state.db,
+        &owner,
         AgentSessionCreateInput {
             external_agent_id: agent.id.clone(),
             title: Some(format!("文档摘要 - {}", title)),
@@ -537,6 +565,7 @@ pub async fn plugin_document_summary_agent_start(
     })?;
     let send = XingchenAgentService::send_message(
         app,
+        owner,
         AgentSendMessageInput {
             session_id: session.id.clone(),
             content: prompt,
@@ -581,10 +610,14 @@ pub async fn plugin_document_summary_agent_start(
 }
 
 #[tauri::command]
-pub fn plugin_document_summary_cancel(
+pub async fn plugin_document_summary_cancel(
     state: State<'_, AppState>,
+    account: State<'_, AccountState>,
     input: PluginDocumentSummaryCancelInput,
 ) -> Result<(), String> {
+    let owner = resolve_resource_owner(&state.db, &account)
+        .await
+        .map_err(|error| error.to_string())?;
     PluginService::finalize_document_summary_agent(
         &state.db,
         PluginDocumentSummaryAgentFinalizeInput {
@@ -597,7 +630,7 @@ pub fn plugin_document_summary_cancel(
         },
     )
     .map_err(|e| e.to_string())?;
-    XingchenAgentService::cancel_request(&state.agent_cancel, &input.request_id)
+    XingchenAgentService::cancel_request(&state.db, &owner, &state.agent_cancel, &input.request_id)
         .map_err(|e| e.to_string())
 }
 

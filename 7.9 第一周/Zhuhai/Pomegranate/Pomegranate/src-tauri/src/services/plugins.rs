@@ -26,6 +26,7 @@ use crate::models::{
 };
 use crate::services::credentials::CredentialService;
 pub(crate) use crate::services::plugin_capabilities::VALID_PERMISSIONS;
+use crate::services::resource_ownership::ResourceOwner;
 use crate::services::xingchen_agent::XingchenAgentService;
 
 const MANIFEST_FILE_V2: &str = "manifest.json";
@@ -524,14 +525,15 @@ impl PluginService {
     pub fn document_summary_agents(
         db: &Database,
         data_dir: &Path,
+        owner: &ResourceOwner,
         plugin_id: &str,
     ) -> Result<Vec<PluginSummaryAgentOption>, AppError> {
         validate_plugin_id(plugin_id)?;
         let _ = db.get_plugin(plugin_id)?;
-        let agents = XingchenAgentService::list_agents(db)?;
+        let agents = XingchenAgentService::list_agents(db, owner)?;
         let mut out = Vec::new();
         for agent in agents {
-            if !summary_agent_is_available(db, data_dir, &agent) {
+            if !summary_agent_is_available(db, data_dir, owner, &agent) {
                 continue;
             }
             out.push(PluginSummaryAgentOption {
@@ -551,6 +553,7 @@ impl PluginService {
     pub fn get_document_summary_config(
         db: &Database,
         data_dir: &Path,
+        owner: &ResourceOwner,
         plugin_id: &str,
     ) -> Result<PluginDocumentSummaryConfig, AppError> {
         validate_plugin_id(plugin_id)?;
@@ -571,13 +574,14 @@ impl PluginService {
             plugin_id: plugin_id.to_string(),
             mode,
             external_agent_id,
-            available_agents: Self::document_summary_agents(db, data_dir, plugin_id)?,
+            available_agents: Self::document_summary_agents(db, data_dir, owner, plugin_id)?,
         })
     }
 
     pub fn set_document_summary_config(
         db: &Database,
         data_dir: &Path,
+        owner: &ResourceOwner,
         input: PluginDocumentSummaryConfigInput,
     ) -> Result<PluginDocumentSummaryConfig, AppError> {
         validate_plugin_id(&input.plugin_id)?;
@@ -593,7 +597,7 @@ impl PluginService {
                 .as_deref()
                 .filter(|id| !id.trim().is_empty())
                 .ok_or_else(|| AppError::InvalidInput("请选择摘要智能体".into()))?;
-            let available = Self::document_summary_agents(db, data_dir, &input.plugin_id)?;
+            let available = Self::document_summary_agents(db, data_dir, owner, &input.plugin_id)?;
             if !available.iter().any(|agent| agent.id == agent_id) {
                 db.write_audit_log(&input.plugin_id, "agent_select_failed", Some(agent_id))
                     .ok();
@@ -622,12 +626,13 @@ impl PluginService {
             SUMMARY_MODE_KEY,
             &serde_json::Value::String(input.mode),
         )?;
-        Self::get_document_summary_config(db, data_dir, &input.plugin_id)
+        Self::get_document_summary_config(db, data_dir, owner, &input.plugin_id)
     }
 
     pub fn prepare_document_summary_agent_start(
         db: &Database,
         data_dir: &Path,
+        owner: &ResourceOwner,
         input: PluginDocumentSummaryAgentStartInput,
     ) -> Result<(ExternalAgentConfig, String, String), AppError> {
         ensure_document_summary_plugin_ready(db, &input.plugin_id)?;
@@ -642,7 +647,7 @@ impl PluginService {
                 "当前文档正文为空，无法生成摘要".into(),
             ));
         }
-        let config = Self::get_document_summary_config(db, data_dir, &input.plugin_id)?;
+        let config = Self::get_document_summary_config(db, data_dir, owner, &input.plugin_id)?;
         if config.mode != "agent" {
             return Err(AppError::InvalidInput(
                 "未配置真实摘要智能体，当前仍为 Mock 演示模式".into(),
@@ -655,7 +660,7 @@ impl PluginService {
             .ok_or_else(|| {
                 AppError::InvalidInput("未配置摘要智能体，请先前往 AI 资源中心配置智能体".into())
             })?;
-        let available = Self::document_summary_agents(db, data_dir, &input.plugin_id)?;
+        let available = Self::document_summary_agents(db, data_dir, owner, &input.plugin_id)?;
         if !available.iter().any(|agent| agent.id == external_agent_id) {
             db.write_audit_log(
                 &input.plugin_id,
@@ -667,7 +672,7 @@ impl PluginService {
                 "摘要智能体不可用或授权已失效".into(),
             ));
         }
-        let agent = XingchenAgentService::get_agent(db, &external_agent_id)?
+        let agent = XingchenAgentService::get_agent(db, owner, &external_agent_id)?
             .ok_or_else(|| AppError::InvalidInput("摘要智能体不存在".into()))?;
         let title = if input.title.trim().is_empty() {
             "未命名文档".to_string()
@@ -1051,7 +1056,12 @@ fn ensure_document_summary_plugin_ready(db: &Database, plugin_id: &str) -> Resul
     Ok(())
 }
 
-fn summary_agent_is_available(db: &Database, data_dir: &Path, agent: &ExternalAgentConfig) -> bool {
+fn summary_agent_is_available(
+    db: &Database,
+    data_dir: &Path,
+    owner: &ResourceOwner,
+    agent: &ExternalAgentConfig,
+) -> bool {
     if !agent.enabled || agent.unavailable_reason.is_some() {
         return false;
     }
@@ -1098,7 +1108,7 @@ fn summary_agent_is_available(db: &Database, data_dir: &Path, agent: &ExternalAg
         Some(id) if !id.trim().is_empty() => id,
         _ => return false,
     };
-    if CredentialService::load_secret(db, data_dir, credential_id).is_err() {
+    if CredentialService::load_secret(db, data_dir, owner, credential_id).is_err() {
         return false;
     }
     if agent.protocol_type == AgentProtocolType::XingchenWorkflowV1 {

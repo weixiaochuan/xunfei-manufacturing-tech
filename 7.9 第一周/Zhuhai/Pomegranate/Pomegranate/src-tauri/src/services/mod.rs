@@ -65,6 +65,7 @@ pub mod popout_window;
 pub mod prompt;
 pub mod provider_registry;
 pub mod quick_capture;
+pub(crate) mod resource_ownership;
 pub mod safe_filename;
 pub mod search;
 pub mod session_manager;

@@ -12,28 +12,36 @@ use crate::models::{
     CredentialUsage,
 };
 use crate::services::crypto;
+use crate::services::resource_ownership::ResourceOwner;
 
 const SECRET_DIR: &str = "secure-credentials";
 const DPAPI_PREFIX: &str = "dpapi:v1:";
+const DEPRECATED_OWNER_SCOPE: &str = "deprecated";
 
 pub struct CredentialService;
 
 impl CredentialService {
-    pub fn list(db: &Database) -> Result<Vec<CredentialInfo>, AppError> {
+    pub fn list(db: &Database, owner: &ResourceOwner) -> Result<Vec<CredentialInfo>, AppError> {
         let conn = db.conn_lock()?;
         let mut stmt = conn.prepare(
-            "SELECT id, provider, credential_type, label, owner_scope, secret_reference,
-                    configured, masked_hint, created_at, updated_at, last_used_at
-             FROM credentials
-             ORDER BY updated_at DESC",
+            "SELECT c.id, c.provider, c.credential_type, c.label, c.owner_scope, c.secret_reference,
+                    c.configured, c.masked_hint, c.created_at, c.updated_at, c.last_used_at
+             FROM credentials c
+             JOIN credential_resource_ownership o ON o.credential_id = c.id
+             WHERE o.platform_subject_id = ?1 AND o.host_installation_id = ?2
+             ORDER BY c.updated_at DESC",
         )?;
-        let rows = stmt.query_map([], credential_from_row)?;
+        let rows = stmt.query_map(
+            params![owner.platform_subject_id(), owner.host_installation_id()],
+            credential_from_row,
+        )?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     pub fn create(
         db: &Database,
         data_dir: &Path,
+        owner: &ResourceOwner,
         input: CredentialCreateInput,
     ) -> Result<CredentialInfo, AppError> {
         validate_provider(&input.provider)?;
@@ -51,7 +59,8 @@ impl CredentialService {
 
         {
             let conn = db.conn_lock()?;
-            conn.execute(
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
                 "INSERT INTO credentials
                     (id, provider, credential_type, label, owner_scope, secret_reference,
                      configured, masked_hint)
@@ -61,23 +70,35 @@ impl CredentialService {
                     input.provider,
                     credential_type,
                     input.label,
-                    input.owner_scope,
+                    DEPRECATED_OWNER_SCOPE,
                     secret_reference,
                     masked_hint
                 ],
             )?;
+            tx.execute(
+                "INSERT INTO credential_resource_ownership
+                    (credential_id, platform_subject_id, host_installation_id)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    id,
+                    owner.platform_subject_id(),
+                    owner.host_installation_id()
+                ],
+            )?;
+            tx.commit()?;
         }
-        Self::get(db, &id)?.ok_or_else(|| AppError::Custom("凭据创建后读取失败".to_string()))
+        Self::get(db, owner, &id)?.ok_or_else(resource_unavailable)
     }
 
     pub fn update(
         db: &Database,
         data_dir: &Path,
+        owner: &ResourceOwner,
         id: &str,
         input: CredentialUpdateInput,
     ) -> Result<CredentialInfo, AppError> {
-        let existing = Self::get_internal(db, id)?
-            .ok_or_else(|| AppError::Custom("凭据不存在".to_string()))?;
+        ensure_credential_owner(db, owner, id)?;
+        let existing = Self::get_internal(db, id)?.ok_or_else(resource_unavailable)?;
         if let Some(label) = &input.label {
             validate_label(label)?;
         }
@@ -109,34 +130,60 @@ impl CredentialService {
             params![id, input.label, configured as i64, masked],
         )?;
         drop(conn);
-        Self::get(db, id)?.ok_or_else(|| AppError::Custom("凭据更新后读取失败".to_string()))
+        Self::get(db, owner, id)?.ok_or_else(resource_unavailable)
     }
 
-    pub fn delete(db: &Database, data_dir: &Path, id: &str, force: bool) -> Result<(), AppError> {
-        let usage = Self::usage(db, id)?;
+    pub fn delete(
+        db: &Database,
+        data_dir: &Path,
+        owner: &ResourceOwner,
+        id: &str,
+        force: bool,
+    ) -> Result<(), AppError> {
+        ensure_credential_owner(db, owner, id)?;
+        let usage = Self::usage(db, owner, id)?;
         if !usage.is_empty() && !force {
             return Err(AppError::Custom(
                 "该凭据仍被智能体引用，请先解绑或确认级联失效".to_string(),
             ));
         }
-        let existing = Self::get_internal(db, id)?
-            .ok_or_else(|| AppError::Custom("凭据不存在".to_string()))?;
+        let existing = Self::get_internal(db, id)?.ok_or_else(resource_unavailable)?;
         let conn = db.conn_lock()?;
         let tx = conn.unchecked_transaction()?;
         tx.execute(
             "UPDATE external_agents
              SET credential_id = NULL, updated_at = datetime('now','localtime')
              WHERE credential_id = ?1
-               AND COALESCE(unavailable_reason, '') = 'deleted'",
-            params![id],
+               AND COALESCE(unavailable_reason, '') = 'deleted'
+               AND EXISTS (
+                    SELECT 1 FROM external_agent_resource_ownership o
+                    WHERE o.external_agent_id = external_agents.id
+                      AND o.platform_subject_id = ?2
+                      AND o.host_installation_id = ?3
+               )",
+            params![
+                id,
+                owner.platform_subject_id(),
+                owner.host_installation_id()
+            ],
         )?;
         if force {
             tx.execute(
                 "UPDATE external_agents
                  SET credential_id = NULL, enabled = 0, unavailable_reason = 'credential_deleted',
                      updated_at = datetime('now','localtime')
-                 WHERE credential_id = ?1",
-                params![id],
+                 WHERE credential_id = ?1
+                   AND EXISTS (
+                        SELECT 1 FROM external_agent_resource_ownership o
+                        WHERE o.external_agent_id = external_agents.id
+                          AND o.platform_subject_id = ?2
+                          AND o.host_installation_id = ?3
+                   )",
+                params![
+                    id,
+                    owner.platform_subject_id(),
+                    owner.host_installation_id()
+                ],
             )?;
         }
         tx.execute("DELETE FROM credentials WHERE id = ?1", params![id])?;
@@ -146,36 +193,52 @@ impl CredentialService {
         Ok(())
     }
 
-    pub fn usage(db: &Database, id: &str) -> Result<Vec<CredentialUsage>, AppError> {
+    pub fn usage(
+        db: &Database,
+        owner: &ResourceOwner,
+        id: &str,
+    ) -> Result<Vec<CredentialUsage>, AppError> {
+        ensure_credential_owner(db, owner, id)?;
         let conn = db.conn_lock()?;
         let mut stmt = conn.prepare(
             "SELECT ea.id, ea.name, ea.product_id, p.name, ea.enabled
              FROM external_agents ea
              JOIN products p ON p.id = ea.product_id
+             JOIN external_agent_resource_ownership o ON o.external_agent_id = ea.id
              WHERE ea.credential_id = ?1
+               AND o.platform_subject_id = ?2
+               AND o.host_installation_id = ?3
                AND COALESCE(ea.unavailable_reason, '') != 'deleted'
              ORDER BY ea.updated_at DESC",
         )?;
-        let rows = stmt.query_map(params![id], |row| {
-            Ok(CredentialUsage {
-                credential_id: id.to_string(),
-                external_agent_id: row.get(0)?,
-                agent_name: row.get(1)?,
-                product_id: row.get(2)?,
-                product_name: row.get(3)?,
-                enabled: row.get::<_, i64>(4)? != 0,
-            })
-        })?;
+        let rows = stmt.query_map(
+            params![
+                id,
+                owner.platform_subject_id(),
+                owner.host_installation_id()
+            ],
+            |row| {
+                Ok(CredentialUsage {
+                    credential_id: id.to_string(),
+                    external_agent_id: row.get(0)?,
+                    agent_name: row.get(1)?,
+                    product_id: row.get(2)?,
+                    product_name: row.get(3)?,
+                    enabled: row.get::<_, i64>(4)? != 0,
+                })
+            },
+        )?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     pub fn load_secret(
         db: &Database,
         data_dir: &Path,
+        owner: &ResourceOwner,
         id: &str,
     ) -> Result<CredentialSecretInput, AppError> {
-        let existing = Self::get_internal(db, id)?
-            .ok_or_else(|| AppError::Custom("credential_missing".to_string()))?;
+        ensure_credential_owner(db, owner, id)?;
+        let existing = Self::get_internal(db, id)?.ok_or_else(resource_unavailable)?;
         if !existing.configured {
             return Err(AppError::Custom("credential_missing".to_string()));
         }
@@ -187,7 +250,8 @@ impl CredentialService {
             .map_err(|_| AppError::Custom("credential_unavailable".to_string()))
     }
 
-    pub fn touch_last_used(db: &Database, id: &str) -> Result<(), AppError> {
+    pub fn touch_last_used(db: &Database, owner: &ResourceOwner, id: &str) -> Result<(), AppError> {
+        ensure_credential_owner(db, owner, id)?;
         let conn = db.conn_lock()?;
         conn.execute(
             "UPDATE credentials
@@ -201,6 +265,7 @@ impl CredentialService {
     pub fn upsert_api_key(
         db: &Database,
         data_dir: &Path,
+        owner: &ResourceOwner,
         id: &str,
         provider: &str,
         label: &str,
@@ -213,6 +278,10 @@ impl CredentialService {
             return Err(AppError::InvalidInput("API Key must not be empty".into()));
         }
 
+        let existing = Self::get_internal(db, id)?;
+        if existing.is_some() {
+            ensure_credential_owner(db, owner, id)?;
+        }
         let secret_reference = secret_reference(id);
         let secrets = CredentialSecretInput {
             app_id: None,
@@ -227,7 +296,7 @@ impl CredentialService {
             "INSERT INTO credentials
                 (id, provider, credential_type, label, owner_scope, secret_reference,
                  configured, masked_hint)
-             VALUES (?1, ?2, 'api_key', ?3, 'local-user', ?4, 1, ?5)
+             VALUES (?1, ?2, 'api_key', ?3, ?4, ?5, 1, ?6)
              ON CONFLICT(id) DO UPDATE SET
                  provider = excluded.provider,
                  credential_type = excluded.credential_type,
@@ -236,18 +305,37 @@ impl CredentialService {
                  configured = 1,
                  masked_hint = excluded.masked_hint,
                  updated_at = datetime('now','localtime')",
-            params![id, provider, label, secret_reference, masked],
+            params![
+                id,
+                provider,
+                label,
+                DEPRECATED_OWNER_SCOPE,
+                secret_reference,
+                masked
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO credential_resource_ownership
+                (credential_id, platform_subject_id, host_installation_id)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(credential_id) DO NOTHING",
+            params![
+                id,
+                owner.platform_subject_id(),
+                owner.host_installation_id()
+            ],
         )?;
         drop(conn);
-        Self::get(db, id)?.ok_or_else(|| AppError::Custom("credential upsert failed".into()))
+        Self::get(db, owner, id)?.ok_or_else(resource_unavailable)
     }
 
     pub fn load_api_key(
         db: &Database,
         data_dir: &Path,
+        owner: &ResourceOwner,
         id: &str,
     ) -> Result<Option<String>, AppError> {
-        let secret = Self::load_secret(db, data_dir, id)?;
+        let secret = Self::load_secret(db, data_dir, owner, id)?;
         Ok(secret
             .api_key
             .or(secret.bearer_token)
@@ -255,7 +343,12 @@ impl CredentialService {
             .filter(|s| !s.is_empty()))
     }
 
-    fn get(db: &Database, id: &str) -> Result<Option<CredentialInfo>, AppError> {
+    pub(crate) fn get(
+        db: &Database,
+        owner: &ResourceOwner,
+        id: &str,
+    ) -> Result<Option<CredentialInfo>, AppError> {
+        ensure_credential_owner(db, owner, id)?;
         Ok(Self::get_internal(db, id)?.map(|c| c.into_public()))
     }
 
@@ -271,6 +364,30 @@ impl CredentialService {
         .optional()
         .map_err(AppError::from)
     }
+}
+
+fn ensure_credential_owner(db: &Database, owner: &ResourceOwner, id: &str) -> Result<(), AppError> {
+    let conn = db.conn_lock()?;
+    let owned = conn
+        .query_row(
+            "SELECT 1 FROM credential_resource_ownership
+             WHERE credential_id = ?1 AND platform_subject_id = ?2 AND host_installation_id = ?3",
+            params![
+                id,
+                owner.platform_subject_id(),
+                owner.host_installation_id()
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if owned.is_none() {
+        return Err(resource_unavailable());
+    }
+    Ok(())
+}
+
+fn resource_unavailable() -> AppError {
+    AppError::NotFound("资源不存在或不可访问".to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -564,14 +681,16 @@ mod tests {
     #[test]
     fn credential_secret_not_stored_in_sqlite() {
         let (dir, db) = temp_db();
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
         let created = CredentialService::create(
             &db,
             &dir,
+            &owner,
             CredentialCreateInput {
                 provider: "xingchen".into(),
                 credential_type: crate::models::CredentialType::BearerToken,
                 label: "test".into(),
-                owner_scope: "local-user".into(),
+                owner_scope: "forged-owner".into(),
                 secrets: CredentialSecretInput {
                     app_id: None,
                     api_key: None,
@@ -582,9 +701,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(created.masked_hint.as_deref(), Some("****oken"));
-        let listed = CredentialService::list(&db).unwrap();
+        let listed = CredentialService::list(&db, &owner).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, created.id);
+        assert_eq!(listed[0].owner_scope, DEPRECATED_OWNER_SCOPE);
         assert!(listed[0].configured);
         assert_eq!(listed[0].masked_hint.as_deref(), Some("****oken"));
         let conn = db.conn_lock().unwrap();
@@ -601,9 +721,11 @@ mod tests {
     #[test]
     fn delete_credential_clears_soft_deleted_agent_reference() {
         let (dir, db) = temp_db();
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
         let created = CredentialService::create(
             &db,
             &dir,
+            &owner,
             CredentialCreateInput {
                 provider: "xingchen".into(),
                 credential_type: crate::models::CredentialType::AppKeySecret,
@@ -639,12 +761,19 @@ mod tests {
                 params![created.id],
             )
             .unwrap();
+            conn.execute(
+                "INSERT INTO external_agent_resource_ownership
+                    (external_agent_id, platform_subject_id, host_installation_id)
+                 VALUES ('agent-deleted', ?1, ?2)",
+                params![owner.platform_subject_id(), owner.host_installation_id()],
+            )
+            .unwrap();
         }
 
-        assert!(CredentialService::usage(&db, &created.id)
+        assert!(CredentialService::usage(&db, &owner, &created.id)
             .unwrap()
             .is_empty());
-        CredentialService::delete(&db, &dir, &created.id, false).unwrap();
+        CredentialService::delete(&db, &dir, &owner, &created.id, false).unwrap();
         let conn = db.conn_lock().unwrap();
         let remaining: i64 = conn
             .query_row(
@@ -662,5 +791,79 @@ mod tests {
             )
             .unwrap();
         assert!(agent_credential.is_none());
+    }
+
+    #[test]
+    fn credential_ownership_isolated_by_subject_and_installation() {
+        let (dir, db) = temp_db();
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
+        let other_subject = ResourceOwner::fixture("subject-b", "installation-a");
+        let other_installation = ResourceOwner::fixture("subject-a", "installation-b");
+        db.conn_lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO credentials
+                    (id, provider, credential_type, label, owner_scope, secret_reference, configured)
+                 VALUES ('owned-credential', 'xingchen', 'bearer_token', 'owned', 'deprecated',
+                         'secure-credentials/owned.bin', 1);
+                 INSERT INTO credential_resource_ownership
+                    (credential_id, platform_subject_id, host_installation_id)
+                 VALUES ('owned-credential', 'subject-a', 'installation-a');",
+            )
+            .unwrap();
+        let credential_id = "owned-credential";
+        assert!(CredentialService::list(&db, &other_subject)
+            .unwrap()
+            .is_empty());
+        assert!(CredentialService::list(&db, &other_installation)
+            .unwrap()
+            .is_empty());
+        for denied_owner in [&other_subject, &other_installation] {
+            let error = CredentialService::load_secret(&db, &dir, denied_owner, credential_id)
+                .expect_err("cross-owner secret access must fail");
+            assert_eq!(error.to_string(), resource_unavailable().to_string());
+            assert!(!error.to_string().contains(credential_id));
+            assert!(!error.to_string().contains("ownership-secret"));
+            assert!(CredentialService::update(
+                &db,
+                &dir,
+                denied_owner,
+                credential_id,
+                CredentialUpdateInput {
+                    label: Some("hijacked".into()),
+                    secrets: None,
+                    clear_secret: false,
+                },
+            )
+            .is_err());
+            assert!(
+                CredentialService::delete(&db, &dir, denied_owner, credential_id, true).is_err()
+            );
+        }
+        assert_eq!(
+            CredentialService::get(&db, &owner, credential_id)
+                .unwrap()
+                .unwrap()
+                .label,
+            "owned"
+        );
+    }
+
+    #[test]
+    fn legacy_unowned_credential_fails_closed() {
+        let (dir, db) = temp_db();
+        db.conn_lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO credentials
+                    (id, provider, credential_type, label, owner_scope, secret_reference, configured)
+                 VALUES ('legacy-unowned', 'xingchen', 'api_key', 'legacy', 'local-user',
+                         'secure-credentials/legacy.bin', 1)",
+                [],
+            )
+            .unwrap();
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
+        assert!(CredentialService::list(&db, &owner).unwrap().is_empty());
+        assert!(CredentialService::load_secret(&db, &dir, &owner, "legacy-unowned").is_err());
     }
 }

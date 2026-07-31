@@ -1,5 +1,6 @@
 use tauri::State;
 
+use crate::account::AccountState;
 use crate::models::{
     MarketplaceAcquireInput, MarketplaceActionResult, MarketplaceEntitlement,
     MarketplaceExternalAuthorizationInput, MarketplaceInstallInput, MarketplaceLedgerEntry,
@@ -10,6 +11,7 @@ use crate::models::{
     NormalizedPluginManifest,
 };
 use crate::services::marketplace::MarketplaceService;
+use crate::services::resource_ownership::resolve_resource_owner;
 use crate::state::AppState;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -177,11 +179,15 @@ pub fn marketplace_record_permission_rejection(
 }
 
 #[tauri::command]
-pub fn marketplace_configure_service(
+pub async fn marketplace_configure_service(
     state: State<'_, AppState>,
+    account: State<'_, AccountState>,
     input: MarketplaceServiceConfigurationInput,
 ) -> Result<MarketplaceActionResult, String> {
-    MarketplaceService::configure_service(&state.db, &state.data_dir, input)
+    let owner = resolve_resource_owner(&state.db, &account)
+        .await
+        .map_err(|error| error.to_string())?;
+    MarketplaceService::configure_service(&state.db, &state.data_dir, &owner, input)
         .map_err(|e| e.to_string())
 }
 

@@ -25,6 +25,7 @@ use crate::models::{
 };
 use crate::services::credentials::CredentialService;
 use crate::services::planning::{PlanningProviderMode, PlanningService};
+use crate::services::resource_ownership::ResourceOwner;
 use crate::services::safe_filename;
 use crate::state::AppState;
 
@@ -107,7 +108,10 @@ impl XingchenAgentService {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
-    pub fn list_agents(db: &Database) -> Result<Vec<ExternalAgentConfig>, AppError> {
+    pub fn list_agents(
+        db: &Database,
+        owner: &ResourceOwner,
+    ) -> Result<Vec<ExternalAgentConfig>, AppError> {
         let conn = db.conn_lock()?;
         let mut stmt = conn.prepare(
             "SELECT ea.id, ea.installation_id, ea.product_id, ea.product_version_id, p.name,
@@ -119,17 +123,23 @@ impl XingchenAgentService {
                     ea.mock_mode, ea.enabled, ea.unavailable_reason, ea.last_tested_at,
                     ea.last_test_status, ea.created_at, ea.updated_at
              FROM external_agents ea
+             JOIN external_agent_resource_ownership o ON o.external_agent_id = ea.id
              LEFT JOIN products p ON p.id = ea.product_id
              WHERE COALESCE(ea.unavailable_reason, '') != 'deleted'
+               AND o.platform_subject_id = ?1 AND o.host_installation_id = ?2
              ORDER BY ea.updated_at DESC",
         )?;
-        let rows = stmt.query_map([], external_agent_from_row)?;
+        let rows = stmt.query_map(
+            params![owner.platform_subject_id(), owner.host_installation_id()],
+            external_agent_from_row,
+        )?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     pub fn create_agent(
         db: &Database,
         data_dir: &Path,
+        owner: &ResourceOwner,
         mut input: ExternalAgentInput,
     ) -> Result<ExternalAgentConfig, AppError> {
         normalize_agent_input(db, &mut input)?;
@@ -143,7 +153,7 @@ impl XingchenAgentService {
         validate_endpoint(&input.endpoint, mock_mode)?;
         let binding = ensure_product_binding(db, &input.product_id)?;
         if let Some(credential_id) = &input.credential_id {
-            CredentialService::load_secret(db, data_dir, credential_id)?;
+            CredentialService::load_secret(db, data_dir, owner, credential_id)?;
         }
 
         let id = format!("agent-{}", Uuid::new_v4());
@@ -151,7 +161,8 @@ impl XingchenAgentService {
         let streaming = enum_to_db(&input.streaming_type);
         {
             let conn = db.conn_lock()?;
-            conn.execute(
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
                 "INSERT INTO external_agents
                     (id, installation_id, product_id, product_version_id, provider, name, endpoint,
                      agent_id, bot_id, flow_id, protocol_type, local_uid,
@@ -189,17 +200,29 @@ impl XingchenAgentService {
                     input.enabled.unwrap_or(true) as i64
                 ],
             )?;
+            tx.execute(
+                "INSERT INTO external_agent_resource_ownership
+                    (external_agent_id, platform_subject_id, host_installation_id)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    id,
+                    owner.platform_subject_id(),
+                    owner.host_installation_id()
+                ],
+            )?;
+            tx.commit()?;
         }
-        Self::get_agent(db, &id)?
-            .ok_or_else(|| AppError::Custom("智能体创建后读取失败".to_string()))
+        Self::get_agent(db, owner, &id)?.ok_or_else(resource_unavailable)
     }
 
     pub fn update_agent(
         db: &Database,
         data_dir: &Path,
+        owner: &ResourceOwner,
         id: &str,
         mut input: ExternalAgentInput,
     ) -> Result<ExternalAgentConfig, AppError> {
+        ensure_agent_owner(db, owner, id)?;
         normalize_agent_input(db, &mut input)?;
         validate_mapping_json(input.request_mapping_json.as_deref().unwrap_or("{}"))?;
         validate_mapping_json(input.response_mapping_json.as_deref().unwrap_or("{}"))?;
@@ -211,7 +234,7 @@ impl XingchenAgentService {
         validate_endpoint(&input.endpoint, mock_mode)?;
         let binding = ensure_product_binding(db, &input.product_id)?;
         if let Some(credential_id) = &input.credential_id {
-            CredentialService::load_secret(db, data_dir, credential_id)?;
+            CredentialService::load_secret(db, data_dir, owner, credential_id)?;
         }
         let conn = db.conn_lock()?;
         conn.execute(
@@ -255,10 +278,11 @@ impl XingchenAgentService {
             ],
         )?;
         drop(conn);
-        Self::get_agent(db, id)?.ok_or_else(|| AppError::Custom("智能体不存在".to_string()))
+        Self::get_agent(db, owner, id)?.ok_or_else(resource_unavailable)
     }
 
-    pub fn delete_agent(db: &Database, id: &str) -> Result<(), AppError> {
+    pub fn delete_agent(db: &Database, owner: &ResourceOwner, id: &str) -> Result<(), AppError> {
+        ensure_agent_owner(db, owner, id)?;
         let conn = db.conn_lock()?;
         conn.execute(
             "UPDATE external_agents
@@ -273,11 +297,11 @@ impl XingchenAgentService {
     pub async fn test_connection(
         db: &Database,
         data_dir: &Path,
+        owner: &ResourceOwner,
         id: &str,
     ) -> Result<AgentTestResult, AppError> {
         let started = Instant::now();
-        let agent =
-            Self::get_agent(db, id)?.ok_or_else(|| AppError::Custom("智能体不存在".to_string()))?;
+        let agent = Self::get_agent(db, owner, id)?.ok_or_else(resource_unavailable)?;
         let result = if agent.mock_mode {
             AgentTestResult {
                 ok: true,
@@ -290,10 +314,10 @@ impl XingchenAgentService {
                 http_status: None,
             }
         } else if agent.protocol_type == AgentProtocolType::XingchenWorkflowV1 {
-            test_workflow_v1_connection(db, data_dir, &agent, started).await?
+            test_workflow_v1_connection(db, data_dir, owner, &agent, started).await?
         } else {
             validate_endpoint(&agent.endpoint, false)?;
-            ensure_real_config(db, data_dir, &agent)?;
+            ensure_real_config(db, data_dir, owner, &agent)?;
             AgentTestResult {
                 ok: false,
                 provider: "xingchen".into(),
@@ -326,9 +350,13 @@ impl XingchenAgentService {
         Ok(result)
     }
 
-    pub fn health_check(db: &Database, id: &str) -> Result<AgentTestResult, AppError> {
-        let agent =
-            Self::get_agent(db, id)?.ok_or_else(|| AppError::Custom("智能体不存在".to_string()))?;
+    pub fn health_check(
+        db: &Database,
+        owner: &ResourceOwner,
+        id: &str,
+    ) -> Result<AgentTestResult, AppError> {
+        ensure_agent_owner(db, owner, id)?;
+        let agent = Self::get_agent(db, owner, id)?.ok_or_else(resource_unavailable)?;
         Ok(AgentTestResult {
             ok: agent.enabled && agent.unavailable_reason.is_none(),
             provider: agent.provider,
@@ -347,38 +375,49 @@ impl XingchenAgentService {
 
     pub fn list_sessions(
         db: &Database,
+        owner: &ResourceOwner,
         external_agent_id: Option<String>,
     ) -> Result<Vec<AgentSessionInfo>, AppError> {
         let conn = db.conn_lock()?;
         let (sql, params_value): (&str, Vec<String>) = if let Some(id) = external_agent_id {
             (
-                "SELECT id, external_agent_id, remote_session_id, title, status, created_at, updated_at
-                 FROM agent_sessions WHERE external_agent_id = ?1 ORDER BY updated_at DESC",
-                vec![id],
+                "SELECT s.id, s.external_agent_id, s.remote_session_id, s.title, s.status, s.created_at, s.updated_at
+                 FROM agent_sessions s
+                 JOIN external_agent_resource_ownership o ON o.external_agent_id = s.external_agent_id
+                 WHERE s.external_agent_id = ?1 AND o.platform_subject_id = ?2
+                   AND o.host_installation_id = ?3 ORDER BY s.updated_at DESC",
+                vec![id, owner.platform_subject_id().to_string(), owner.host_installation_id().to_string()],
             )
         } else {
             (
-                "SELECT id, external_agent_id, remote_session_id, title, status, created_at, updated_at
-                 FROM agent_sessions ORDER BY updated_at DESC",
-                vec![],
+                "SELECT s.id, s.external_agent_id, s.remote_session_id, s.title, s.status, s.created_at, s.updated_at
+                 FROM agent_sessions s
+                 JOIN external_agent_resource_ownership o ON o.external_agent_id = s.external_agent_id
+                 WHERE o.platform_subject_id = ?1 AND o.host_installation_id = ?2
+                 ORDER BY s.updated_at DESC",
+                vec![owner.platform_subject_id().to_string(), owner.host_installation_id().to_string()],
             )
         };
         let mut stmt = conn.prepare(sql)?;
-        let rows = if params_value.is_empty() {
-            stmt.query_map([], session_from_row)?
+        let rows = if params_value.len() == 2 {
+            stmt.query_map(params![params_value[0], params_value[1]], session_from_row)?
                 .collect::<Result<Vec<_>, _>>()?
         } else {
-            stmt.query_map(params![params_value[0]], session_from_row)?
-                .collect::<Result<Vec<_>, _>>()?
+            stmt.query_map(
+                params![params_value[0], params_value[1], params_value[2]],
+                session_from_row,
+            )?
+            .collect::<Result<Vec<_>, _>>()?
         };
         Ok(rows)
     }
 
     pub fn create_session(
         db: &Database,
+        owner: &ResourceOwner,
         input: AgentSessionCreateInput,
     ) -> Result<AgentSessionInfo, AppError> {
-        ensure_agent_invokable(db, &input.external_agent_id)?;
+        ensure_agent_invokable(db, owner, &input.external_agent_id)?;
         let id = format!("sess-{}", Uuid::new_v4());
         let title = input.title.unwrap_or_else(|| "新智能体会话".to_string());
         let conn = db.conn_lock()?;
@@ -388,10 +427,11 @@ impl XingchenAgentService {
             params![id, input.external_agent_id, title],
         )?;
         drop(conn);
-        Self::get_session(db, &id)?.ok_or_else(|| AppError::Custom("会话创建后读取失败".into()))
+        Self::get_session(db, owner, &id)?.ok_or_else(resource_unavailable)
     }
 
-    pub fn delete_session(db: &Database, id: &str) -> Result<(), AppError> {
+    pub fn delete_session(db: &Database, owner: &ResourceOwner, id: &str) -> Result<(), AppError> {
+        ensure_session_owner(db, owner, id)?;
         let conn = db.conn_lock()?;
         conn.execute("DELETE FROM agent_sessions WHERE id = ?1", params![id])?;
         Ok(())
@@ -399,8 +439,10 @@ impl XingchenAgentService {
 
     pub fn list_messages(
         db: &Database,
+        owner: &ResourceOwner,
         session_id: &str,
     ) -> Result<Vec<AgentMessageInfo>, AppError> {
+        ensure_session_owner(db, owner, session_id)?;
         let conn = db.conn_lock()?;
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, status, request_id, created_at
@@ -412,6 +454,7 @@ impl XingchenAgentService {
 
     pub async fn send_message(
         app: AppHandle,
+        owner: ResourceOwner,
         input: AgentSendMessageInput,
     ) -> Result<AgentSendMessageResult, AppError> {
         if input.content.trim().is_empty() {
@@ -425,13 +468,13 @@ impl XingchenAgentService {
             .unwrap_or(&input.content)
             .to_string();
         let state = app.state::<AppState>();
-        let session = Self::get_session(&state.db, &input.session_id)?
-            .ok_or_else(|| AppError::Custom("会话不存在".to_string()))?;
-        let agent = ensure_agent_invokable(&state.db, &session.external_agent_id)?;
+        let session = Self::get_session(&state.db, &owner, &input.session_id)?
+            .ok_or_else(resource_unavailable)?;
+        let agent = ensure_agent_invokable(&state.db, &owner, &session.external_agent_id)?;
         if !agent.mock_mode && agent.protocol_type == AgentProtocolType::XingchenWorkflowV1 {
-            ensure_workflow_v1_config(&state.db, &state.data_dir, &agent)?;
+            ensure_workflow_v1_config(&state.db, &state.data_dir, &owner, &agent)?;
         } else if !agent.mock_mode {
-            ensure_real_config(&state.db, &state.data_dir, &agent)?;
+            ensure_real_config(&state.db, &state.data_dir, &owner, &agent)?;
             let mapping: serde_json::Value =
                 serde_json::from_str(&agent.request_mapping_json).unwrap_or_else(|_| json!({}));
             if mapping.get("protocolReady").and_then(|v| v.as_bool()) != Some(true) {
@@ -527,6 +570,7 @@ impl XingchenAgentService {
             tokio::spawn(async move {
                 run_workflow_v1_stream(
                     app_for_task,
+                    owner,
                     request_for_task,
                     input.session_id,
                     agent,
@@ -563,11 +607,13 @@ impl XingchenAgentService {
 
     pub fn finalize_plugin_output(
         db: &Database,
+        owner: &ResourceOwner,
         session_id: &str,
         request_id: &str,
         expected_output: &str,
         final_output: &str,
     ) -> Result<(), AppError> {
+        ensure_session_owner(db, owner, session_id)?;
         const MAX_PLUGIN_OUTPUT_CHARS: usize = 1_000_000;
         if final_output.trim().is_empty() {
             return Err(AppError::InvalidInput("插件后处理结果不能为空".to_string()));
@@ -608,9 +654,34 @@ impl XingchenAgentService {
     }
 
     pub fn cancel_request(
+        db: &Database,
+        owner: &ResourceOwner,
         cancel_map: &Mutex<std::collections::HashMap<String, watch::Sender<bool>>>,
         request_id: &str,
     ) -> Result<(), AppError> {
+        let conn = db.conn_lock()?;
+        let owned = conn
+            .query_row(
+                "SELECT 1
+                 FROM usage_events u
+                 JOIN external_agent_resource_ownership o
+                   ON o.external_agent_id = u.external_agent_id
+                 WHERE u.request_id = ?1
+                   AND o.platform_subject_id = ?2
+                   AND o.host_installation_id = ?3
+                 LIMIT 1",
+                params![
+                    request_id,
+                    owner.platform_subject_id(),
+                    owner.host_installation_id()
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        drop(conn);
+        if owned.is_none() {
+            return Err(resource_unavailable());
+        }
         if let Some(sender) = cancel_map
             .lock()
             .map_err(|e| AppError::Custom(e.to_string()))?
@@ -625,6 +696,7 @@ impl XingchenAgentService {
 
     pub fn list_usage(
         db: &Database,
+        owner: &ResourceOwner,
         external_agent_id: Option<String>,
     ) -> Result<Vec<AgentUsageEvent>, AppError> {
         let conn = db.conn_lock()?;
@@ -633,22 +705,33 @@ impl XingchenAgentService {
                 "SELECT id, product_id, external_agent_id, session_id, request_id, started_at,
                         completed_at, duration_ms, status, provider_error_code,
                         estimated_input_usage, estimated_output_usage, metadata_json
-                 FROM usage_events WHERE external_agent_id = ?1 ORDER BY started_at DESC LIMIT 200",
-                Some(id),
+                 FROM usage_events u
+                 JOIN external_agent_resource_ownership o ON o.external_agent_id = u.external_agent_id
+                 WHERE u.external_agent_id = ?1 AND o.platform_subject_id = ?2
+                   AND o.host_installation_id = ?3 ORDER BY u.started_at DESC LIMIT 200",
+                Some(vec![id, owner.platform_subject_id().to_string(), owner.host_installation_id().to_string()]),
             )
         } else {
             (
                 "SELECT id, product_id, external_agent_id, session_id, request_id, started_at,
                         completed_at, duration_ms, status, provider_error_code,
                         estimated_input_usage, estimated_output_usage, metadata_json
-                 FROM usage_events ORDER BY started_at DESC LIMIT 200",
-                None,
+                 FROM usage_events u
+                 JOIN external_agent_resource_ownership o ON o.external_agent_id = u.external_agent_id
+                 WHERE o.platform_subject_id = ?1 AND o.host_installation_id = ?2
+                 ORDER BY u.started_at DESC LIMIT 200",
+                Some(vec![owner.platform_subject_id().to_string(), owner.host_installation_id().to_string()]),
             )
         };
         let mut stmt = conn.prepare(sql)?;
-        let rows = if let Some(id) = param {
-            stmt.query_map(params![id], usage_from_row)?
-                .collect::<Result<Vec<_>, _>>()?
+        let rows = if let Some(values) = param {
+            if values.len() == 3 {
+                stmt.query_map(params![values[0], values[1], values[2]], usage_from_row)?
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                stmt.query_map(params![values[0], values[1]], usage_from_row)?
+                    .collect::<Result<Vec<_>, _>>()?
+            }
         } else {
             stmt.query_map([], usage_from_row)?
                 .collect::<Result<Vec<_>, _>>()?
@@ -656,27 +739,39 @@ impl XingchenAgentService {
         Ok(rows)
     }
 
-    pub fn clear_usage(db: &Database, external_agent_id: Option<String>) -> Result<(), AppError> {
+    pub fn clear_usage(
+        db: &Database,
+        owner: &ResourceOwner,
+        external_agent_id: Option<String>,
+    ) -> Result<(), AppError> {
         let conn = db.conn_lock()?;
         if let Some(id) = external_agent_id {
+            ensure_agent_owner(db, owner, &id)?;
             conn.execute(
                 "DELETE FROM usage_events WHERE external_agent_id = ?1",
                 params![id],
             )?;
         } else {
-            conn.execute("DELETE FROM usage_events", [])?;
+            conn.execute(
+                "DELETE FROM usage_events WHERE external_agent_id IN (
+                    SELECT external_agent_id FROM external_agent_resource_ownership
+                    WHERE platform_subject_id = ?1 AND host_installation_id = ?2
+                 )",
+                params![owner.platform_subject_id(), owner.host_installation_id()],
+            )?;
         }
         Ok(())
     }
 
     pub async fn invoke_workflow(
         app: AppHandle,
+        owner: ResourceOwner,
         input: AgentWorkflowInvokeInput,
     ) -> Result<AgentWorkflowInvokeResult, AppError> {
         let started = Instant::now();
         let request_id = format!("req-{}", Uuid::new_v4());
         let state = app.state::<AppState>();
-        let agent = ensure_agent_invokable(&state.db, &input.external_agent_id)?;
+        let agent = ensure_agent_invokable(&state.db, &owner, &input.external_agent_id)?;
         if !agent.mock_mode && agent.protocol_type != AgentProtocolType::XingchenWorkflowV1 {
             return Err(AppError::InvalidInput(
                 "当前同步调用器只支持讯飞 Workflow Open API v1 或 Mock Provider".into(),
@@ -701,7 +796,7 @@ impl XingchenAgentService {
             let (secret, client) = if agent.mock_mode {
                 (None, None)
             } else {
-                let secret = ensure_workflow_v1_config(&state.db, &state.data_dir, &agent)?;
+                let secret = ensure_workflow_v1_config(&state.db, &state.data_dir, &owner, &agent)?;
                 (Some(secret), Some(workflow_http_client()?))
             };
             let mut parameters = build_dynamic_workflow_parameters(
@@ -867,7 +962,11 @@ impl XingchenAgentService {
         })
     }
 
-    pub fn get_agent(db: &Database, id: &str) -> Result<Option<ExternalAgentConfig>, AppError> {
+    pub fn get_agent(
+        db: &Database,
+        owner: &ResourceOwner,
+        id: &str,
+    ) -> Result<Option<ExternalAgentConfig>, AppError> {
         let conn = db.conn_lock()?;
         conn.query_row(
             "SELECT ea.id, ea.installation_id, ea.product_id, ea.product_version_id, p.name,
@@ -879,26 +978,60 @@ impl XingchenAgentService {
                     ea.mock_mode, ea.enabled, ea.unavailable_reason, ea.last_tested_at,
                     ea.last_test_status, ea.created_at, ea.updated_at
              FROM external_agents ea
+             JOIN external_agent_resource_ownership o ON o.external_agent_id = ea.id
              LEFT JOIN products p ON p.id = ea.product_id
-             WHERE ea.id = ?1",
-            params![id],
+             WHERE ea.id = ?1 AND o.platform_subject_id = ?2 AND o.host_installation_id = ?3",
+            params![
+                id,
+                owner.platform_subject_id(),
+                owner.host_installation_id()
+            ],
             external_agent_from_row,
         )
         .optional()
         .map_err(AppError::from)
     }
 
-    fn get_session(db: &Database, id: &str) -> Result<Option<AgentSessionInfo>, AppError> {
+    fn get_session(
+        db: &Database,
+        owner: &ResourceOwner,
+        id: &str,
+    ) -> Result<Option<AgentSessionInfo>, AppError> {
         let conn = db.conn_lock()?;
         conn.query_row(
-            "SELECT id, external_agent_id, remote_session_id, title, status, created_at, updated_at
-             FROM agent_sessions WHERE id = ?1",
-            params![id],
+            "SELECT s.id, s.external_agent_id, s.remote_session_id, s.title, s.status,
+                    s.created_at, s.updated_at
+             FROM agent_sessions s
+             JOIN external_agent_resource_ownership o ON o.external_agent_id = s.external_agent_id
+             WHERE s.id = ?1 AND o.platform_subject_id = ?2 AND o.host_installation_id = ?3",
+            params![
+                id,
+                owner.platform_subject_id(),
+                owner.host_installation_id()
+            ],
             session_from_row,
         )
         .optional()
         .map_err(AppError::from)
     }
+}
+
+fn ensure_agent_owner(db: &Database, owner: &ResourceOwner, id: &str) -> Result<(), AppError> {
+    if XingchenAgentService::get_agent(db, owner, id)?.is_none() {
+        return Err(resource_unavailable());
+    }
+    Ok(())
+}
+
+fn ensure_session_owner(db: &Database, owner: &ResourceOwner, id: &str) -> Result<(), AppError> {
+    if XingchenAgentService::get_session(db, owner, id)?.is_none() {
+        return Err(resource_unavailable());
+    }
+    Ok(())
+}
+
+fn resource_unavailable() -> AppError {
+    AppError::NotFound("资源不存在或不可访问".to_string())
 }
 
 fn append_hidden_plugin_context(content: &str, plugin_context: Option<&str>) -> String {
@@ -1200,6 +1333,7 @@ fn workflow_local_uid(db: &Database) -> Result<String, AppError> {
 fn ensure_workflow_v1_config(
     db: &Database,
     data_dir: &Path,
+    owner: &ResourceOwner,
     agent: &ExternalAgentConfig,
 ) -> Result<crate::models::CredentialSecretInput, AppError> {
     if agent.endpoint != XINGCHEN_WORKFLOW_V1_ENDPOINT {
@@ -1223,7 +1357,7 @@ fn ensure_workflow_v1_config(
         .credential_id
         .as_deref()
         .ok_or_else(|| AppError::Custom("credential_missing".into()))?;
-    let secret = CredentialService::load_secret(db, data_dir, credential_id)?;
+    let secret = CredentialService::load_secret(db, data_dir, owner, credential_id)?;
     if secret
         .app_id
         .as_deref()
@@ -1247,17 +1381,18 @@ fn ensure_workflow_v1_config(
             "credential_missing: 讯飞 Workflow 凭据需要 APPID、API Key 和 API Secret".into(),
         ));
     }
-    CredentialService::touch_last_used(db, credential_id)?;
+    CredentialService::touch_last_used(db, owner, credential_id)?;
     Ok(secret)
 }
 
 async fn test_workflow_v1_connection(
     db: &Database,
     data_dir: &Path,
+    owner: &ResourceOwner,
     agent: &ExternalAgentConfig,
     started: Instant,
 ) -> Result<AgentTestResult, AppError> {
-    let secret = ensure_workflow_v1_config(db, data_dir, agent)?;
+    let secret = ensure_workflow_v1_config(db, data_dir, owner, agent)?;
     let uid = workflow_agent_uid(db, agent)?;
     let flow_id = agent.flow_id.as_deref().unwrap_or_default();
     let parameters = workflow_request_parameters(agent, "test")?;
@@ -1372,6 +1507,7 @@ async fn test_workflow_v1_connection(
 
 async fn run_workflow_v1_stream(
     app: AppHandle,
+    owner: ResourceOwner,
     request_id: String,
     session_id: String,
     agent: ExternalAgentConfig,
@@ -1407,7 +1543,7 @@ async fn run_workflow_v1_stream(
 
     let result = async {
         let state = app.state::<AppState>();
-        let secret = ensure_workflow_v1_config(&state.db, &state.data_dir, &agent)?;
+        let secret = ensure_workflow_v1_config(&state.db, &state.data_dir, &owner, &agent)?;
         let uid = workflow_agent_uid(&state.db, &agent)?;
         let flow_id = agent
             .flow_id
@@ -3329,9 +3465,12 @@ fn ensure_product_version_permissions(
     Ok(())
 }
 
-fn ensure_agent_invokable(db: &Database, id: &str) -> Result<ExternalAgentConfig, AppError> {
-    let agent = XingchenAgentService::get_agent(db, id)?
-        .ok_or_else(|| AppError::Custom("智能体不存在".into()))?;
+fn ensure_agent_invokable(
+    db: &Database,
+    owner: &ResourceOwner,
+    id: &str,
+) -> Result<ExternalAgentConfig, AppError> {
+    let agent = XingchenAgentService::get_agent(db, owner, id)?.ok_or_else(resource_unavailable)?;
     if !agent.enabled {
         return Err(AppError::Custom("智能体已禁用".into()));
     }
@@ -3345,6 +3484,7 @@ fn ensure_agent_invokable(db: &Database, id: &str) -> Result<ExternalAgentConfig
 fn ensure_real_config(
     db: &Database,
     data_dir: &Path,
+    owner: &ResourceOwner,
     agent: &ExternalAgentConfig,
 ) -> Result<(), AppError> {
     if matches!(
@@ -3357,8 +3497,8 @@ fn ensure_real_config(
             .credential_id
             .as_deref()
             .ok_or_else(|| AppError::Custom("credential_missing".into()))?;
-        let _ = CredentialService::load_secret(db, data_dir, credential_id)?;
-        CredentialService::touch_last_used(db, credential_id)?;
+        let _ = CredentialService::load_secret(db, data_dir, owner, credential_id)?;
+        CredentialService::touch_last_used(db, owner, credential_id)?;
     }
     validate_endpoint(&agent.endpoint, false)?;
     Ok(())
@@ -3779,6 +3919,7 @@ mod tests {
     #[test]
     fn deleted_agents_are_hidden_from_active_lists() {
         let db = test_db();
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
         seed_installed_product(
             &db,
             "delete-agent-product",
@@ -3795,6 +3936,7 @@ mod tests {
         let agent = XingchenAgentService::create_agent(
             &db,
             &data_dir,
+            &owner,
             ExternalAgentInput {
                 product_id: "delete-agent-product".into(),
                 name: "deletable mock agent".into(),
@@ -3817,14 +3959,81 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(XingchenAgentService::list_agents(&db).unwrap().len(), 1);
-        XingchenAgentService::delete_agent(&db, &agent.id).unwrap();
-        assert!(XingchenAgentService::list_agents(&db).unwrap().is_empty());
-        let stored = XingchenAgentService::get_agent(&db, &agent.id)
+        assert_eq!(
+            XingchenAgentService::list_agents(&db, &owner)
+                .unwrap()
+                .len(),
+            1
+        );
+        let other_subject = ResourceOwner::fixture("subject-b", "installation-a");
+        let other_installation = ResourceOwner::fixture("subject-a", "installation-b");
+        for denied_owner in [&other_subject, &other_installation] {
+            assert!(XingchenAgentService::list_agents(&db, denied_owner)
+                .unwrap()
+                .is_empty());
+            assert!(
+                XingchenAgentService::get_agent(&db, denied_owner, &agent.id)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(XingchenAgentService::create_session(
+                &db,
+                denied_owner,
+                AgentSessionCreateInput {
+                    external_agent_id: agent.id.clone(),
+                    title: None,
+                },
+            )
+            .is_err());
+            let error = XingchenAgentService::health_check(&db, denied_owner, &agent.id)
+                .expect_err("cross-owner invocation must fail");
+            assert_eq!(error.to_string(), resource_unavailable().to_string());
+            assert!(!error.to_string().contains(&agent.id));
+            assert!(XingchenAgentService::delete_agent(&db, denied_owner, &agent.id).is_err());
+        }
+        XingchenAgentService::delete_agent(&db, &owner, &agent.id).unwrap();
+        assert!(XingchenAgentService::list_agents(&db, &owner)
+            .unwrap()
+            .is_empty());
+        let stored = XingchenAgentService::get_agent(&db, &owner, &agent.id)
             .unwrap()
             .unwrap();
         assert_eq!(stored.unavailable_reason.as_deref(), Some("deleted"));
         assert!(!stored.enabled);
+    }
+
+    #[test]
+    fn legacy_unowned_agent_fails_closed() {
+        let db = test_db();
+        seed_installed_product(
+            &db,
+            "legacy-agent-product",
+            "xingchen-agent",
+            "xingchen-agent",
+            true,
+            "published",
+            "active",
+            "unsigned",
+            "active",
+            None,
+        );
+        db.conn_lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO external_agents
+                    (id, product_id, provider, name, endpoint, authentication_type,
+                     streaming_type, request_mapping_json, response_mapping_json,
+                     session_mapping_json, error_mapping_json, mock_mode, enabled)
+                 VALUES ('legacy-unowned-agent', 'legacy-agent-product', 'xingchen', 'legacy',
+                         'mock://xingchen', 'none', 'none', '{}', '{}', '{}', '{}', 1, 1)",
+                [],
+            )
+            .unwrap();
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
+        assert!(XingchenAgentService::list_agents(&db, &owner)
+            .unwrap()
+            .is_empty());
+        assert!(XingchenAgentService::health_check(&db, &owner, "legacy-unowned-agent").is_err());
     }
 
     #[test]

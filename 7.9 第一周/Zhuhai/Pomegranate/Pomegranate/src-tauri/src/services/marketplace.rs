@@ -26,8 +26,10 @@ use crate::models::{
     PluginCredentialRequirement, PluginInfo, PluginInstallArchiveInput, PluginInstallationInfo,
     PluginManifestV3, PluginRuntimeKind, PluginSource, ProductType, SignatureStatus,
 };
+use crate::services::credentials::CredentialService;
 use crate::services::plugin_platform::PluginPlatformService;
 use crate::services::plugins::PluginService;
+use crate::services::resource_ownership::ResourceOwner;
 
 const LOCAL_USER_ID: &str = "local-demo-buyer";
 const PLATFORM_FEE_BPS: i64 = 2000;
@@ -952,6 +954,7 @@ impl MarketplaceService {
     pub fn configure_service(
         db: &Database,
         data_dir: &Path,
+        owner: &ResourceOwner,
         input: MarketplaceServiceConfigurationInput,
     ) -> Result<MarketplaceActionResult, AppError> {
         let detail = Self::get_product(db, data_dir, &input.product_id)?;
@@ -1019,13 +1022,8 @@ impl MarketplaceService {
             ));
         }
         if let Some(credential_id) = input.credential_id.as_deref() {
-            let conn = db.conn_lock()?;
-            let credential: Option<(String, String)> = conn.query_row(
-                "SELECT provider, owner_scope FROM credentials WHERE id = ?1 AND configured = 1 LIMIT 1",
-                [credential_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            ).optional()?;
-            let Some((provider, owner_scope)) = credential else {
+            let credential = CredentialService::get(db, owner, credential_id)?;
+            let Some(credential) = credential.filter(|credential| credential.configured) else {
                 return Err(AppError::InvalidInput(
                     "所选服务凭据不存在或尚未配置".into(),
                 ));
@@ -1035,7 +1033,7 @@ impl MarketplaceService {
                 AiServiceDeliveryMode::RemoteMcp => "remote-mcp",
                 AiServiceDeliveryMode::Byok => "xingchen",
             };
-            if provider != expected_provider || owner_scope != "local-user" {
+            if credential.provider != expected_provider {
                 return Err(AppError::InvalidInput(format!(
                     "所选凭据不属于当前用户或不适用于 {expected_provider} 交付模式"
                 )));
@@ -3063,6 +3061,7 @@ mod tests {
     #[test]
     fn remote_mcp_mock_configuration_registers_safely_without_a_command_runtime() {
         let db = Database::init(":memory:").unwrap();
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
         let dir = temp_data_dir("remote-mcp-config");
         let product_id = "official-local-knowledge-mcp-demo";
         let authorization = bind_external(&db, &dir, product_id);
@@ -3086,6 +3085,7 @@ mod tests {
         let configured = MarketplaceService::configure_service(
             &db,
             &dir,
+            &owner,
             MarketplaceServiceConfigurationInput {
                 product_id: product_id.into(),
                 credential_id: None,
@@ -3105,6 +3105,7 @@ mod tests {
     #[test]
     fn hosted_service_rejects_a_credential_from_another_provider() {
         let db = Database::init(":memory:").unwrap();
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
         let dir = temp_data_dir("hosted-provider-mismatch");
         let product_id = "official-hosted-ai-api-demo";
         let authorization = bind_external(&db, &dir, product_id);
@@ -3131,10 +3132,20 @@ mod tests {
                 [],
             )
             .unwrap();
+        db.conn_lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO credential_resource_ownership
+                    (credential_id, platform_subject_id, host_installation_id)
+                 VALUES ('wrong-provider', ?1, ?2)",
+                params![owner.platform_subject_id(), owner.host_installation_id()],
+            )
+            .unwrap();
 
         let error = MarketplaceService::configure_service(
             &db,
             &dir,
+            &owner,
             MarketplaceServiceConfigurationInput {
                 product_id: product_id.into(),
                 credential_id: Some("wrong-provider".into()),
@@ -3466,9 +3477,11 @@ mod tests {
         .unwrap();
         MarketplaceService::enable_product(&db, &dir, "official-xingchen-learning-demo").unwrap();
 
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
         let agent = XingchenAgentService::create_agent(
             &db,
             &dir,
+            &owner,
             ExternalAgentInput {
                 product_id: "official-xingchen-learning-demo".into(),
                 name: "summary-mock-agent".into(),
@@ -3493,6 +3506,7 @@ mod tests {
         let summary_agents = PluginService::document_summary_agents(
             &db,
             &dir,
+            &owner,
             "official-ai-document-summary-plugin",
         )
         .unwrap();
@@ -3500,6 +3514,7 @@ mod tests {
         let config = PluginService::set_document_summary_config(
             &db,
             &dir,
+            &owner,
             PluginDocumentSummaryConfigInput {
                 plugin_id: "official-ai-document-summary-plugin".into(),
                 mode: "agent".into(),
@@ -3511,6 +3526,7 @@ mod tests {
         let (_, title, prompt) = PluginService::prepare_document_summary_agent_start(
             &db,
             &dir,
+            &owner,
             PluginDocumentSummaryAgentStartInput {
                 plugin_id: "official-ai-document-summary-plugin".into(),
                 title: "质量记录".into(),
@@ -3533,6 +3549,7 @@ mod tests {
         let blocked_agent_call = PluginService::prepare_document_summary_agent_start(
             &db,
             &dir,
+            &owner,
             PluginDocumentSummaryAgentStartInput {
                 plugin_id: "official-ai-document-summary-plugin".into(),
                 title: "质量记录".into(),

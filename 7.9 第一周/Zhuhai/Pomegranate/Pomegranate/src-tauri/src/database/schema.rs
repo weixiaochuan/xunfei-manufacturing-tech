@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::error::AppError;
 
 /// 当前 Schema 版本
-pub const SCHEMA_VERSION: i32 = 57;
+pub const SCHEMA_VERSION: i32 = 58;
 
 /// 获取数据库版本
 pub fn get_version(conn: &Connection) -> Result<i32, AppError> {
@@ -87,6 +87,7 @@ pub fn migrate(conn: &Connection) -> Result<(), AppError> {
             54 => migrate_v54_to_v55(conn)?,
             55 => migrate_v55_to_v56(conn)?,
             56 => migrate_v56_to_v57(conn)?,
+            57 => migrate_v57_to_v58(conn)?,
             _ => {
                 return Err(AppError::Custom(format!("未知的数据库版本: {}", version)));
             }
@@ -3111,6 +3112,41 @@ fn migrate_v56_to_v57(conn: &Connection) -> Result<(), AppError> {
     Ok(())
 }
 
+/// v57 -> v58: Credential 与 External Agent 绑定可信平台主体和宿主安装。
+///
+/// 旧资源没有可证明的远端主体，因此不回填 owner；缺少关系行即 legacy-unowned，
+/// 后续所有生产查询会默认拒绝这些记录，直至用户通过受控流程重新配置。
+fn migrate_v57_to_v58(conn: &Connection) -> Result<(), AppError> {
+    log::info!("database migration: v57 -> v58 (resource ownership)");
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        r#"
+        CREATE TABLE credential_resource_ownership (
+            credential_id        TEXT PRIMARY KEY
+                                 REFERENCES credentials(id) ON DELETE CASCADE,
+            platform_subject_id  TEXT NOT NULL CHECK(length(trim(platform_subject_id)) > 0),
+            host_installation_id TEXT NOT NULL CHECK(length(trim(host_installation_id)) > 0),
+            created_at           TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX idx_credential_resource_ownership_actor
+            ON credential_resource_ownership(platform_subject_id, host_installation_id);
+
+        CREATE TABLE external_agent_resource_ownership (
+            external_agent_id    TEXT PRIMARY KEY
+                                 REFERENCES external_agents(id) ON DELETE CASCADE,
+            platform_subject_id  TEXT NOT NULL CHECK(length(trim(platform_subject_id)) > 0),
+            host_installation_id TEXT NOT NULL CHECK(length(trim(host_installation_id)) > 0),
+            created_at           TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        CREATE INDEX idx_external_agent_resource_ownership_actor
+            ON external_agent_resource_ownership(platform_subject_id, host_installation_id);
+        "#,
+    )?;
+    set_version(&tx, 58)?;
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod week4_plugin_integration_tests {
     use super::*;
@@ -3708,6 +3744,8 @@ mod week4_plugin_integration_tests {
         migrate(&conn)?;
         conn.execute_batch(
             r#"
+            DROP TABLE external_agent_resource_ownership;
+            DROP TABLE credential_resource_ownership;
             DROP TABLE host_installation_identity;
             DROP TABLE plugin_capability_authorizations;
             PRAGMA user_version = 55;
@@ -3808,7 +3846,7 @@ mod week4_plugin_integration_tests {
 
         migrate(&conn)?;
 
-        assert_eq!(get_version(&conn)?, 57);
+        assert_eq!(get_version(&conn)?, SCHEMA_VERSION);
         assert_eq!(authorization_rows(&conn)?, rows_before);
         let states: Vec<String> = conn
             .prepare(
@@ -3944,6 +3982,84 @@ mod week4_plugin_integration_tests {
             (host_table_count, renamed_table_count, blocker_view_count),
             (0, 0, 1)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn v58_resource_ownership_migration_preserves_legacy_rows_unowned() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        migrate_fixture_to_v56(&conn)?;
+        migrate_v56_to_v57(&conn)?;
+        conn.execute(
+            "INSERT INTO credentials
+                (id, provider, credential_type, label, owner_scope, secret_reference, configured)
+             VALUES ('legacy-credential', 'xingchen', 'api_key', 'legacy', 'local-user',
+                     'secure-credentials/legacy.bin', 1)",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO products
+                (id, developer_id, name, description, product_type, runtime_kind, status)
+             VALUES ('legacy-product', 'developer', 'legacy', '', 'xingchen-agent',
+                     'xingchen-agent', 'published')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO external_agents
+                (id, product_id, provider, name, endpoint, authentication_type,
+                 streaming_type, request_mapping_json, response_mapping_json,
+                 session_mapping_json, error_mapping_json, mock_mode, enabled)
+             VALUES ('legacy-agent', 'legacy-product', 'xingchen', 'legacy', 'mock://xingchen',
+                     'none', 'none', '{}', '{}', '{}', '{}', 1, 1)",
+            [],
+        )?;
+
+        migrate_v57_to_v58(&conn)?;
+        assert_eq!(get_version(&conn)?, 58);
+        let legacy_rows: i64 = conn.query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM credentials WHERE id = 'legacy-credential') +
+                (SELECT COUNT(*) FROM external_agents WHERE id = 'legacy-agent')",
+            [],
+            |row| row.get(0),
+        )?;
+        let ownership_rows: i64 = conn.query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM credential_resource_ownership) +
+                (SELECT COUNT(*) FROM external_agent_resource_ownership)",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!((legacy_rows, ownership_rows), (2, 0));
+        migrate(&conn)?;
+        assert_eq!(get_version(&conn)?, SCHEMA_VERSION);
+        Ok(())
+    }
+
+    #[test]
+    fn v58_resource_ownership_migration_rolls_back_atomically() -> Result<(), AppError> {
+        let conn = Connection::open_in_memory()?;
+        migrate_fixture_to_v56(&conn)?;
+        migrate_v56_to_v57(&conn)?;
+        conn.execute_batch(
+            "CREATE TABLE external_agent_resource_ownership (external_agent_id TEXT PRIMARY KEY);",
+        )?;
+
+        migrate_v57_to_v58(&conn).expect_err("conflicting table must abort migration");
+        assert_eq!(get_version(&conn)?, 57);
+        let credential_table: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'credential_resource_ownership'",
+            [],
+            |row| row.get(0),
+        )?;
+        let blocker_table: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'external_agent_resource_ownership'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!((credential_table, blocker_table), (0, 1));
         Ok(())
     }
 }
