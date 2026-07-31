@@ -291,6 +291,68 @@ pub struct PluginManifestV3 {
     pub signature: super::PluginSignature,
 }
 
+/// 只读权限事实的持久化来源。
+///
+/// 该来源标记用于防止 Manifest、版本快照和旧布尔授权记录在调用方被误当成同一类事实。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PluginPermissionFactSource {
+    CurrentManifest,
+    InstalledVersionSnapshot,
+    LegacyPluginPermissions,
+}
+
+/// 当前安装版本 Manifest 中声明的 capability 集合。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentManifestCapabilityDeclaration {
+    pub plugin_id: String,
+    pub version: String,
+    pub capabilities: Vec<String>,
+    pub source: PluginPermissionFactSource,
+}
+
+/// 当前安装版本保存于 `plugin_versions.permissions_json` 的不可变权限快照。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledVersionCapabilitySnapshot {
+    pub plugin_id: String,
+    pub version: String,
+    pub capabilities: Vec<String>,
+    pub source: PluginPermissionFactSource,
+}
+
+/// `plugin_permissions.granted` 能表达的旧兼容状态。
+///
+/// `NotGrantedCompatible` 只表示旧布尔值为 false；它不能被解释为用户明确 denied、
+/// revoked 或 expired。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LegacyCapabilityGrantState {
+    Granted,
+    NotGrantedCompatible,
+    Missing,
+}
+
+/// 单个 capability 的旧授权兼容事实，不代表新的正式用户授权决策。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyCapabilityAuthorizationFact {
+    pub plugin_id: String,
+    pub capability: String,
+    pub state: LegacyCapabilityGrantState,
+    pub source: PluginPermissionFactSource,
+}
+
+/// 已完成来源区分并验证 Manifest/版本快照语义一致的只读权限事实。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentPluginPermissionFacts {
+    pub manifest_declaration: CurrentManifestCapabilityDeclaration,
+    pub version_snapshot: InstalledVersionCapabilitySnapshot,
+    pub legacy_authorizations: Vec<LegacyCapabilityAuthorizationFact>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginExecutionContext {

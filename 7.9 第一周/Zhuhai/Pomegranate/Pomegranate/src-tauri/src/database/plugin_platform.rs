@@ -1,12 +1,18 @@
 //! 正式插件安装平台 DAO。
 
-use rusqlite::{params, OptionalExtension};
+use std::collections::BTreeSet;
+
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use super::Database;
 use crate::error::AppError;
 use crate::models::{
-    PluginActivationRule, PluginManifestV3, PluginScene, PluginVersionInfo, SignatureStatus,
+    CurrentManifestCapabilityDeclaration, CurrentPluginPermissionFacts,
+    InstalledVersionCapabilitySnapshot, LegacyCapabilityAuthorizationFact,
+    LegacyCapabilityGrantState, PluginActivationRule, PluginManifestV3, PluginPermissionFactSource,
+    PluginScene, PluginVersionInfo, SignatureStatus,
 };
+use crate::services::plugin_capabilities::VALID_PERMISSIONS;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CurrentPluginVersionAuthorization {
@@ -34,11 +40,166 @@ fn signature_from_db(value: String) -> SignatureStatus {
     serde_json::from_value(serde_json::Value::String(value)).unwrap_or_default()
 }
 
+fn normalize_manifest_capabilities(
+    plugin_id: &str,
+    capabilities: &[String],
+) -> Result<Vec<String>, AppError> {
+    let mut normalized = BTreeSet::new();
+    for capability in capabilities {
+        if !VALID_PERMISSIONS.contains(&capability.as_str()) {
+            return Err(AppError::PluginManifestCapabilityDeclarationInvalid {
+                plugin_id: plugin_id.to_string(),
+                reason: format!("包含未知 capability：{}", capability),
+            });
+        }
+        if !normalized.insert(capability.clone()) {
+            return Err(AppError::PluginManifestCapabilityDeclarationInvalid {
+                plugin_id: plugin_id.to_string(),
+                reason: format!("包含重复 capability：{}", capability),
+            });
+        }
+    }
+    Ok(normalized.into_iter().collect())
+}
+
+fn parse_version_capability_snapshot(
+    plugin_id: &str,
+    version: &str,
+    json: &str,
+) -> Result<Vec<String>, AppError> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|error| AppError::PluginPermissionSnapshotInvalid {
+            plugin_id: plugin_id.to_string(),
+            version: version.to_string(),
+            reason: format!("JSON 无法解析：{}", error),
+        })?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| AppError::PluginPermissionSnapshotInvalid {
+            plugin_id: plugin_id.to_string(),
+            version: version.to_string(),
+            reason: "顶层必须是 capability 数组".to_string(),
+        })?;
+
+    let mut normalized = BTreeSet::new();
+    for item in items {
+        let capability =
+            item.as_str()
+                .ok_or_else(|| AppError::PluginPermissionSnapshotInvalid {
+                    plugin_id: plugin_id.to_string(),
+                    version: version.to_string(),
+                    reason: "数组元素必须是 capability 字符串".to_string(),
+                })?;
+        if !VALID_PERMISSIONS.contains(&capability) {
+            return Err(AppError::PluginPermissionSnapshotInvalid {
+                plugin_id: plugin_id.to_string(),
+                version: version.to_string(),
+                reason: format!("包含未知 capability：{}", capability),
+            });
+        }
+        if !normalized.insert(capability.to_string()) {
+            return Err(AppError::PluginPermissionSnapshotInvalid {
+                plugin_id: plugin_id.to_string(),
+                version: version.to_string(),
+                reason: format!("包含重复 capability：{}", capability),
+            });
+        }
+    }
+    Ok(normalized.into_iter().collect())
+}
+
+fn read_current_manifest_capability_declaration(
+    conn: &Connection,
+    plugin_id: &str,
+) -> Result<CurrentManifestCapabilityDeclaration, AppError> {
+    let current: Option<(String, String)> = conn
+        .query_row(
+            "SELECT version, manifest_json
+             FROM plugin_versions
+             WHERE plugin_id = ?1 AND is_current = 1",
+            [plugin_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (version, manifest_json) = current.ok_or_else(|| {
+        AppError::NotFound(format!("未找到插件 {} 的当前版本 Manifest", plugin_id))
+    })?;
+    let manifest: PluginManifestV3 = serde_json::from_str(&manifest_json).map_err(|error| {
+        AppError::PluginManifestCapabilityDeclarationInvalid {
+            plugin_id: plugin_id.to_string(),
+            reason: format!("Manifest 无法解析：{}", error),
+        }
+    })?;
+    if manifest.id != plugin_id || manifest.version != version {
+        return Err(AppError::PluginManifestCapabilityDeclarationInvalid {
+            plugin_id: plugin_id.to_string(),
+            reason: "Manifest 身份或版本与当前版本记录不一致".to_string(),
+        });
+    }
+    Ok(CurrentManifestCapabilityDeclaration {
+        plugin_id: plugin_id.to_string(),
+        version,
+        capabilities: normalize_manifest_capabilities(plugin_id, &manifest.permissions)?,
+        source: PluginPermissionFactSource::CurrentManifest,
+    })
+}
+
+fn read_current_version_capability_snapshot(
+    conn: &Connection,
+    plugin_id: &str,
+) -> Result<InstalledVersionCapabilitySnapshot, AppError> {
+    let current: Option<(String, String)> = conn
+        .query_row(
+            "SELECT version, permissions_json
+             FROM plugin_versions
+             WHERE plugin_id = ?1 AND is_current = 1",
+            [plugin_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (version, permissions_json) =
+        current.ok_or_else(|| AppError::PluginPermissionSnapshotMissing {
+            plugin_id: plugin_id.to_string(),
+        })?;
+    Ok(InstalledVersionCapabilitySnapshot {
+        plugin_id: plugin_id.to_string(),
+        version: version.clone(),
+        capabilities: parse_version_capability_snapshot(plugin_id, &version, &permissions_json)?,
+        source: PluginPermissionFactSource::InstalledVersionSnapshot,
+    })
+}
+
+fn read_legacy_capability_authorization(
+    conn: &Connection,
+    plugin_id: &str,
+    capability: &str,
+) -> Result<LegacyCapabilityAuthorizationFact, AppError> {
+    let granted: Option<i64> = conn
+        .query_row(
+            "SELECT granted FROM plugin_permissions
+             WHERE plugin_id = ?1 AND permission = ?2",
+            params![plugin_id, capability],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let state = match granted {
+        Some(value) if value != 0 => LegacyCapabilityGrantState::Granted,
+        Some(_) => LegacyCapabilityGrantState::NotGrantedCompatible,
+        None => LegacyCapabilityGrantState::Missing,
+    };
+    Ok(LegacyCapabilityAuthorizationFact {
+        plugin_id: plugin_id.to_string(),
+        capability: capability.to_string(),
+        state,
+        source: PluginPermissionFactSource::LegacyPluginPermissions,
+    })
+}
+
 impl Database {
     /// 在同一连接锁内读取运行时授权所需的当前状态。
     ///
-    /// `manifest_json` 是当前活动版本的权威声明，`plugin_permissions.granted`
-    /// 是用户真实授权；本查询只读，不会创建、同步或恢复任何授权行。
+    /// `manifest_json` 是当前活动版本的权威声明；`plugin_permissions.granted` 仅作为
+    /// legacy 布尔授权兼容输入。本查询只读，不会创建、同步或恢复任何授权行。
     pub(crate) fn current_plugin_authorization_snapshot(
         &self,
         plugin_id: &str,
@@ -100,6 +261,67 @@ impl Database {
             current_version,
             grant_states,
         }))
+    }
+
+    /// 读取当前版本 Manifest 的 capability 声明，不代表用户授权。
+    pub fn current_manifest_capability_declaration(
+        &self,
+        plugin_id: &str,
+    ) -> Result<CurrentManifestCapabilityDeclaration, AppError> {
+        let conn = self.conn_lock()?;
+        read_current_manifest_capability_declaration(&conn, plugin_id)
+    }
+
+    /// 读取当前安装版本的 `permissions_json` capability 快照，不代表用户授权。
+    pub fn current_version_capability_snapshot(
+        &self,
+        plugin_id: &str,
+    ) -> Result<InstalledVersionCapabilitySnapshot, AppError> {
+        let conn = self.conn_lock()?;
+        read_current_version_capability_snapshot(&conn, plugin_id)
+    }
+
+    /// 读取单个 capability 的 legacy 布尔授权兼容事实。
+    pub fn current_legacy_capability_authorization(
+        &self,
+        plugin_id: &str,
+        capability: &str,
+    ) -> Result<LegacyCapabilityAuthorizationFact, AppError> {
+        let conn = self.conn_lock()?;
+        read_legacy_capability_authorization(&conn, plugin_id, capability)
+    }
+
+    /// 返回来源分离且 Manifest/版本快照语义一致的三类只读权限事实。
+    pub fn current_plugin_permission_facts(
+        &self,
+        plugin_id: &str,
+        capabilities: &[&str],
+    ) -> Result<CurrentPluginPermissionFacts, AppError> {
+        let mut conn = self.conn_lock()?;
+        // Mutex 串行化同一 Database 实例，deferred 事务再固定 WAL 中跨多次 SELECT 的读取快照，
+        // 避免其他 SQLite 连接在 Manifest、版本快照和多项 legacy grant 之间插入写入。
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let manifest_declaration = read_current_manifest_capability_declaration(&tx, plugin_id)?;
+        let version_snapshot = read_current_version_capability_snapshot(&tx, plugin_id)?;
+        if manifest_declaration.version != version_snapshot.version
+            || manifest_declaration.capabilities != version_snapshot.capabilities
+        {
+            return Err(AppError::PluginPermissionSnapshotMismatch {
+                plugin_id: plugin_id.to_string(),
+                version: version_snapshot.version,
+            });
+        }
+        let legacy_authorizations = capabilities
+            .iter()
+            .map(|capability| read_legacy_capability_authorization(&tx, plugin_id, capability))
+            .collect::<Result<Vec<_>, _>>()?;
+        let facts = CurrentPluginPermissionFacts {
+            manifest_declaration,
+            version_snapshot,
+            legacy_authorizations,
+        };
+        tx.commit()?;
+        Ok(facts)
     }
 
     pub fn current_plugin_version(&self, plugin_id: &str) -> Result<Option<String>, AppError> {
@@ -556,6 +778,17 @@ impl Database {
 mod tests {
     use super::*;
 
+    fn temporary_database_path(test_name: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "pomegranate-{test_name}-{}-{nonce}.db",
+            std::process::id()
+        ))
+    }
+
     fn manifest_with_permissions(permissions: &[&str]) -> PluginManifestV3 {
         serde_json::from_value(serde_json::json!({
             "schemaVersion": 3,
@@ -713,6 +946,420 @@ mod tests {
                 .expect("re-query missing permission"),
             None
         );
+    }
+
+    #[test]
+    fn permission_fact_contract_separates_sources_and_normalizes_semantic_sets() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let manifest = manifest_with_permissions(&["agents.invoke", "ai.invoke"]);
+        db.record_plugin_version(
+            &manifest,
+            "C:/test/facts",
+            "facts-hash",
+            &["ai.invoke".to_string()],
+        )
+        .expect("record current version");
+        db.conn_lock()
+            .expect("lock database")
+            .execute(
+                "UPDATE plugin_versions
+                 SET permissions_json = '[
+                   \"ai.invoke\",
+                   \"agents.invoke\"
+                 ]'
+                 WHERE plugin_id = ?1 AND is_current = 1",
+                [&manifest.id],
+            )
+            .expect("rewrite snapshot formatting");
+
+        let facts = db
+            .current_plugin_permission_facts(
+                &manifest.id,
+                &["ai.invoke", "agents.invoke", "credentials.use"],
+            )
+            .expect("read permission facts");
+        let expected = vec!["agents.invoke".to_string(), "ai.invoke".to_string()];
+        assert_eq!(facts.manifest_declaration.capabilities, expected);
+        assert_eq!(
+            facts.manifest_declaration.source,
+            PluginPermissionFactSource::CurrentManifest
+        );
+        assert_eq!(facts.version_snapshot.capabilities, expected);
+        assert_eq!(
+            facts.version_snapshot.source,
+            PluginPermissionFactSource::InstalledVersionSnapshot
+        );
+        assert_eq!(
+            facts
+                .legacy_authorizations
+                .iter()
+                .map(|fact| {
+                    (
+                        fact.capability.clone(),
+                        fact.state.clone(),
+                        fact.source.clone(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "ai.invoke".to_string(),
+                    LegacyCapabilityGrantState::Granted,
+                    PluginPermissionFactSource::LegacyPluginPermissions,
+                ),
+                (
+                    "agents.invoke".to_string(),
+                    LegacyCapabilityGrantState::NotGrantedCompatible,
+                    PluginPermissionFactSource::LegacyPluginPermissions,
+                ),
+                (
+                    "credentials.use".to_string(),
+                    LegacyCapabilityGrantState::Missing,
+                    PluginPermissionFactSource::LegacyPluginPermissions,
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn permission_fact_read_transaction_keeps_current_version_and_legacy_grants_consistent() {
+        let db_path = temporary_database_path("permission-facts-snapshot");
+        let db_path_string = db_path.to_string_lossy().into_owned();
+        let db = Database::init(&db_path_string).expect("create file database");
+
+        let old = manifest_with_permissions(&["ai.invoke", "agents.invoke"]);
+        db.record_plugin_version(
+            &old,
+            "C:/test/snapshot-v1",
+            "snapshot-v1-hash",
+            &["ai.invoke".to_string()],
+        )
+        .expect("record old version");
+        let mut new = old.clone();
+        new.version = "2.0.0".to_string();
+        new.permissions = vec!["credentials.use".to_string()];
+        db.record_plugin_version(
+            &new,
+            "C:/test/snapshot-v2",
+            "snapshot-v2-hash",
+            &["credentials.use".to_string()],
+        )
+        .expect("record new version");
+        db.switch_plugin_version(&old, "C:/test/snapshot-v1", "snapshot-v1-hash")
+            .expect("restore old current version");
+        {
+            let conn = db.conn_lock().expect("lock database");
+            conn.execute(
+                "INSERT INTO plugin_permissions
+                    (plugin_id, permission, granted, created_at, updated_at)
+                 VALUES (?1, 'ai.invoke', 1, datetime('now'), datetime('now'))
+                 ON CONFLICT(plugin_id, permission) DO UPDATE SET granted = 1",
+                [&old.id],
+            )
+            .expect("seed granted legacy capability");
+            conn.execute(
+                "INSERT INTO plugin_permissions
+                    (plugin_id, permission, granted, created_at, updated_at)
+                 VALUES (?1, 'agents.invoke', 0, datetime('now'), datetime('now'))
+                 ON CONFLICT(plugin_id, permission) DO UPDATE SET granted = 0",
+                [&old.id],
+            )
+            .expect("seed not-granted legacy capability");
+        }
+
+        let mut conn = db.conn_lock().expect("lock database");
+        let read_tx = conn
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .expect("start read transaction");
+        let manifest =
+            read_current_manifest_capability_declaration(&read_tx, &old.id).expect("read manifest");
+        assert_eq!(manifest.version, "1.0.0");
+
+        // 第二个 WAL 连接在第一次读取后切换 current 并同时改变多项 legacy grant。
+        // 后续读取仍必须停留在同一 SQLite 快照，不能拼接新旧状态。
+        let mut writer = Connection::open(&db_path).expect("open concurrent writer");
+        writer
+            .pragma_update(None, "foreign_keys", "ON")
+            .expect("enable writer foreign keys");
+        let writer_tx = writer.transaction().expect("start writer transaction");
+        writer_tx
+            .execute(
+                "UPDATE plugin_versions SET is_current = CASE version
+                    WHEN '1.0.0' THEN 0 WHEN '2.0.0' THEN 1 ELSE is_current END
+                 WHERE plugin_id = ?1",
+                [&old.id],
+            )
+            .expect("switch current version concurrently");
+        writer_tx
+            .execute(
+                "UPDATE plugin_permissions SET granted = CASE permission
+                    WHEN 'ai.invoke' THEN 0 WHEN 'agents.invoke' THEN 1 ELSE granted END
+                 WHERE plugin_id = ?1",
+                [&old.id],
+            )
+            .expect("change multiple legacy grants concurrently");
+        writer_tx.commit().expect("commit concurrent write");
+
+        let snapshot =
+            read_current_version_capability_snapshot(&read_tx, &old.id).expect("read snapshot");
+        let ai = read_legacy_capability_authorization(&read_tx, &old.id, "ai.invoke")
+            .expect("read ai grant");
+        let agents = read_legacy_capability_authorization(&read_tx, &old.id, "agents.invoke")
+            .expect("read agents grant");
+        assert_eq!(snapshot.version, manifest.version);
+        assert_eq!(snapshot.capabilities, manifest.capabilities);
+        assert_eq!(ai.state, LegacyCapabilityGrantState::Granted);
+        assert_eq!(
+            agents.state,
+            LegacyCapabilityGrantState::NotGrantedCompatible
+        );
+        read_tx.commit().expect("finish read transaction");
+        drop(conn);
+
+        let current = db
+            .current_plugin_permission_facts(&old.id, &["credentials.use"])
+            .expect("read new consistent aggregate");
+        assert_eq!(current.manifest_declaration.version, "2.0.0");
+        assert_eq!(current.version_snapshot.version, "2.0.0");
+        assert_eq!(
+            current.legacy_authorizations[0].state,
+            LegacyCapabilityGrantState::Granted
+        );
+
+        drop(writer);
+        drop(db);
+        for path in [
+            db_path.clone(),
+            std::path::PathBuf::from(format!("{}-wal", db_path.display())),
+            std::path::PathBuf::from(format!("{}-shm", db_path.display())),
+        ] {
+            if path.exists() {
+                std::fs::remove_file(path).expect("remove temporary database file");
+            }
+        }
+    }
+
+    #[test]
+    fn manifest_declaration_rejects_unknown_capability_through_dao() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let manifest = manifest_with_permissions(&["ai.invoke"]);
+        db.record_plugin_version(
+            &manifest,
+            "C:/test/manifest-unknown",
+            "manifest-unknown-hash",
+            &manifest.permissions,
+        )
+        .expect("record current version");
+        let mut manifest_value =
+            serde_json::to_value(&manifest).expect("serialize current manifest");
+        manifest_value["permissions"] = serde_json::json!(["unknown.capability"]);
+        let manifest_json =
+            serde_json::to_string(&manifest_value).expect("serialize invalid manifest");
+        db.conn_lock()
+            .expect("lock database")
+            .execute(
+                "UPDATE plugin_versions SET manifest_json = ?2
+                 WHERE plugin_id = ?1 AND is_current = 1",
+                params![manifest.id, manifest_json],
+            )
+            .expect("store unknown capability");
+
+        match db.current_manifest_capability_declaration(&manifest.id) {
+            Err(AppError::PluginManifestCapabilityDeclarationInvalid { reason, .. }) => {
+                assert!(reason.contains("未知 capability"));
+            }
+            other => panic!("expected invalid manifest capability error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn manifest_declaration_rejects_duplicate_capability_through_dao() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let manifest = manifest_with_permissions(&["ai.invoke"]);
+        db.record_plugin_version(
+            &manifest,
+            "C:/test/manifest-duplicate",
+            "manifest-duplicate-hash",
+            &manifest.permissions,
+        )
+        .expect("record current version");
+        let mut manifest_value =
+            serde_json::to_value(&manifest).expect("serialize current manifest");
+        manifest_value["permissions"] = serde_json::json!(["ai.invoke", "ai.invoke"]);
+        db.conn_lock()
+            .expect("lock database")
+            .execute(
+                "UPDATE plugin_versions SET manifest_json = ?2
+                 WHERE plugin_id = ?1 AND is_current = 1",
+                params![manifest.id, manifest_value.to_string()],
+            )
+            .expect("store duplicate capability");
+
+        match db.current_manifest_capability_declaration(&manifest.id) {
+            Err(AppError::PluginManifestCapabilityDeclarationInvalid { reason, .. }) => {
+                assert!(reason.contains("重复 capability"));
+            }
+            other => panic!("expected invalid manifest capability error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn version_snapshot_distinguishes_empty_and_missing() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let manifest = manifest_with_permissions(&[]);
+        db.record_plugin_version(&manifest, "C:/test/empty-facts", "empty-facts-hash", &[])
+            .expect("record empty current version");
+        assert!(db
+            .current_version_capability_snapshot(&manifest.id)
+            .expect("read empty snapshot")
+            .capabilities
+            .is_empty());
+
+        assert!(matches!(
+            db.current_version_capability_snapshot("com.firstwork.snapshot-missing"),
+            Err(AppError::PluginPermissionSnapshotMissing { .. })
+        ));
+    }
+
+    #[test]
+    fn version_snapshot_rejects_invalid_json_shape_elements_unknown_and_duplicates() {
+        let cases = [
+            ("{", "invalid-json"),
+            ("{}", "invalid-top-level"),
+            ("[1]", "invalid-element"),
+            ("[\"unknown.capability\"]", "unknown-capability"),
+            ("[\"ai.invoke\",\"ai.invoke\"]", "duplicate-capability"),
+        ];
+        for (permissions_json, suffix) in cases {
+            let db = Database::init(":memory:").expect("create in-memory database");
+            let mut manifest = manifest_with_permissions(&["ai.invoke"]);
+            manifest.id = format!("com.firstwork.{}", suffix);
+            db.record_plugin_version(
+                &manifest,
+                "C:/test/invalid-snapshot",
+                "invalid-snapshot-hash",
+                &manifest.permissions,
+            )
+            .expect("record current version");
+            db.conn_lock()
+                .expect("lock database")
+                .execute(
+                    "UPDATE plugin_versions SET permissions_json = ?2
+                     WHERE plugin_id = ?1 AND is_current = 1",
+                    params![manifest.id, permissions_json],
+                )
+                .expect("corrupt snapshot");
+            assert!(
+                matches!(
+                    db.current_version_capability_snapshot(&manifest.id),
+                    Err(AppError::PluginPermissionSnapshotInvalid { .. })
+                ),
+                "case {suffix} must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn permission_facts_reject_manifest_and_snapshot_semantic_mismatch() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let manifest = manifest_with_permissions(&["ai.invoke", "agents.invoke"]);
+        db.record_plugin_version(
+            &manifest,
+            "C:/test/mismatch",
+            "mismatch-hash",
+            &manifest.permissions,
+        )
+        .expect("record current version");
+        db.conn_lock()
+            .expect("lock database")
+            .execute(
+                "UPDATE plugin_versions SET permissions_json = '[\"ai.invoke\"]'
+                 WHERE plugin_id = ?1 AND is_current = 1",
+                [&manifest.id],
+            )
+            .expect("remove snapshot capability");
+        assert!(matches!(
+            db.current_plugin_permission_facts(&manifest.id, &["ai.invoke"]),
+            Err(AppError::PluginPermissionSnapshotMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn manifest_declaration_errors_are_distinct_from_snapshot_and_grant_errors() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let manifest = manifest_with_permissions(&["ai.invoke"]);
+        db.record_plugin_version(
+            &manifest,
+            "C:/test/manifest-invalid",
+            "manifest-invalid-hash",
+            &[],
+        )
+        .expect("record current version");
+        db.conn_lock()
+            .expect("lock database")
+            .execute(
+                "UPDATE plugin_versions SET manifest_json = '{'
+                 WHERE plugin_id = ?1 AND is_current = 1",
+                [&manifest.id],
+            )
+            .expect("corrupt manifest");
+        assert!(matches!(
+            db.current_manifest_capability_declaration(&manifest.id),
+            Err(AppError::PluginManifestCapabilityDeclarationInvalid { .. })
+        ));
+        assert!(matches!(
+            AppError::PluginCapabilityNotDeclared {
+                plugin_id: manifest.id.clone(),
+                capability: "agents.invoke".to_string(),
+            },
+            AppError::PluginCapabilityNotDeclared { .. }
+        ));
+        assert!(matches!(
+            AppError::PluginPermissionDenied {
+                plugin_id: Some(manifest.id),
+                required_permission: Some("ai.invoke".to_string()),
+            },
+            AppError::PluginPermissionDenied { .. }
+        ));
+    }
+
+    #[test]
+    fn permission_fact_queries_have_no_permission_write_side_effects() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let manifest = manifest_with_permissions(&["ai.invoke", "agents.invoke"]);
+        db.record_plugin_version(
+            &manifest,
+            "C:/test/read-only-facts",
+            "read-only-facts-hash",
+            &["ai.invoke".to_string()],
+        )
+        .expect("record current version");
+        let read_rows = || {
+            let conn = db.conn_lock().expect("lock database");
+            let mut statement = conn
+                .prepare(
+                    "SELECT permission, granted FROM plugin_permissions
+                     WHERE plugin_id = ?1 ORDER BY permission",
+                )
+                .expect("prepare permission rows");
+            statement
+                .query_map([&manifest.id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .expect("query permission rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("collect permission rows")
+        };
+        let before = read_rows();
+        db.current_manifest_capability_declaration(&manifest.id)
+            .expect("read manifest declaration");
+        db.current_version_capability_snapshot(&manifest.id)
+            .expect("read version snapshot");
+        db.current_legacy_capability_authorization(&manifest.id, "ai.invoke")
+            .expect("read legacy grant");
+        db.current_plugin_permission_facts(&manifest.id, &["ai.invoke", "agents.invoke"])
+            .expect("read all permission facts");
+        assert_eq!(before, read_rows());
     }
 
     #[test]

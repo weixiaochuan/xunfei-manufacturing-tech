@@ -33,6 +33,22 @@ pub enum AppError {
         capability: String,
     },
 
+    #[error("插件当前版本 Manifest 权限声明无效: plugin={plugin_id} reason={reason}")]
+    PluginManifestCapabilityDeclarationInvalid { plugin_id: String, reason: String },
+
+    #[error("插件当前版本权限快照缺失: plugin={plugin_id}")]
+    PluginPermissionSnapshotMissing { plugin_id: String },
+
+    #[error("插件当前版本权限快照损坏: plugin={plugin_id} version={version} reason={reason}")]
+    PluginPermissionSnapshotInvalid {
+        plugin_id: String,
+        version: String,
+        reason: String,
+    },
+
+    #[error("插件当前 Manifest 与版本权限快照语义不一致: plugin={plugin_id} version={version}")]
+    PluginPermissionSnapshotMismatch { plugin_id: String, version: String },
+
     #[error("{0}")]
     Custom(String),
 }
