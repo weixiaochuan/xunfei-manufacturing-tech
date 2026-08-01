@@ -314,6 +314,7 @@ pub(super) fn list_current_formal_plugin_capability_authorizations_for_actor(
     manifest
         .capabilities
         .iter()
+        .filter(|capability_id| capability_id.as_str() != "ai.context.augment")
         .map(|capability_id| {
             let semantic_version = resolve_capability_semantic_version(capability_id)?;
             view_for_capability(

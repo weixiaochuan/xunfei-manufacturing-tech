@@ -43,6 +43,7 @@ import { pluginManager } from "@/services/pluginManager";
 import { notifyDeclarativePluginToolbarChanged } from "@/services/declarativePluginEvents";
 import { PLUGIN_CAPABILITY_PRESENTATION } from "@/generated/pluginCapabilities";
 import { ExactResourceAuthorizationPanel } from "@/components/plugin/ExactResourceAuthorizationPanel";
+import { DeclarativeFeatureAuthorizationPanel } from "@/components/plugin/DeclarativeFeatureAuthorizationPanel";
 
 const { Text, Paragraph } = Typography;
 
@@ -844,7 +845,7 @@ export default function PluginsPage() {
 
   async function grantAll(plugin: PluginInfo) {
     const pending = plugin.permissions.filter(
-      (p) => !plugin.grantedPermissions.includes(p),
+      (p) => p !== "ai.context.augment" && !plugin.grantedPermissions.includes(p),
     );
     if (pending.length === 0) return;
     try {
@@ -862,7 +863,7 @@ export default function PluginsPage() {
   async function revokeAll(plugin: PluginInfo) {
     if (plugin.grantedPermissions.length === 0) return;
     try {
-      for (const capabilityId of plugin.grantedPermissions) {
+      for (const capabilityId of plugin.grantedPermissions.filter((id) => id !== "ai.context.augment")) {
         await pluginApi.revokeFormalAuthorization(plugin.id, capabilityId);
       }
       notifyDeclarativePluginToolbarChanged();
@@ -877,8 +878,8 @@ export default function PluginsPage() {
     const undecided = (plugin.formalAuthorizations ?? [])
       .filter(
         (authorization) =>
-          authorization.status === "missing" ||
-          authorization.status === "pending",
+          authorization.capabilityId !== "ai.context.augment" &&
+          (authorization.status === "missing" || authorization.status === "pending"),
       )
       .map((authorization) => authorization.capabilityId);
     if (undecided.length === 0) return;
@@ -1218,6 +1219,20 @@ export default function PluginsPage() {
                     })}
                   </Space>
                 )}
+              </div>
+            </div>
+
+            <div>
+              <Text strong>声明式上下文增强授权</Text>
+              <div style={{ marginTop: 8 }}>
+                <DeclarativeFeatureAuthorizationPanel
+                  pluginId={selected.id}
+                  canAuthorize={
+                    selected.enabled &&
+                    selected.status === "installed" &&
+                    selected.canExecute
+                  }
+                />
               </div>
             </div>
 

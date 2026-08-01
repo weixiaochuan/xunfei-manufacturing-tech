@@ -1077,6 +1077,20 @@ pub fn run() {
             commands::plugin_authorizations::list_exact_authorization_catalog,
             #[cfg(desktop)]
             commands::plugin_authorizations::revoke_exact_resource_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::request_declarative_feature_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::grant_declarative_feature_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::deny_declarative_feature_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::revoke_declarative_feature_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::expire_declarative_feature_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::query_declarative_feature_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::list_declarative_feature_authorizations,
             commands::plugins::get_plugin_settings,
             commands::plugins::set_plugin_settings,
             commands::plugins::read_plugin_asset,

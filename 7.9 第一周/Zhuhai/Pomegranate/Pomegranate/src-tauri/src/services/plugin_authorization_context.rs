@@ -5,7 +5,7 @@ use crate::database::Database;
 use crate::error::AppError;
 use crate::models::plugin_platform::{
     PluginAuthorizationContext, PluginAuthorizationScope, PluginAuthorizationSubject,
-    PluginAuthorizationSubjectKind,
+    PluginAuthorizationSubjectKind, PluginManifestV3,
 };
 use crate::services::hash::sha256_hex;
 use crate::services::plugin_capabilities::{
@@ -86,6 +86,52 @@ impl fmt::Debug for TrustedResourceScope {
 impl TrustedResourceScope {
     pub(super) fn global() -> Self {
         Self::Global
+    }
+
+    /// 仅从当前可信 Manifest 中重新定位声明式 enhancement，并据此构造 feature scope。
+    ///
+    /// 调用方只能提交 contribution ID；scene、feature、hook、handler 与插件版本均进入
+    /// 后端计算的指纹，避免 WebView 通过拼接 scope 扩大授权范围。
+    pub(super) fn for_declarative_enhancement(
+        manifest: &PluginManifestV3,
+        contribution_id: &str,
+    ) -> Result<Self, AppError> {
+        let policy = canonical_capability_policy("ai.context.augment")
+            .map_err(|_| AppError::PluginAuthorizationScopeInvalid {
+                reason: "registry_scope_policy_invalid",
+            })?
+            .ok_or(AppError::PluginAuthorizationCapabilityInvalid {
+                reason: "capability_not_admitted",
+            })?;
+        if !matches!(policy.status.as_str(), "active" | "restricted")
+            || policy.scope_type != CanonicalScopeType::Feature
+            || policy.scope_schema_version != 1
+        {
+            return Err(AppError::PluginAuthorizationScopeMismatch);
+        }
+        if !manifest
+            .permissions
+            .iter()
+            .any(|permission| permission == "ai.context.augment")
+        {
+            return Err(AppError::PluginAuthorizationManifestNotDeclared);
+        }
+        let contribution = manifest
+            .contributes
+            .enhancements
+            .iter()
+            .find(|contribution| contribution.id == contribution_id)
+            .ok_or_else(|| AppError::InvalidInput("声明式贡献不存在或不可访问".into()))?;
+        let canonical_contribution = serde_json::to_string(&(
+            "declarative-context-augment-v1",
+            &manifest.version,
+            contribution,
+        ))?;
+        Ok(Self::Feature(FeatureScope {
+            plugin_id: manifest.id.clone(),
+            feature_id: contribution.id.clone(),
+            contribution_fingerprint: sha256_hex(&canonical_contribution),
+        }))
     }
 
     pub(super) fn for_credential(

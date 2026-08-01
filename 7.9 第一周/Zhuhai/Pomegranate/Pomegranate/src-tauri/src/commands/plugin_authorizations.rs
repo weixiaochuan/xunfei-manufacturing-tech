@@ -5,7 +5,137 @@ use crate::account::AccountState;
 use crate::models::{CurrentPluginCapabilityAuthorization, PluginCapabilityAuthorization};
 use crate::services::plugin_authorizations;
 use crate::services::plugin_exact_authorizations;
+use crate::services::plugin_feature_authorizations::{self, FeatureAuthorizationAction};
 use crate::state::AppState;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FeatureAuthorizationRequest {
+    pub plugin_id: String,
+    pub contribution_id: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FeatureAuthorizationTargetRequest {
+    pub plugin_id: String,
+    pub contribution_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FeatureAuthorizationListRequest {
+    pub plugin_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeatureAuthorizationResponse {
+    pub contribution_id: String,
+    pub title: String,
+    pub hook: String,
+    pub scenes: Vec<String>,
+    pub features: Vec<String>,
+    pub status: crate::models::CurrentPluginCapabilityAuthorizationStatus,
+    pub effective: bool,
+    pub expires_at: Option<String>,
+}
+
+impl From<plugin_feature_authorizations::FeatureAuthorizationView>
+    for FeatureAuthorizationResponse
+{
+    fn from(value: plugin_feature_authorizations::FeatureAuthorizationView) -> Self {
+        Self {
+            contribution_id: value.contribution_id,
+            title: value.title,
+            hook: value.hook,
+            scenes: value.scenes,
+            features: value.features,
+            status: value.authorization.status,
+            effective: value.authorization.effective,
+            expires_at: value.authorization.expires_at,
+        }
+    }
+}
+
+macro_rules! feature_mutation_command {
+    ($name:ident, $action:expr) => {
+        #[tauri::command]
+        pub async fn $name(
+            state: State<'_, AppState>,
+            account: State<'_, AccountState>,
+            request: FeatureAuthorizationRequest,
+        ) -> Result<FeatureAuthorizationResponse, String> {
+            plugin_feature_authorizations::mutate_feature_authorization(
+                &state.db,
+                &account,
+                &request.plugin_id,
+                &request.contribution_id,
+                $action,
+                request.expires_at,
+            )
+            .await
+            .map(Into::into)
+            .map_err(Into::into)
+        }
+    };
+}
+
+feature_mutation_command!(
+    request_declarative_feature_authorization,
+    FeatureAuthorizationAction::Request
+);
+feature_mutation_command!(
+    grant_declarative_feature_authorization,
+    FeatureAuthorizationAction::Grant
+);
+feature_mutation_command!(
+    deny_declarative_feature_authorization,
+    FeatureAuthorizationAction::Deny
+);
+feature_mutation_command!(
+    revoke_declarative_feature_authorization,
+    FeatureAuthorizationAction::Revoke
+);
+feature_mutation_command!(
+    expire_declarative_feature_authorization,
+    FeatureAuthorizationAction::Expire
+);
+
+#[tauri::command]
+pub async fn query_declarative_feature_authorization(
+    state: State<'_, AppState>,
+    account: State<'_, AccountState>,
+    request: FeatureAuthorizationTargetRequest,
+) -> Result<FeatureAuthorizationResponse, String> {
+    plugin_feature_authorizations::query_feature_authorization(
+        &state.db,
+        &account,
+        &request.plugin_id,
+        &request.contribution_id,
+    )
+    .await
+    .map(Into::into)
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+pub async fn list_declarative_feature_authorizations(
+    state: State<'_, AppState>,
+    account: State<'_, AccountState>,
+    request: FeatureAuthorizationListRequest,
+) -> Result<Vec<FeatureAuthorizationResponse>, String> {
+    plugin_feature_authorizations::list_feature_authorizations(
+        &state.db,
+        &account,
+        &request.plugin_id,
+    )
+    .await
+    .map(|items| items.into_iter().map(Into::into).collect())
+    .map_err(Into::into)
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -370,5 +500,37 @@ mod exact_resource_authorization_dto_tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn feature_dtos_reject_frontend_scope_and_selector_expansion() {
+        let valid = serde_json::json!({
+            "pluginId": "plugin-a",
+            "contributionId": "enhancement-a",
+            "expiresAt": "2099-01-01T00:00:00Z"
+        });
+        assert!(serde_json::from_value::<FeatureAuthorizationRequest>(valid).is_ok());
+        for forbidden in [
+            "capabilityId",
+            "scene",
+            "feature",
+            "hook",
+            "scope",
+            "scopeKind",
+            "scopeKey",
+            "subject",
+            "installation",
+            "owner",
+        ] {
+            let mut value = serde_json::json!({
+                "pluginId": "plugin-a",
+                "contributionId": "enhancement-a"
+            });
+            value[forbidden] = serde_json::json!("forged");
+            assert!(
+                serde_json::from_value::<FeatureAuthorizationRequest>(value).is_err(),
+                "forbidden field {forbidden} must be rejected"
+            );
+        }
     }
 }

@@ -310,7 +310,7 @@ fn catalog_for_owner(
     })
 }
 
-fn validate_exact_authorization_expiration(
+pub(super) fn validate_exact_authorization_expiration(
     expires_at: Option<String>,
     now: DateTime<Utc>,
 ) -> Result<Option<String>, AppError> {
@@ -461,7 +461,7 @@ fn catalog_scope_available(
     }
 }
 
-fn validate_plugin_grant_target(
+pub(super) fn validate_plugin_grant_target(
     db: &Database,
     plugin_id: &str,
     capability_id: &str,
