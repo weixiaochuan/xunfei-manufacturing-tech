@@ -1074,6 +1074,8 @@ pub fn run() {
             #[cfg(desktop)]
             commands::plugin_authorizations::list_exact_resource_authorizations,
             #[cfg(desktop)]
+            commands::plugin_authorizations::list_exact_authorization_catalog,
+            #[cfg(desktop)]
             commands::plugin_authorizations::revoke_exact_resource_authorization,
             commands::plugins::get_plugin_settings,
             commands::plugins::set_plugin_settings,

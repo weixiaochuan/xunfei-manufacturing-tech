@@ -42,6 +42,7 @@ import type {
 import { pluginManager } from "@/services/pluginManager";
 import { notifyDeclarativePluginToolbarChanged } from "@/services/declarativePluginEvents";
 import { PLUGIN_CAPABILITY_PRESENTATION } from "@/generated/pluginCapabilities";
+import { ExactResourceAuthorizationPanel } from "@/components/plugin/ExactResourceAuthorizationPanel";
 
 const { Text, Paragraph } = Typography;
 
@@ -1217,6 +1218,20 @@ export default function PluginsPage() {
                     })}
                   </Space>
                 )}
+              </div>
+            </div>
+
+            <div>
+              <Text strong>具体资源授权</Text>
+              <div style={{ marginTop: 8 }}>
+                <ExactResourceAuthorizationPanel
+                  pluginId={selected.id}
+                  canAuthorize={
+                    selected.enabled &&
+                    selected.status === "installed" &&
+                    selected.canExecute
+                  }
+                />
               </div>
             </div>
 

@@ -53,6 +53,23 @@ pub struct ExactResourceAuthorizationResponse {
     pub expires_at: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExactAuthorizationResourceOptionResponse {
+    pub resource_kind: String,
+    pub resource_id: String,
+    pub display_name: String,
+    pub compatible_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExactAuthorizationCatalogResponse {
+    pub capability_ids: Vec<String>,
+    pub resources: Vec<ExactAuthorizationResourceOptionResponse>,
+    pub max_duration_hours: i64,
+}
+
 impl From<plugin_exact_authorizations::ExactAuthorizationView>
     for ExactResourceAuthorizationResponse
 {
@@ -68,6 +85,43 @@ impl From<plugin_exact_authorizations::ExactAuthorizationView>
             expires_at: value.expires_at,
         }
     }
+}
+
+impl From<plugin_exact_authorizations::ExactAuthorizationCatalog>
+    for ExactAuthorizationCatalogResponse
+{
+    fn from(value: plugin_exact_authorizations::ExactAuthorizationCatalog) -> Self {
+        Self {
+            capability_ids: value.capability_ids,
+            resources: value
+                .resources
+                .into_iter()
+                .map(|resource| ExactAuthorizationResourceOptionResponse {
+                    resource_kind: resource.resource_kind,
+                    resource_id: resource.resource_id,
+                    display_name: resource.display_name,
+                    compatible_capabilities: resource.compatible_capabilities,
+                })
+                .collect(),
+            max_duration_hours: value.max_duration_hours,
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn list_exact_authorization_catalog(
+    state: State<'_, AppState>,
+    account: State<'_, AccountState>,
+    request: ExactResourceAuthorizationListRequest,
+) -> Result<ExactAuthorizationCatalogResponse, String> {
+    plugin_exact_authorizations::list_exact_authorization_catalog(
+        &state.db,
+        &account,
+        &request.plugin_id,
+    )
+    .await
+    .map(Into::into)
+    .map_err(Into::into)
 }
 
 #[tauri::command]

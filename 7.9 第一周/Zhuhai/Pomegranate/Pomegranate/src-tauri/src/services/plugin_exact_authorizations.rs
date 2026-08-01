@@ -5,7 +5,9 @@ use crate::models::{
     CurrentPluginCapabilityAuthorizationStatus, PluginAuthorizationContext,
     PluginAuthorizationState, PluginAuthorizationSubject,
 };
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 
+use super::credentials::CredentialService;
 use super::plugin_authorization_context::{
     resolve_host_installation_context, resolve_verified_platform_subject, TrustedResourceScope,
 };
@@ -22,8 +24,10 @@ use super::resource_resolution::external_agent::{
     resolve_external_agent, ExternalAgentRuntimeKind,
 };
 use super::resource_resolution::{ResolverError, UntrustedResourceRef};
+use super::xingchen_agent::XingchenAgentService;
 
 const AUTHORIZATION_HANDLE_PREFIX: &str = "exact-auth-v1:";
+const MAX_EXACT_AUTHORIZATION_HOURS: i64 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExactAuthorizableResourceKind {
@@ -61,6 +65,30 @@ pub(crate) struct ExactAuthorizationView {
     pub(crate) effective: bool,
     pub(crate) available: Option<bool>,
     pub(crate) expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExactAuthorizationResourceOption {
+    pub(crate) resource_kind: String,
+    pub(crate) resource_id: String,
+    pub(crate) display_name: String,
+    pub(crate) compatible_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExactAuthorizationCatalog {
+    pub(crate) capability_ids: Vec<String>,
+    pub(crate) resources: Vec<ExactAuthorizationResourceOption>,
+    pub(crate) max_duration_hours: i64,
+}
+
+pub(crate) async fn list_exact_authorization_catalog(
+    db: &Database,
+    account: &AccountState,
+    plugin_id: &str,
+) -> Result<ExactAuthorizationCatalog, AppError> {
+    let (owner, _, _) = resolve_actor(db, account).await?;
+    catalog_for_owner(db, &owner, plugin_id)
 }
 
 pub(crate) async fn grant_exact_resource_authorization(
@@ -163,6 +191,7 @@ fn grant_for_owner(
 ) -> Result<ExactAuthorizationView, AppError> {
     validate_plugin_grant_target(db, plugin_id, capability_id)?;
     let scope = resolve_scope(db, owner, capability_id, resource_kind, resource_id)?;
+    let expires_at = validate_exact_authorization_expiration(expires_at, Utc::now())?;
     let record = grant_for_actor_and_scope(
         db,
         subject,
@@ -173,6 +202,135 @@ fn grant_for_owner(
         expires_at,
     )?;
     Ok(view_from_record(&record, resource_kind.as_str(), true))
+}
+
+fn catalog_for_owner(
+    db: &Database,
+    owner: &ResourceOwner,
+    plugin_id: &str,
+) -> Result<ExactAuthorizationCatalog, AppError> {
+    let snapshot = db
+        .current_plugin_authorization_snapshot(plugin_id, &[])?
+        .ok_or(AppError::PluginAuthorizationContextInvalid {
+            reason: "plugin_not_installed",
+        })?;
+    let current = snapshot
+        .current_version
+        .ok_or(AppError::PluginAuthorizationContextInvalid {
+            reason: "plugin_current_version_missing",
+        })?;
+    let mut capability_ids = Vec::new();
+    for capability_id in ["credentials.use", "agents.invoke", "network.xingchen"] {
+        if current
+            .manifest
+            .permissions
+            .iter()
+            .any(|permission| permission == capability_id)
+        {
+            validate_plugin_grant_target(db, plugin_id, capability_id)?;
+            capability_ids.push(capability_id.to_string());
+        }
+    }
+
+    let mut resources = Vec::new();
+    if capability_ids.iter().any(|id| id == "credentials.use") {
+        for credential in CredentialService::list(db, owner)? {
+            if catalog_scope_available(resolve_scope(
+                db,
+                owner,
+                "credentials.use",
+                ExactAuthorizableResourceKind::Credential,
+                &credential.id,
+            ))? {
+                resources.push(ExactAuthorizationResourceOption {
+                    resource_kind: "credential".to_string(),
+                    resource_id: credential.id,
+                    display_name: credential.label,
+                    compatible_capabilities: vec!["credentials.use".to_string()],
+                });
+            }
+        }
+    }
+
+    let agent_capabilities: Vec<String> = capability_ids
+        .iter()
+        .filter(|id| matches!(id.as_str(), "agents.invoke" | "network.xingchen"))
+        .cloned()
+        .collect();
+    if !agent_capabilities.is_empty() {
+        for agent in XingchenAgentService::list_agents(db, owner)? {
+            let mut resolved_kind = None;
+            for kind in [
+                ExactAuthorizableResourceKind::ExternalAgent,
+                ExactAuthorizableResourceKind::Workflow,
+            ] {
+                for capability_id in &agent_capabilities {
+                    if catalog_scope_available(resolve_scope(
+                        db,
+                        owner,
+                        capability_id,
+                        kind,
+                        &agent.id,
+                    ))? {
+                        resolved_kind = Some(kind);
+                        break;
+                    }
+                }
+                if resolved_kind.is_some() {
+                    break;
+                }
+            }
+            if let Some(kind) = resolved_kind {
+                let mut compatible_capabilities = Vec::new();
+                for capability_id in &agent_capabilities {
+                    if catalog_scope_available(resolve_scope(
+                        db,
+                        owner,
+                        capability_id,
+                        kind,
+                        &agent.id,
+                    ))? {
+                        compatible_capabilities.push(capability_id.clone());
+                    }
+                }
+                resources.push(ExactAuthorizationResourceOption {
+                    resource_kind: kind.as_str().to_string(),
+                    resource_id: agent.id,
+                    display_name: agent.name,
+                    compatible_capabilities,
+                });
+            }
+        }
+    }
+
+    Ok(ExactAuthorizationCatalog {
+        capability_ids,
+        resources,
+        max_duration_hours: MAX_EXACT_AUTHORIZATION_HOURS,
+    })
+}
+
+fn validate_exact_authorization_expiration(
+    expires_at: Option<String>,
+    now: DateTime<Utc>,
+) -> Result<Option<String>, AppError> {
+    let raw = expires_at.ok_or_else(|| {
+        AppError::InvalidInput("具体资源授权必须选择不超过 24 小时的有效期".to_string())
+    })?;
+    let expires = DateTime::parse_from_rfc3339(&raw)
+        .map_err(|_| AppError::InvalidInput("授权到期时间格式无效".to_string()))?
+        .with_timezone(&Utc);
+    if expires <= now {
+        return Err(AppError::InvalidInput(
+            "授权到期时间必须晚于当前时间".to_string(),
+        ));
+    }
+    if expires > now + Duration::hours(MAX_EXACT_AUTHORIZATION_HOURS) {
+        return Err(AppError::InvalidInput(
+            "具体资源授权最长为 24 小时".to_string(),
+        ));
+    }
+    Ok(Some(expires.to_rfc3339_opts(SecondsFormat::Secs, true)))
 }
 
 fn query_for_owner(
@@ -291,6 +449,18 @@ fn resolver_error(error: ResolverError) -> AppError {
     AppError::InvalidInput(error.public_message().to_string())
 }
 
+fn catalog_scope_available(
+    result: Result<TrustedResourceScope, AppError>,
+) -> Result<bool, AppError> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(AppError::InvalidInput(message)) if message == "资源不存在或不可访问" => {
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn validate_plugin_grant_target(
     db: &Database,
     plugin_id: &str,
@@ -404,12 +574,28 @@ fn view_from_record(
     resource_kind: &str,
     available: bool,
 ) -> ExactAuthorizationView {
-    let status = match record.state {
-        PluginAuthorizationState::Pending => CurrentPluginCapabilityAuthorizationStatus::Pending,
-        PluginAuthorizationState::Granted => CurrentPluginCapabilityAuthorizationStatus::Granted,
-        PluginAuthorizationState::Denied => CurrentPluginCapabilityAuthorizationStatus::Denied,
-        PluginAuthorizationState::Revoked => CurrentPluginCapabilityAuthorizationStatus::Revoked,
-        PluginAuthorizationState::Expired => CurrentPluginCapabilityAuthorizationStatus::Expired,
+    let expired = record.expires_at.as_ref().is_some_and(|value| {
+        DateTime::parse_from_rfc3339(value)
+            .map(|expires| expires.with_timezone(&Utc) <= Utc::now())
+            .unwrap_or(true)
+    });
+    let status = match (record.state, expired) {
+        (PluginAuthorizationState::Granted, true) => {
+            CurrentPluginCapabilityAuthorizationStatus::Expired
+        }
+        (PluginAuthorizationState::Pending, _) => {
+            CurrentPluginCapabilityAuthorizationStatus::Pending
+        }
+        (PluginAuthorizationState::Granted, false) => {
+            CurrentPluginCapabilityAuthorizationStatus::Granted
+        }
+        (PluginAuthorizationState::Denied, _) => CurrentPluginCapabilityAuthorizationStatus::Denied,
+        (PluginAuthorizationState::Revoked, _) => {
+            CurrentPluginCapabilityAuthorizationStatus::Revoked
+        }
+        (PluginAuthorizationState::Expired, _) => {
+            CurrentPluginCapabilityAuthorizationStatus::Expired
+        }
     };
     ExactAuthorizationView {
         authorization_id: Some(encode_authorization_handle(record.id)),
@@ -644,7 +830,7 @@ mod tests {
             capability,
             kind,
             id,
-            None,
+            Some((Utc::now() + Duration::hours(1)).to_rfc3339()),
         )
     }
 
@@ -973,5 +1159,85 @@ mod tests {
             assert!(decode_authorization_handle(value).is_err(), "{value}");
         }
         assert_eq!(decode_authorization_handle("exact-auth-v1:2a").unwrap(), 42);
+    }
+
+    #[test]
+    fn exact_expiration_is_backend_bounded_and_canonical() {
+        let now = Utc::now();
+        assert!(validate_exact_authorization_expiration(None, now).is_err());
+        assert!(validate_exact_authorization_expiration(Some("invalid".into()), now).is_err());
+        assert!(validate_exact_authorization_expiration(
+            Some((now - Duration::seconds(1)).to_rfc3339()),
+            now,
+        )
+        .is_err());
+        assert!(validate_exact_authorization_expiration(
+            Some((now + Duration::hours(25)).to_rfc3339()),
+            now,
+        )
+        .is_err());
+        assert_eq!(
+            validate_exact_authorization_expiration(
+                Some((now + Duration::hours(1)).to_rfc3339()),
+                now,
+            )
+            .unwrap(),
+            Some((now + Duration::hours(1)).to_rfc3339_opts(SecondsFormat::Secs, true)),
+        );
+    }
+
+    #[test]
+    fn catalog_only_returns_resolver_verified_safe_resource_summaries() {
+        let fixture = setup_fixture();
+        seed_credential(&fixture, "credential-owned", Some(&fixture.owner));
+        seed_credential(&fixture, "credential-legacy", None);
+        seed_agent(&fixture, "agent-owned", false, Some(&fixture.owner));
+        seed_agent(&fixture, "workflow-owned", true, Some(&fixture.owner));
+
+        let catalog = catalog_for_owner(&fixture.db, &fixture.owner, PLUGIN_ID).unwrap();
+        assert_eq!(catalog.max_duration_hours, 24);
+        assert_eq!(catalog.capability_ids.len(), 3);
+        assert!(catalog.resources.iter().any(|resource| {
+            resource.resource_kind == "credential"
+                && resource.resource_id == "credential-owned"
+                && resource.display_name == "safe label"
+                && resource.compatible_capabilities == ["credentials.use"]
+        }));
+        assert!(catalog.resources.iter().any(|resource| {
+            resource.resource_kind == "external-agent"
+                && resource.resource_id == "agent-owned"
+                && resource
+                    .compatible_capabilities
+                    .contains(&"agents.invoke".to_string())
+                && resource
+                    .compatible_capabilities
+                    .contains(&"network.xingchen".to_string())
+        }));
+        assert!(catalog.resources.iter().any(|resource| {
+            resource.resource_kind == "workflow" && resource.resource_id == "workflow-owned"
+        }));
+        assert!(!catalog
+            .resources
+            .iter()
+            .any(|resource| resource.resource_id == "credential-legacy"));
+        let debug = format!("{catalog:?}");
+        assert!(!debug.contains("secret-must-never-leak"));
+        assert!(!debug.contains(fixture.owner.platform_subject_id()));
+        assert!(!debug.contains(fixture.owner.host_installation_id()));
+    }
+
+    #[test]
+    fn catalog_propagates_backend_failure_instead_of_returning_an_empty_catalog() {
+        let fixture = setup_fixture();
+        fixture
+            .db
+            .conn_lock()
+            .unwrap()
+            .execute("DROP TABLE credentials", [])
+            .unwrap();
+
+        let error = catalog_for_owner(&fixture.db, &fixture.owner, PLUGIN_ID).unwrap_err();
+        assert!(!error.to_string().contains("secret"));
+        assert_ne!(error.to_string(), "参数无效: 资源不存在或不可访问");
     }
 }
