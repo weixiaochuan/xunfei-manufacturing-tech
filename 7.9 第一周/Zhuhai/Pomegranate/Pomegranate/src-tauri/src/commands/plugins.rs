@@ -414,9 +414,14 @@ pub async fn plugin_feature_invoke_xingchen(
     let audit_request_id = format!("plugin-feature-{}", uuid::Uuid::new_v4());
     let spec = PluginPlatformService::prepare_feature_invocation(
         &state.db,
+        &account,
+        &state.plugin_rate_limiter,
+        &owner,
         &input.plugin_id,
         &input.feature_id,
+        &input.external_agent_id,
     )
+    .await
     .map_err(|error| error.to_string())?;
     let plugin_id = input.plugin_id.clone();
     let feature_id = input.feature_id.clone();

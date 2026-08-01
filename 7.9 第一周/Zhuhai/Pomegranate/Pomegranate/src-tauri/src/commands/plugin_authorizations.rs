@@ -33,6 +33,8 @@ pub struct FeatureAuthorizationListRequest {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeatureAuthorizationResponse {
+    pub capability_id: String,
+    pub target_kind: String,
     pub contribution_id: String,
     pub title: String,
     pub hook: String,
@@ -48,6 +50,8 @@ impl From<plugin_feature_authorizations::FeatureAuthorizationView>
 {
     fn from(value: plugin_feature_authorizations::FeatureAuthorizationView) -> Self {
         Self {
+            capability_id: value.capability_id,
+            target_kind: value.target_kind.to_string(),
             contribution_id: value.contribution_id,
             title: value.title,
             hook: value.hook,

@@ -18,10 +18,10 @@ use super::plugin_exact_authorizations::{
     validate_exact_authorization_expiration, validate_plugin_grant_target,
 };
 
-const CAPABILITY_ID: &str = "ai.context.augment";
-
 #[derive(Debug, Clone)]
 pub(crate) struct FeatureAuthorizationView {
+    pub(crate) capability_id: String,
+    pub(crate) target_kind: &'static str,
     pub(crate) contribution_id: String,
     pub(crate) title: String,
     pub(crate) hook: String,
@@ -39,6 +39,95 @@ pub(crate) enum FeatureAuthorizationAction {
     Expire,
 }
 
+#[derive(Clone, Copy)]
+struct FeatureTarget<'a> {
+    capability_id: &'static str,
+    target_kind: &'static str,
+    contribution_id: &'a str,
+    title: &'a str,
+    hook: &'static str,
+    scenes: &'a [crate::models::PluginScene],
+    features: &'a [String],
+}
+
+impl FeatureTarget<'_> {
+    fn scope(&self, manifest: &PluginManifestV3) -> Result<TrustedResourceScope, AppError> {
+        match self.capability_id {
+            "ai.context.augment" => {
+                TrustedResourceScope::for_declarative_enhancement(manifest, self.contribution_id)
+            }
+            "ai.invoke" => {
+                TrustedResourceScope::for_xingchen_feature(manifest, self.contribution_id)
+            }
+            _ => Err(AppError::PluginAuthorizationCapabilityInvalid {
+                reason: "capability_not_admitted",
+            }),
+        }
+    }
+}
+
+fn feature_targets(manifest: &PluginManifestV3) -> Vec<FeatureTarget<'_>> {
+    let mut targets = Vec::new();
+    if manifest
+        .permissions
+        .iter()
+        .any(|value| value == "ai.context.augment")
+    {
+        targets.extend(
+            manifest
+                .contributes
+                .enhancements
+                .iter()
+                .map(|item| FeatureTarget {
+                    capability_id: "ai.context.augment",
+                    target_kind: "enhancement",
+                    contribution_id: &item.id,
+                    title: &item.title,
+                    hook: "contextEnhancement",
+                    scenes: &item.scenes,
+                    features: &item.features,
+                }),
+        );
+    }
+    if manifest
+        .permissions
+        .iter()
+        .any(|value| value == "ai.invoke")
+        && matches!(
+            manifest.runtime_kind,
+            crate::models::PluginRuntimeKind::XingchenAgent
+                | crate::models::PluginRuntimeKind::XingchenWorkflow
+        )
+    {
+        targets.extend(
+            manifest
+                .contributes
+                .features
+                .iter()
+                .map(|item| FeatureTarget {
+                    capability_id: "ai.invoke",
+                    target_kind: "xingchenFeature",
+                    contribution_id: &item.id,
+                    title: &item.title,
+                    hook: "featureInvoke",
+                    scenes: &item.scenes,
+                    features: &[],
+                }),
+        );
+    }
+    targets
+}
+
+fn feature_target<'a>(
+    manifest: &'a PluginManifestV3,
+    contribution_id: &str,
+) -> Result<FeatureTarget<'a>, AppError> {
+    feature_targets(manifest)
+        .into_iter()
+        .find(|target| target.contribution_id == contribution_id)
+        .ok_or_else(|| AppError::InvalidInput("功能不存在或不可访问".into()))
+}
+
 pub(crate) async fn list_feature_authorizations(
     db: &Database,
     account: &AccountState,
@@ -46,11 +135,9 @@ pub(crate) async fn list_feature_authorizations(
 ) -> Result<Vec<FeatureAuthorizationView>, AppError> {
     let (subject, context) = resolve_actor(db, account).await?;
     let manifest = current_manifest(db, plugin_id)?;
-    manifest
-        .contributes
-        .enhancements
-        .iter()
-        .map(|contribution| view_for_actor(db, &subject, &context, &manifest, &contribution.id))
+    feature_targets(&manifest)
+        .into_iter()
+        .map(|target| view_for_target(db, &subject, &context, &manifest, target))
         .collect()
 }
 
@@ -62,7 +149,8 @@ pub(crate) async fn query_feature_authorization(
 ) -> Result<FeatureAuthorizationView, AppError> {
     let (subject, context) = resolve_actor(db, account).await?;
     let manifest = current_manifest(db, plugin_id)?;
-    view_for_actor(db, &subject, &context, &manifest, contribution_id)
+    let target = feature_target(&manifest, contribution_id)?;
+    view_for_target(db, &subject, &context, &manifest, target)
 }
 
 pub(crate) async fn mutate_feature_authorization(
@@ -95,7 +183,9 @@ fn mutate_for_actor(
     expires_at: Option<String>,
 ) -> Result<FeatureAuthorizationView, AppError> {
     let manifest = current_manifest(db, plugin_id)?;
-    let scope = TrustedResourceScope::for_declarative_enhancement(&manifest, contribution_id)?;
+    let target = feature_target(&manifest, contribution_id)?;
+    validate_plugin_grant_target(db, plugin_id, target.capability_id)?;
+    let scope = target.scope(&manifest)?;
     let operation = match action {
         FeatureAuthorizationAction::Request => "feature_authorization_request",
         FeatureAuthorizationAction::Grant => "feature_authorization_grant",
@@ -107,7 +197,7 @@ fn mutate_for_actor(
     db.write_audit_log(
         plugin_id,
         &format!("{operation}_attempt"),
-        Some("ai.context.augment:feature"),
+        Some(&format!("{}:feature", target.capability_id)),
     )?;
     let expires_at = match action {
         FeatureAuthorizationAction::Request | FeatureAuthorizationAction::Grant => {
@@ -121,7 +211,7 @@ fn mutate_for_actor(
             subject,
             context,
             plugin_id,
-            CAPABILITY_ID,
+            target.capability_id,
             &scope,
             expires_at,
         )?,
@@ -130,28 +220,43 @@ fn mutate_for_actor(
             subject,
             context,
             plugin_id,
-            CAPABILITY_ID,
+            target.capability_id,
             &scope,
             expires_at,
         )?,
-        FeatureAuthorizationAction::Deny => {
-            deny_for_actor_and_scope(db, subject, context, plugin_id, CAPABILITY_ID, &scope)?
-        }
-        FeatureAuthorizationAction::Revoke => {
-            revoke_for_actor_and_scope(db, subject, context, plugin_id, CAPABILITY_ID, &scope)?
-        }
-        FeatureAuthorizationAction::Expire => {
-            expire_for_actor_and_scope(db, subject, context, plugin_id, CAPABILITY_ID, &scope)?
-        }
+        FeatureAuthorizationAction::Deny => deny_for_actor_and_scope(
+            db,
+            subject,
+            context,
+            plugin_id,
+            target.capability_id,
+            &scope,
+        )?,
+        FeatureAuthorizationAction::Revoke => revoke_for_actor_and_scope(
+            db,
+            subject,
+            context,
+            plugin_id,
+            target.capability_id,
+            &scope,
+        )?,
+        FeatureAuthorizationAction::Expire => expire_for_actor_and_scope(
+            db,
+            subject,
+            context,
+            plugin_id,
+            target.capability_id,
+            &scope,
+        )?,
     };
     // 状态写入已由正式授权表完成；完成事件只作审计，不反向改变授权结果。
     db.write_audit_log(
         plugin_id,
         &format!("{operation}_completed"),
-        Some("ai.context.augment:feature"),
+        Some(&format!("{}:feature", target.capability_id)),
     )
     .ok();
-    view_for_actor(db, subject, context, &manifest, contribution_id)
+    view_for_target(db, subject, context, &manifest, target)
 }
 
 async fn resolve_actor(
@@ -165,7 +270,6 @@ async fn resolve_actor(
 }
 
 fn current_manifest(db: &Database, plugin_id: &str) -> Result<PluginManifestV3, AppError> {
-    validate_plugin_grant_target(db, plugin_id, CAPABILITY_ID)?;
     let snapshot = db
         .current_plugin_authorization_snapshot(plugin_id, &[])?
         .ok_or(AppError::PluginAuthorizationContextInvalid {
@@ -179,40 +283,35 @@ fn current_manifest(db: &Database, plugin_id: &str) -> Result<PluginManifestV3, 
         .manifest)
 }
 
-fn view_for_actor(
+fn view_for_target(
     db: &Database,
     subject: &PluginAuthorizationSubject,
     context: &PluginAuthorizationContext,
     manifest: &PluginManifestV3,
-    contribution_id: &str,
+    target: FeatureTarget<'_>,
 ) -> Result<FeatureAuthorizationView, AppError> {
-    let contribution = manifest
-        .contributes
-        .enhancements
-        .iter()
-        .find(|item| item.id == contribution_id)
-        .ok_or_else(|| AppError::InvalidInput("声明式贡献不存在或不可访问".to_string()))?;
-    let scope = TrustedResourceScope::for_declarative_enhancement(manifest, contribution_id)?;
+    let scope = target.scope(manifest)?;
     let authorization = current_exact_plugin_capability_authorization_for_actor_and_scope(
         db,
         subject,
         context,
         &manifest.id,
-        CAPABILITY_ID,
+        target.capability_id,
         &scope,
     )?;
-    let hook = enum_name(&contribution.hook)?;
-    let scenes = contribution
+    let scenes = target
         .scenes
         .iter()
         .map(enum_name)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(FeatureAuthorizationView {
-        contribution_id: contribution.id.clone(),
-        title: contribution.title.clone(),
-        hook,
+        capability_id: target.capability_id.to_string(),
+        target_kind: target.target_kind,
+        contribution_id: target.contribution_id.to_string(),
+        title: target.title.to_string(),
+        hook: target.hook.to_string(),
         scenes,
-        features: contribution.features.clone(),
+        features: target.features.to_vec(),
         authorization,
     })
 }
@@ -296,6 +395,55 @@ mod tests {
         }
     }
 
+    fn setup_xingchen() -> Fixture {
+        let db = Database::init(":memory:").expect("database");
+        let directory = std::env::temp_dir().join(format!(
+            "pomegranate-xingchen-feature-auth-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).expect("directory");
+        fs::write(directory.join("ui.json"), "{}").expect("asset");
+        let manifest: PluginManifestV3 = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 3,
+            "id": "com.firstwork.xingchen-feature-auth-tests",
+            "name": "Xingchen Feature Authorization Tests",
+            "version": "1.0.0",
+            "authorId": "tests",
+            "classification": "feature",
+            "runtimeKind": "xingchen-workflow",
+            "source": "local",
+            "supportedScenes": ["global"],
+            "permissions": ["ai.invoke"],
+            "contributes": { "features": [
+                { "id": "feature-a", "title": "Feature A", "scenes": ["global"], "uiSchema": "ui.json" },
+                { "id": "feature-b", "title": "Feature B", "scenes": ["global"], "uiSchema": "ui.json" }
+            ]},
+            "integrity": {"sha256": null},
+            "signature": {"status": "unsigned", "signer": null}
+        }))
+        .expect("manifest");
+        let hash = PluginService::calculate_integrity_for_path(&directory).expect("hash");
+        db.record_plugin_version(
+            &manifest,
+            &directory.to_string_lossy(),
+            &hash,
+            &manifest.permissions,
+        )
+        .expect("record");
+        db.set_plugin_enabled(&manifest.id, true).expect("enable");
+        let context = resolve_host_installation_context(&db).expect("context");
+        Fixture {
+            db,
+            directory,
+            subject: PluginAuthorizationSubject {
+                kind: PluginAuthorizationSubjectKind::PlatformUser,
+                id: "subject-a".into(),
+            },
+            context,
+            manifest,
+        }
+    }
+
     fn mutate(
         fixture: &Fixture,
         id: &str,
@@ -329,12 +477,12 @@ mod tests {
         let granted =
             mutate(&fixture, "enhancement-a", FeatureAuthorizationAction::Grant).expect("grant");
         assert!(granted.authorization.effective);
-        let other = view_for_actor(
+        let other = view_for_target(
             &fixture.db,
             &fixture.subject,
             &fixture.context,
             &fixture.manifest,
-            "enhancement-b",
+            feature_target(&fixture.manifest, "enhancement-b").unwrap(),
         )
         .expect("other");
         assert!(!other.authorization.effective);
@@ -384,6 +532,37 @@ mod tests {
         assert!(logs
             .iter()
             .all(|item| item.3.as_deref() == Some("ai.context.augment:feature")));
+    }
+
+    #[test]
+    fn xingchen_feature_authorization_uses_ai_invoke_and_is_feature_isolated() {
+        let fixture = setup_xingchen();
+        let granted = mutate(&fixture, "feature-a", FeatureAuthorizationAction::Grant)
+            .expect("grant xingchen feature");
+        assert_eq!(granted.capability_id, "ai.invoke");
+        assert_eq!(granted.target_kind, "xingchenFeature");
+        assert!(granted.authorization.effective);
+
+        let other = view_for_target(
+            &fixture.db,
+            &fixture.subject,
+            &fixture.context,
+            &fixture.manifest,
+            feature_target(&fixture.manifest, "feature-b").unwrap(),
+        )
+        .expect("other feature");
+        assert!(!other.authorization.effective);
+
+        let feature_scope =
+            TrustedResourceScope::for_xingchen_feature(&fixture.manifest, "feature-a")
+                .unwrap()
+                .canonical_scope()
+                .unwrap();
+        assert_eq!(feature_scope.kind, "feature");
+        assert_ne!(
+            feature_scope,
+            canonicalize_authorization_scope("global", "v1:*").unwrap()
+        );
     }
 
     #[test]

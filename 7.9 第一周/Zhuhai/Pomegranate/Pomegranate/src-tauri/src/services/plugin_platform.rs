@@ -28,6 +28,11 @@ use crate::services::plugin_permission_guard::{
 };
 use crate::services::plugin_rate_limit::PluginRateLimiter;
 use crate::services::plugins::PluginService;
+use crate::services::resource_ownership::ResourceOwner;
+use crate::services::resource_resolution::credential::resolve_credential;
+use crate::services::resource_resolution::external_agent::resolve_external_agent;
+use crate::services::resource_resolution::UntrustedResourceRef;
+use crate::services::xingchen_agent::XingchenAgentService;
 
 const ARCHIVE_EXTENSION: &str = "firstwork-plugin";
 
@@ -480,46 +485,100 @@ impl PluginPlatformService {
         )
     }
 
-    pub fn prepare_feature_invocation(
+    pub async fn prepare_feature_invocation(
         db: &Database,
+        account: &AccountState,
+        limiter: &PluginRateLimiter,
+        owner: &ResourceOwner,
         plugin_id: &str,
         feature_id: &str,
+        external_agent_id: &str,
     ) -> Result<PluginFeatureInvocationSpec, AppError> {
         validate_plugin_id(plugin_id)?;
         validate_contribution_id(feature_id)?;
-        let plugin = db.get_plugin(plugin_id)?;
-        if !plugin.enabled || plugin.status != "installed" {
-            return Err(AppError::InvalidInput("插件尚未安装并启用".into()));
-        }
-        let integrity = PluginService::verify_installation(db, plugin_id)?;
-        if !integrity.ok {
-            return Err(AppError::InvalidInput(
-                integrity
-                    .message
-                    .unwrap_or_else(|| "插件内容完整性校验失败".into()),
-            ));
-        }
-        let fixed_capabilities = [
-            "credentials.use",
-            "agents.invoke",
-            "network.xingchen",
-            "ai.invoke",
-        ];
-        let authorized = require_current_plugin_capabilities(db, plugin_id, &fixed_capabilities)?;
-        let output_kind = Self::validate_feature_context(db, &authorized, feature_id)?;
-        let authorized = if matches!(output_kind.as_str(), "docx-base64" | "file-base64") {
-            let all_capabilities = [
-                "credentials.use",
-                "agents.invoke",
-                "network.xingchen",
+        let current = resolve_current_plugin_context(db, plugin_id)?;
+        let feature = current
+            .manifest
+            .contributes
+            .features
+            .iter()
+            .find(|feature| feature.id == feature_id)
+            .ok_or_else(|| AppError::InvalidInput("功能不存在或不可访问".into()))?;
+        let scene = feature
+            .scenes
+            .first()
+            .cloned()
+            .unwrap_or(PluginScene::Global);
+
+        // Resource resolvers query ownership and callable metadata only. No credential secret is
+        // loaded until every capability below has passed the unified Guard.
+        let agent_reference = UntrustedResourceRef::try_new("external-agent", external_agent_id)
+            .map_err(|error| AppError::InvalidInput(error.public_message().to_string()))?;
+        let agent = resolve_external_agent(db, owner, agent_reference)
+            .map_err(|error| AppError::InvalidInput(error.public_message().to_string()))?;
+        let agent_config = XingchenAgentService::get_agent(db, owner, external_agent_id)?
+            .ok_or_else(|| AppError::InvalidInput("资源不存在或不可访问".into()))?;
+        let credential_id = agent_config
+            .credential_id
+            .as_deref()
+            .ok_or_else(|| AppError::InvalidInput("资源不存在或不可访问".into()))?;
+        let credential_reference = UntrustedResourceRef::try_new("credential", credential_id)
+            .map_err(|error| AppError::InvalidInput(error.public_message().to_string()))?;
+        let credential = resolve_credential(db, owner, credential_reference)
+            .map_err(|error| AppError::InvalidInput(error.public_message().to_string()))?;
+
+        let calls = [
+            (
                 "ai.invoke",
-                "files.writeSelected",
-            ];
-            require_current_plugin_capabilities(db, plugin_id, &all_capabilities)?
-        } else {
-            authorized
-        };
+                TrustedResourceScope::for_xingchen_feature(&current.manifest, feature_id)?,
+            ),
+            (
+                "agents.invoke",
+                TrustedResourceScope::for_external_agent("agents.invoke", &agent)?,
+            ),
+            (
+                "network.xingchen",
+                TrustedResourceScope::for_external_agent("network.xingchen", &agent)?,
+            ),
+            (
+                "credentials.use",
+                TrustedResourceScope::for_credential("credentials.use", &credential)?,
+            ),
+        ];
+        let mut feature_authorization = None;
+        for (capability_id, scope) in calls {
+            let allowed = authorize_plugin_call(
+                db,
+                account,
+                limiter,
+                TrustedPluginCall::internal(
+                    plugin_id,
+                    capability_id,
+                    Some(current.version.clone()),
+                    scene.clone(),
+                    format!("feature-{feature_id}-{capability_id}-{}", Uuid::new_v4()),
+                    scope,
+                ),
+            )
+            .await
+            .map_err(|_| AppError::PluginPermissionDenied {
+                plugin_id: Some(plugin_id.to_string()),
+                required_permission: Some(capability_id.to_string()),
+            })?;
+            if capability_id == "ai.invoke" {
+                feature_authorization = Some(allowed);
+            }
+        }
+        let authorized = feature_authorization.ok_or_else(|| AppError::PluginPermissionDenied {
+            plugin_id: Some(plugin_id.to_string()),
+            required_permission: Some("ai.invoke".into()),
+        })?;
         let output_kind = Self::validate_feature_context(db, &authorized, feature_id)?;
+        if matches!(output_kind.as_str(), "docx-base64" | "file-base64") {
+            // This batch does not migrate files.writeSelected. Preserve its existing gate instead
+            // of silently weakening file-output behavior while the four Xingchen calls use A3.
+            require_current_plugin_capabilities(db, plugin_id, &["files.writeSelected"])?;
+        }
         Ok(PluginFeatureInvocationSpec { output_kind })
     }
 
@@ -2107,6 +2166,7 @@ mod tests {
     use crate::services::plugin_authorizations::{
         grant_for_actor_and_scope, revoke_for_actor_and_scope,
     };
+    use crate::services::resource_ownership::ResourceOwner;
 
     #[test]
     fn plugin_id_validation_matches_packaging_and_runtime_rules() {
@@ -2715,6 +2775,334 @@ mod tests {
         manifest
     }
 
+    struct XingchenInvocationFixture {
+        db: Database,
+        directory: TestDir,
+        account: AccountState,
+        owner: ResourceOwner,
+        subject: PluginAuthorizationSubject,
+        context: PluginAuthorizationContext,
+        manifest: PluginManifestV3,
+        agent_id: String,
+        credential_id: String,
+    }
+
+    fn xingchen_invocation_fixture() -> XingchenInvocationFixture {
+        let db = Database::init(":memory:").expect("database");
+        let directory = TestDir::new();
+        let mut manifest = feature_manifest("text");
+        let mut second_feature = manifest.contributes.features[0].clone();
+        second_feature.id = "test-feature-b".into();
+        second_feature.title = "Second Feature".into();
+        manifest.contributes.features.push(second_feature);
+        install_test_manifest(&db, &directory, &manifest, &manifest.permissions, "text");
+        let subject = PluginAuthorizationSubject {
+            kind: PluginAuthorizationSubjectKind::PlatformUser,
+            id: "xingchen-feature-user".into(),
+        };
+        let account = AccountState::verified_test_session(&subject.id);
+        let context = resolve_host_installation_context(&db).expect("context");
+        let owner = ResourceOwner::fixture(&subject.id, &context.id);
+        let credential_id = "credential-xingchen".to_string();
+        let agent_id = "agent-xingchen".to_string();
+        let conn = db.conn_lock().expect("database lock");
+        conn.execute(
+            "INSERT INTO credentials
+                (id, provider, credential_type, label, owner_scope, secret_reference, configured)
+             VALUES (?1, 'xingchen', 'api_key', 'credential', 'deprecated', 'secret-ref', 1)",
+            [&credential_id],
+        )
+        .expect("credential");
+        conn.execute(
+            "INSERT INTO credential_resource_ownership
+                (credential_id, platform_subject_id, host_installation_id)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![credential_id, subject.id, context.id],
+        )
+        .expect("credential ownership");
+        conn.execute(
+            "INSERT INTO plugins (id, name, version, path, main, manifest_json, enabled, status)
+             VALUES ('resource-plugin', 'resource', '1.0.0', '/tmp/mock', 'main.js', '{}', 1, 'installed')",
+            [],
+        )
+        .expect("resource plugin");
+        conn.execute(
+            "INSERT INTO products
+                (id, developer_id, name, product_type, status, plugin_id,
+                 developer_name, runtime_kind, review_status)
+             VALUES ('product-xingchen', 'dev', 'workflow', 'xingchen-workflow', 'published',
+                     'resource-plugin', 'dev', 'xingchen-workflow', 'approved')",
+            [],
+        )
+        .expect("product");
+        conn.execute(
+            "INSERT INTO product_versions
+                (product_id, version, manifest_json, runtime_kind, source, content_hash,
+                 signature_status, status, review_status)
+             VALUES ('product-xingchen', '1.0.0', '{}', 'xingchen-workflow', 'marketplace',
+                     'hash', 'unsigned', 'active', 'approved')",
+            [],
+        )
+        .expect("product version");
+        let version_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO plugin_installations
+                (plugin_id, product_id, product_version_id, installed_version, source,
+                 enabled, install_path, content_hash, status)
+             VALUES ('resource-plugin', 'product-xingchen', ?1, '1.0.0', 'marketplace',
+                     1, '/tmp/mock', 'hash', 'installed')",
+            [version_id],
+        )
+        .expect("resource installation");
+        conn.execute(
+            "INSERT INTO external_agents
+                (id, product_id, provider, name, endpoint, flow_id, protocol_type,
+                 authentication_type, credential_id, streaming_type, request_mapping_json,
+                 response_mapping_json, session_mapping_json, error_mapping_json, mock_mode,
+                 enabled)
+             VALUES (?1, 'product-xingchen', 'xingchen', 'workflow', 'mock://xingchen',
+                     'flow', 'xingchen-workflow-v1', 'bearer', ?2, 'none', '{}', '{}', '{}',
+                     '{}', 1, 1)",
+            rusqlite::params![agent_id, credential_id],
+        )
+        .expect("agent");
+        conn.execute(
+            "INSERT INTO external_agent_resource_ownership
+                (external_agent_id, platform_subject_id, host_installation_id)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![agent_id, subject.id, context.id],
+        )
+        .expect("agent ownership");
+        drop(conn);
+        XingchenInvocationFixture {
+            db,
+            directory,
+            account,
+            owner,
+            subject,
+            context,
+            manifest,
+            agent_id,
+            credential_id,
+        }
+    }
+
+    fn xingchen_scopes(
+        fixture: &XingchenInvocationFixture,
+    ) -> [(&'static str, TrustedResourceScope); 4] {
+        let agent = resolve_external_agent(
+            &fixture.db,
+            &fixture.owner,
+            UntrustedResourceRef::try_new("external-agent", &fixture.agent_id).unwrap(),
+        )
+        .unwrap();
+        let credential = resolve_credential(
+            &fixture.db,
+            &fixture.owner,
+            UntrustedResourceRef::try_new("credential", &fixture.credential_id).unwrap(),
+        )
+        .unwrap();
+        [
+            (
+                "ai.invoke",
+                TrustedResourceScope::for_xingchen_feature(&fixture.manifest, "test-feature")
+                    .unwrap(),
+            ),
+            (
+                "agents.invoke",
+                TrustedResourceScope::for_external_agent("agents.invoke", &agent).unwrap(),
+            ),
+            (
+                "network.xingchen",
+                TrustedResourceScope::for_external_agent("network.xingchen", &agent).unwrap(),
+            ),
+            (
+                "credentials.use",
+                TrustedResourceScope::for_credential("credentials.use", &credential).unwrap(),
+            ),
+        ]
+    }
+
+    fn grant_xingchen_invocation(fixture: &XingchenInvocationFixture) {
+        for (capability, scope) in xingchen_scopes(fixture) {
+            grant_for_actor_and_scope(
+                &fixture.db,
+                &fixture.subject,
+                &fixture.context,
+                &fixture.manifest.id,
+                capability,
+                &scope,
+                None,
+            )
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn xingchen_feature_preflight_requires_all_four_precise_grants() {
+        let fixture = xingchen_invocation_fixture();
+        grant_xingchen_invocation(&fixture);
+        let result = PluginPlatformService::prepare_feature_invocation(
+            &fixture.db,
+            &fixture.account,
+            &PluginRateLimiter::new(),
+            &fixture.owner,
+            &fixture.manifest.id,
+            "test-feature",
+            &fixture.agent_id,
+        )
+        .await;
+        assert!(result.is_ok(), "all precise grants should pass: {result:?}");
+
+        let feature_scope =
+            TrustedResourceScope::for_xingchen_feature(&fixture.manifest, "test-feature").unwrap();
+        revoke_for_actor_and_scope(
+            &fixture.db,
+            &fixture.subject,
+            &fixture.context,
+            &fixture.manifest.id,
+            "ai.invoke",
+            &feature_scope,
+        )
+        .unwrap();
+        let denied = PluginPlatformService::prepare_feature_invocation(
+            &fixture.db,
+            &fixture.account,
+            &PluginRateLimiter::new(),
+            &fixture.owner,
+            &fixture.manifest.id,
+            "test-feature",
+            &fixture.agent_id,
+        )
+        .await;
+        assert!(matches!(
+            denied,
+            Err(AppError::PluginPermissionDenied { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn xingchen_feature_preflight_rejects_each_missing_or_revoked_grant() {
+        for missing in [
+            "ai.invoke",
+            "agents.invoke",
+            "network.xingchen",
+            "credentials.use",
+        ] {
+            let fixture = xingchen_invocation_fixture();
+            for (capability, scope) in xingchen_scopes(&fixture) {
+                if capability != missing {
+                    grant_for_actor_and_scope(
+                        &fixture.db,
+                        &fixture.subject,
+                        &fixture.context,
+                        &fixture.manifest.id,
+                        capability,
+                        &scope,
+                        None,
+                    )
+                    .unwrap();
+                }
+            }
+            let result = PluginPlatformService::prepare_feature_invocation(
+                &fixture.db,
+                &fixture.account,
+                &PluginRateLimiter::new(),
+                &fixture.owner,
+                &fixture.manifest.id,
+                "test-feature",
+                &fixture.agent_id,
+            )
+            .await;
+            assert!(
+                matches!(result, Err(AppError::PluginPermissionDenied { .. })),
+                "missing {missing} must deny before workflow invocation: {result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn xingchen_feature_preflight_isolates_feature_and_plugin_lifecycle() {
+        let fixture = xingchen_invocation_fixture();
+        grant_xingchen_invocation(&fixture);
+        let wrong_feature = PluginPlatformService::prepare_feature_invocation(
+            &fixture.db,
+            &fixture.account,
+            &PluginRateLimiter::new(),
+            &fixture.owner,
+            &fixture.manifest.id,
+            "test-feature-b",
+            &fixture.agent_id,
+        )
+        .await;
+        assert!(matches!(
+            wrong_feature,
+            Err(AppError::PluginPermissionDenied { .. })
+        ));
+
+        fixture
+            .db
+            .set_plugin_enabled(&fixture.manifest.id, false)
+            .unwrap();
+        let disabled = PluginPlatformService::prepare_feature_invocation(
+            &fixture.db,
+            &fixture.account,
+            &PluginRateLimiter::new(),
+            &fixture.owner,
+            &fixture.manifest.id,
+            "test-feature",
+            &fixture.agent_id,
+        )
+        .await;
+        assert!(disabled.is_err());
+    }
+
+    #[tokio::test]
+    async fn xingchen_feature_preflight_rejects_global_ai_invoke_grant() {
+        let fixture = xingchen_invocation_fixture();
+        for (capability, scope) in xingchen_scopes(&fixture) {
+            if capability != "ai.invoke" {
+                grant_for_actor_and_scope(
+                    &fixture.db,
+                    &fixture.subject,
+                    &fixture.context,
+                    &fixture.manifest.id,
+                    capability,
+                    &scope,
+                    None,
+                )
+                .unwrap();
+            }
+        }
+        let global_grant = grant_for_actor_and_scope(
+            &fixture.db,
+            &fixture.subject,
+            &fixture.context,
+            &fixture.manifest.id,
+            "ai.invoke",
+            &TrustedResourceScope::global(),
+            None,
+        );
+        assert!(matches!(
+            global_grant,
+            Err(AppError::PluginAuthorizationScopeMismatch)
+        ));
+        let result = PluginPlatformService::prepare_feature_invocation(
+            &fixture.db,
+            &fixture.account,
+            &PluginRateLimiter::new(),
+            &fixture.owner,
+            &fixture.manifest.id,
+            "test-feature",
+            &fixture.agent_id,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(AppError::PluginPermissionDenied { .. })
+        ));
+    }
+
     #[tokio::test]
     async fn enhancement_resource_read_rechecks_declaration_and_current_grant() {
         let cases = [
@@ -3133,11 +3521,23 @@ mod tests {
                     .expect("insert undeclared grant");
                 }
 
-                let result = PluginPlatformService::prepare_feature_invocation(
-                    &db,
-                    &manifest.id,
-                    "test-feature",
-                );
+                let mut required = vec![
+                    "credentials.use",
+                    "agents.invoke",
+                    "network.xingchen",
+                    "ai.invoke",
+                ];
+                if output_kind == "file-base64" {
+                    required.push("files.writeSelected");
+                }
+                let result = require_current_plugin_capabilities(&db, &manifest.id, &required)
+                    .and_then(|authorized| {
+                        PluginPlatformService::validate_feature_context(
+                            &db,
+                            &authorized,
+                            "test-feature",
+                        )
+                    });
                 match state {
                     "granted" => assert!(result.is_ok(), "{capability} should be allowed"),
                     "revoked" | "missing" => assert!(
@@ -3158,11 +3558,7 @@ mod tests {
     fn feature_invocation_reports_missing_plugin_and_current_version() {
         let db = Database::init(":memory:").expect("create in-memory database");
         assert!(matches!(
-            PluginPlatformService::prepare_feature_invocation(
-                &db,
-                "com.firstwork.missing-plugin",
-                "test-feature"
-            ),
+            resolve_current_plugin_context(&db, "com.firstwork.missing-plugin"),
             Err(AppError::NotFound(_))
         ));
 
@@ -3178,7 +3574,7 @@ mod tests {
             .expect("clear current version");
         }
         assert!(matches!(
-            PluginPlatformService::prepare_feature_invocation(&db, &manifest.id, "test-feature"),
+            resolve_current_plugin_context(&db, &manifest.id),
             Err(AppError::NotFound(_))
         ));
     }

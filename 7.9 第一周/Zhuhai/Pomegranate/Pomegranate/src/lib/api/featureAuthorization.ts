@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type FeatureAuthorizationStatus = "missing" | "pending" | "granted" | "denied" | "revoked" | "expired";
 export interface FeatureAuthorizationView {
+  capabilityId: "ai.context.augment" | "ai.invoke";
+  targetKind: "enhancement" | "xingchenFeature";
   contributionId: string;
   title: string;
   hook: string;

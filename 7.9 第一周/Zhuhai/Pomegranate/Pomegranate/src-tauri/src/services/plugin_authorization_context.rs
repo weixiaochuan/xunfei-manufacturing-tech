@@ -134,6 +134,58 @@ impl TrustedResourceScope {
         }))
     }
 
+    /// Resolve an invokable Xingchen feature from the trusted current Manifest. The caller only
+    /// supplies the contribution selector; runtime identity and the complete scope material come
+    /// from the backend-validated Manifest.
+    pub(super) fn for_xingchen_feature(
+        manifest: &PluginManifestV3,
+        contribution_id: &str,
+    ) -> Result<Self, AppError> {
+        let policy = canonical_capability_policy("ai.invoke")
+            .map_err(|_| AppError::PluginAuthorizationScopeInvalid {
+                reason: "registry_scope_policy_invalid",
+            })?
+            .ok_or(AppError::PluginAuthorizationCapabilityInvalid {
+                reason: "capability_not_admitted",
+            })?;
+        if !matches!(policy.status.as_str(), "active" | "restricted")
+            || policy.scope_type != CanonicalScopeType::Feature
+            || policy.scope_schema_version != 1
+        {
+            return Err(AppError::PluginAuthorizationScopeMismatch);
+        }
+        if !manifest
+            .permissions
+            .iter()
+            .any(|permission| permission == "ai.invoke")
+        {
+            return Err(AppError::PluginAuthorizationManifestNotDeclared);
+        }
+        if !matches!(
+            manifest.runtime_kind,
+            crate::models::PluginRuntimeKind::XingchenAgent
+                | crate::models::PluginRuntimeKind::XingchenWorkflow
+        ) {
+            return Err(AppError::PluginAuthorizationScopeMismatch);
+        }
+        let contribution = manifest
+            .contributes
+            .features
+            .iter()
+            .find(|contribution| contribution.id == contribution_id)
+            .ok_or_else(|| AppError::InvalidInput("功能不存在或不可访问".into()))?;
+        let canonical_contribution = serde_json::to_string(&(
+            "xingchen-ai-invoke-feature-v1",
+            &manifest.version,
+            contribution,
+        ))?;
+        Ok(Self::Feature(FeatureScope {
+            plugin_id: manifest.id.clone(),
+            feature_id: contribution.id.clone(),
+            contribution_fingerprint: sha256_hex(&canonical_contribution),
+        }))
+    }
+
     pub(super) fn for_credential(
         capability_id: &str,
         credential: &TrustedCredential,
