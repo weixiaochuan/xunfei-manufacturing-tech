@@ -61,6 +61,9 @@ pub enum AppError {
     #[error("正式插件授权上下文无效: reason={reason}")]
     PluginAuthorizationContextInvalid { reason: &'static str },
 
+    #[error("后端可信资源 owner 上下文无效: reason={reason}")]
+    ResourceOwnerContextInvalid { reason: &'static str },
+
     #[error("正式插件授权 scope 无效: reason={reason}")]
     PluginAuthorizationScopeInvalid { reason: &'static str },
 

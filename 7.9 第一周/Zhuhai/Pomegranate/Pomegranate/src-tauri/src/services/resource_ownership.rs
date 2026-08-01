@@ -20,6 +20,26 @@ impl fmt::Debug for ResourceOwner {
 }
 
 impl ResourceOwner {
+    fn from_verified_parts(
+        platform_subject_id: String,
+        host_installation_id: String,
+    ) -> Result<Self, AppError> {
+        if platform_subject_id.trim().is_empty() {
+            return Err(AppError::ResourceOwnerContextInvalid {
+                reason: "verified_subject_missing",
+            });
+        }
+        if host_installation_id.trim().is_empty() {
+            return Err(AppError::ResourceOwnerContextInvalid {
+                reason: "host_installation_missing",
+            });
+        }
+        Ok(Self {
+            platform_subject_id,
+            host_installation_id,
+        })
+    }
+
     pub(crate) fn platform_subject_id(&self) -> &str {
         &self.platform_subject_id
     }
@@ -44,10 +64,7 @@ pub(crate) async fn resolve_resource_owner(
 ) -> Result<ResourceOwner, AppError> {
     let platform_subject_id = verified_platform_user_id(account).await?;
     let host = db.stable_host_installation_context()?;
-    Ok(ResourceOwner {
-        platform_subject_id,
-        host_installation_id: host.id,
-    })
+    ResourceOwner::from_verified_parts(platform_subject_id, host.id)
 }
 
 #[cfg(test)]
@@ -61,5 +78,17 @@ mod tests {
         assert_eq!(rendered, "ResourceOwner { .. }");
         assert!(!rendered.contains("platform-subject-secret"));
         assert!(!rendered.contains("installation-secret"));
+    }
+
+    #[test]
+    fn verified_owner_context_requires_both_backend_facts() {
+        assert!(
+            ResourceOwner::from_verified_parts("subject-a".into(), "installation-a".into()).is_ok()
+        );
+        for (subject, installation) in [("", "installation-a"), ("subject-a", ""), (" ", "\t")] {
+            assert!(
+                ResourceOwner::from_verified_parts(subject.into(), installation.into()).is_err()
+            );
+        }
     }
 }
