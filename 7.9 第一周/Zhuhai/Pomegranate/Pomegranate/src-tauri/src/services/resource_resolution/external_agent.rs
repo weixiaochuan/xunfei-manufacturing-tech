@@ -60,8 +60,16 @@ pub(crate) fn resolve_external_agent(
                         LEFT JOIN product_versions pv ON pv.id = pi.product_version_id
                         WHERE p.id = ea.product_id
                           AND (
-                            p.product_type IN ('xingchen-agent', 'xingchen-workflow')
-                            OR p.runtime_kind IN ('xingchen-agent', 'xingchen-workflow')
+                            (
+                              p.product_type = 'xingchen-agent'
+                              AND p.runtime_kind = 'xingchen-agent'
+                              AND pv.runtime_kind = 'xingchen-agent'
+                            )
+                            OR (
+                              p.product_type = 'xingchen-workflow'
+                              AND p.runtime_kind = 'xingchen-workflow'
+                              AND pv.runtime_kind = 'xingchen-workflow'
+                            )
                           )
                           AND p.status NOT IN ('revoked', 'suspended', 'delisted')
                           AND pi.enabled = 1
@@ -343,6 +351,188 @@ mod tests {
             let error = resolve_external_agent(&db, &owner, reference(id)).unwrap_err();
             assert_eq!(error.public_message(), "资源不存在或不可访问");
             assert!(!error.to_string().contains(id));
+        }
+    }
+
+    #[test]
+    fn resolves_workflow_only_when_all_runtime_fields_match() {
+        let db = db();
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
+        seed_product_with_type(
+            &db,
+            "workflow-product",
+            true,
+            "published",
+            "xingchen-workflow",
+        );
+        seed_agent(
+            &db,
+            "workflow-agent",
+            "workflow-product",
+            true,
+            None,
+            Some(&owner),
+        );
+
+        assert!(resolve_external_agent(&db, &owner, reference("workflow-agent")).is_ok());
+    }
+
+    #[test]
+    fn rejects_each_independent_product_and_installation_state() {
+        for (case, mutation) in [
+            (
+                "product-runtime-non-xingchen",
+                "UPDATE products SET runtime_kind = 'declarative-ui' WHERE id = 'product-a';",
+            ),
+            (
+                "product-type-non-xingchen",
+                "UPDATE products SET product_type = 'local-plugin' WHERE id = 'product-a';",
+            ),
+            (
+                "agent-product-workflow-runtime",
+                "UPDATE products SET runtime_kind = 'xingchen-workflow' WHERE id = 'product-a';",
+            ),
+            (
+                "workflow-product-agent-runtime",
+                "UPDATE products SET product_type = 'xingchen-workflow' WHERE id = 'product-a';",
+            ),
+            (
+                "version-runtime-mismatch",
+                "UPDATE product_versions SET runtime_kind = 'xingchen-workflow' WHERE product_id = 'product-a';",
+            ),
+            (
+                "all-runtime-fields-non-xingchen",
+                "UPDATE products SET product_type = 'local-plugin', runtime_kind = 'declarative-ui' WHERE id = 'product-a';
+                 UPDATE product_versions SET runtime_kind = 'declarative-ui' WHERE product_id = 'product-a';",
+            ),
+            (
+                "product-suspended",
+                "UPDATE products SET status = 'suspended' WHERE id = 'product-a';",
+            ),
+            (
+                "product-delisted",
+                "UPDATE products SET status = 'delisted' WHERE id = 'product-a';",
+            ),
+            (
+                "installation-disabled",
+                "UPDATE plugin_installations SET enabled = 0 WHERE product_id = 'product-a';",
+            ),
+            (
+                "installation-uninstalled",
+                "UPDATE plugin_installations SET status = 'uninstalled' WHERE product_id = 'product-a';",
+            ),
+            (
+                "version-revoked",
+                "UPDATE product_versions SET status = 'revoked' WHERE product_id = 'product-a';",
+            ),
+            (
+                "signature-revoked",
+                "UPDATE product_versions SET signature_status = 'revoked' WHERE product_id = 'product-a';",
+            ),
+            (
+                "delivery-mode-hosted",
+                "UPDATE product_versions SET manifest_json = '{\"deliveryMode\":\"hosted-api\"}' WHERE product_id = 'product-a';",
+            ),
+        ] {
+            let db = db();
+            let owner = ResourceOwner::fixture("subject-a", "installation-a");
+            seed_product(&db, "product-a", true, "published");
+            seed_agent(&db, "agent-a", "product-a", true, None, Some(&owner));
+            db.conn_lock().unwrap().execute_batch(mutation).unwrap();
+
+            let error = resolve_external_agent(&db, &owner, reference("agent-a"))
+                .unwrap_err();
+            assert_eq!(
+                error.diagnostic_code(),
+                "external_agent_product_unavailable",
+                "{case}"
+            );
+            assert_eq!(error.public_message(), "资源不存在或不可访问", "{case}");
+        }
+    }
+
+    #[test]
+    fn rejects_product_type_and_version_runtime_mismatch() {
+        let db = db();
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
+        seed_product_with_type(
+            &db,
+            "workflow-product",
+            true,
+            "published",
+            "xingchen-workflow",
+        );
+        seed_agent(
+            &db,
+            "workflow-agent",
+            "workflow-product",
+            true,
+            None,
+            Some(&owner),
+        );
+        db.conn_lock()
+            .unwrap()
+            .execute(
+                "UPDATE product_versions SET runtime_kind = 'xingchen-agent'
+                 WHERE product_id = 'workflow-product'",
+                [],
+            )
+            .unwrap();
+
+        assert!(resolve_external_agent(&db, &owner, reference("workflow-agent")).is_err());
+    }
+
+    #[test]
+    fn rejects_installed_version_owned_by_another_product() {
+        let db = db();
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
+        seed_product(&db, "product-a", true, "published");
+        seed_agent(&db, "agent-a", "product-a", true, None, Some(&owner));
+        let conn = db.conn_lock().unwrap();
+        conn.execute_batch(
+            "INSERT INTO products
+                (id, developer_id, name, product_type, status, runtime_kind)
+             VALUES ('product-b', 'dev', 'other', 'xingchen-agent', 'published', 'xingchen-agent');
+             INSERT INTO product_versions
+                (product_id, version, manifest_json, runtime_kind, source, content_hash,
+                 signature_status, status, review_status)
+             VALUES ('product-b', '1.0.0', '{}', 'xingchen-agent', 'marketplace', 'hash-b',
+                     'unsigned', 'active', 'approved');
+             UPDATE plugin_installations
+             SET product_version_id = (SELECT id FROM product_versions WHERE product_id = 'product-b')
+             WHERE product_id = 'product-a';",
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(resolve_external_agent(&db, &owner, reference("agent-a")).is_err());
+    }
+
+    #[test]
+    fn independent_rejections_share_one_external_message() {
+        for (case, mutation) in [
+            (
+                "runtime-mismatch",
+                "UPDATE products SET runtime_kind = 'xingchen-workflow' WHERE id = 'product-a';",
+            ),
+            (
+                "installation-disabled",
+                "UPDATE plugin_installations SET enabled = 0 WHERE product_id = 'product-a';",
+            ),
+            (
+                "version-revoked",
+                "UPDATE product_versions SET status = 'revoked' WHERE product_id = 'product-a';",
+            ),
+        ] {
+            let db = db();
+            let owner = ResourceOwner::fixture("subject-a", "installation-a");
+            seed_product(&db, "product-a", true, "published");
+            seed_agent(&db, "agent-a", "product-a", true, None, Some(&owner));
+            db.conn_lock().unwrap().execute_batch(mutation).unwrap();
+
+            let error = resolve_external_agent(&db, &owner, reference("agent-a")).unwrap_err();
+            assert_eq!(error.public_message(), "资源不存在或不可访问", "{case}");
+            assert!(!error.to_string().contains(case));
         }
     }
 
