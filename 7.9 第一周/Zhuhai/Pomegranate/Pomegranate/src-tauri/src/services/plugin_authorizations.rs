@@ -190,6 +190,21 @@ pub(super) fn current_formal_plugin_capability_authorization_for_actor_and_scope
     current_view_for_target(db, subject, context, plugin_id, capability_id, &target)
 }
 
+/// Read one exact scope without treating unrelated scopes for the same capability as aliases.
+/// The Guard keeps its stricter mismatch diagnostic; the authorization-management API needs a
+/// stable `Missing` view so several exact resources can coexist independently.
+pub(super) fn current_exact_plugin_capability_authorization_for_actor_and_scope(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    trusted_scope: &TrustedResourceScope,
+) -> Result<CurrentPluginCapabilityAuthorization, AppError> {
+    let target = trusted_target(db, plugin_id, capability_id, trusted_scope)?;
+    current_view_for_exact_target(db, subject, context, plugin_id, capability_id, &target)
+}
+
 pub(super) fn list_formal_plugin_capability_authorizations_for_actor(
     db: &Database,
     subject: &PluginAuthorizationSubject,
@@ -380,6 +395,61 @@ fn current_view_for_target(
     target: &CurrentCapabilityTarget,
 ) -> Result<CurrentPluginCapabilityAuthorization, AppError> {
     let record = exact_record(db, subject, context, plugin_id, capability_id, target, true)?;
+    let Some(record) = record else {
+        return Ok(CurrentPluginCapabilityAuthorization {
+            plugin_id: plugin_id.to_string(),
+            plugin_version: target.plugin_version.clone(),
+            capability_id: capability_id.to_string(),
+            capability_semantic_version: target.capability_semantic_version.clone(),
+            scope: target.scope.clone(),
+            status: CurrentPluginCapabilityAuthorizationStatus::Missing,
+            effective: false,
+            revision: None,
+            expires_at: None,
+        });
+    };
+    let expired_now = record.state == PluginAuthorizationState::Granted
+        && record
+            .expires_at
+            .as_deref()
+            .map(parse_utc)
+            .transpose()?
+            .is_some_and(|expires_at| expires_at <= Utc::now());
+    let status = if expired_now {
+        CurrentPluginCapabilityAuthorizationStatus::Expired
+    } else {
+        status_from_state(record.state)
+    };
+    Ok(CurrentPluginCapabilityAuthorization {
+        plugin_id: plugin_id.to_string(),
+        plugin_version: target.plugin_version.clone(),
+        capability_id: capability_id.to_string(),
+        capability_semantic_version: target.capability_semantic_version.clone(),
+        scope: target.scope.clone(),
+        status,
+        effective: status == CurrentPluginCapabilityAuthorizationStatus::Granted,
+        revision: Some(record.revision),
+        expires_at: record.expires_at,
+    })
+}
+
+fn current_view_for_exact_target(
+    db: &Database,
+    subject: &PluginAuthorizationSubject,
+    context: &PluginAuthorizationContext,
+    plugin_id: &str,
+    capability_id: &str,
+    target: &CurrentCapabilityTarget,
+) -> Result<CurrentPluginCapabilityAuthorization, AppError> {
+    let record = exact_record(
+        db,
+        subject,
+        context,
+        plugin_id,
+        capability_id,
+        target,
+        false,
+    )?;
     let Some(record) = record else {
         return Ok(CurrentPluginCapabilityAuthorization {
             plugin_id: plugin_id.to_string(),

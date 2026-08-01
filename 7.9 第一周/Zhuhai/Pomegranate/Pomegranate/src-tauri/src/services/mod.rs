@@ -51,6 +51,8 @@ pub(crate) mod plugin_authorization_context;
 pub(crate) mod plugin_authorizations;
 pub(crate) mod plugin_capabilities;
 mod plugin_capabilities_generated;
+#[cfg(desktop)]
+pub(crate) mod plugin_exact_authorizations;
 pub(crate) mod plugin_permission_guard;
 pub mod plugin_platform;
 pub mod plugin_rate_limit;

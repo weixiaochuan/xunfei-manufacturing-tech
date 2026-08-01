@@ -1067,6 +1067,14 @@ pub fn run() {
             commands::plugin_authorizations::revoke_current_formal_plugin_capability_authorization,
             #[cfg(desktop)]
             commands::plugin_authorizations::expire_current_formal_plugin_capability_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::grant_exact_resource_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::query_exact_resource_authorization,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::list_exact_resource_authorizations,
+            #[cfg(desktop)]
+            commands::plugin_authorizations::revoke_exact_resource_authorization,
             commands::plugins::get_plugin_settings,
             commands::plugins::set_plugin_settings,
             commands::plugins::read_plugin_asset,
