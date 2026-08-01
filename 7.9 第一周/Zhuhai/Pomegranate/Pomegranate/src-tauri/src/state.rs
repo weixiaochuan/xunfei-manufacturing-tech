@@ -7,6 +7,8 @@ use tokio::sync::{watch, Notify};
 use crate::database::Database;
 use crate::models::MarketplaceMockSession;
 use crate::services::claude_agent::AgentProcessHandle;
+#[cfg(desktop)]
+use crate::services::plugin_file_exports::SelectedFileExportRegistry;
 use crate::services::plugin_rate_limit::PluginRateLimiter;
 use crate::services::plugin_token::PluginTokenRegistry;
 use crate::services::vault::VaultState;
@@ -55,6 +57,9 @@ pub struct AppState {
     pub plugin_tokens: PluginTokenRegistry,
     /// 插件写操作速率限制器（防爆库：每插件 ≤ 10 次/秒）
     pub plugin_rate_limiter: PluginRateLimiter,
+    /// Native file selections are process-local, short-lived, and never reconstructed from IPC.
+    #[cfg(desktop)]
+    pub selected_file_exports: SelectedFileExportRegistry,
     /// Claude Code Agent Runner 活跃进程表（session_id → 进程句柄）
     pub claude_agent_processes: Arc<Mutex<std::collections::HashMap<String, AgentProcessHandle>>>,
     /// 市场本地演示会话，与 Account Server Session 严格隔离。
@@ -86,6 +91,8 @@ impl AppState {
             _lock_file: lock_file,
             plugin_tokens: PluginTokenRegistry::default(),
             plugin_rate_limiter: PluginRateLimiter::new(),
+            #[cfg(desktop)]
+            selected_file_exports: SelectedFileExportRegistry::default(),
             claude_agent_processes: Arc::new(Mutex::new(std::collections::HashMap::new())),
             marketplace_session: Mutex::new(MarketplaceMockSession::default()),
         }

@@ -7,6 +7,7 @@ import {
   Input,
   InputNumber,
   List,
+  Modal,
   Select,
   Space,
   Spin,
@@ -291,6 +292,27 @@ export default function PluginFeatureHost() {
       }
       const effectiveValues = pipelineFeatureValues(before.input, values, fields);
       const { parameters, filePaths } = normalizeParameters(fields, effectiveValues);
+      let selectionHandle: string | undefined;
+      if (schema.output?.kind === "docx-base64" || schema.output?.kind === "file-base64") {
+        const selection = await pluginApi.selectFeatureExportTarget(pluginId, featureId);
+        if (!selection) {
+          message.info("已取消文件导出");
+          return;
+        }
+        const confirmed = await new Promise<boolean>((resolve) => {
+          Modal.confirm({
+            title: "确认插件文件导出",
+            content: `${plugin?.name ?? pluginId} / ${feature?.title ?? featureId} 将新建 ${selection.targetName}（.${selection.allowedExtension}），不允许覆盖现有文件。`,
+            okText: "授权并运行",
+            cancelText: "取消",
+            onOk: () => resolve(true),
+            onCancel: () => resolve(false),
+          });
+        });
+        if (!confirmed) return;
+        await pluginApi.grantFeatureExport(pluginId, featureId, selection.selectionHandle);
+        selectionHandle = selection.selectionHandle;
+      }
       const result = await pluginApi.invokeXingchenFeature({
         pluginId,
         featureId,
@@ -299,6 +321,7 @@ export default function PluginFeatureHost() {
         filePaths,
         pluginSystemContext: before.prompt || null,
         pluginContributionIds: before.executedContributionIds,
+        selectionHandle,
       });
       if (!result.ok) throw new Error(result.content || "Workflow 调用失败");
       const after = await runPluginPipelineAfterModel(before, result.content);

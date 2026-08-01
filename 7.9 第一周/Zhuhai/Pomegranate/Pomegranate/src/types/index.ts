@@ -2327,6 +2327,14 @@ export interface PluginFeatureInvokeInput {
   filePaths: Record<string, string[]>;
   pluginSystemContext?: string | null;
   pluginContributionIds?: string[];
+  selectionHandle?: string | null;
+}
+export interface SelectedFileExportView {
+  selectionHandle: string;
+  targetName: string;
+  allowedExtension: string;
+  allowOverwrite: boolean;
+  expiresAt: string;
 }
 export interface PluginFeatureInvokeResult {
   ok: boolean;

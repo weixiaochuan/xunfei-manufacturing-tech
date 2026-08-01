@@ -678,6 +678,8 @@ pub struct PluginFeatureInvokeInput {
     pub plugin_system_context: Option<String>,
     #[serde(default)]
     pub plugin_contribution_ids: Vec<String>,
+    #[serde(default)]
+    pub selection_handle: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

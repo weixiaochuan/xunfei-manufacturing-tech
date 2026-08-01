@@ -19,9 +19,9 @@ use crate::models::{
     AgentAuthenticationType, AgentMessageInfo, AgentProtocolType, AgentSendMessageInput,
     AgentSendMessageResult, AgentSessionCreateInput, AgentSessionInfo, AgentStreamEvent,
     AgentStreamingType, AgentTestResult, AgentUsageEvent, AgentWorkflowInvokeInput,
-    AgentWorkflowInvokeResult, BindableXingchenProduct, ExternalAgentConfig, ExternalAgentInput,
-    PluginRuntimeKind, ProductType, WorkflowFileConfig, WorkflowGeneratedFile, WorkflowInputField,
-    WorkflowInputFieldType,
+    AgentWorkflowInvokeResult, BindableXingchenProduct, DeferredWorkflowFile, ExternalAgentConfig,
+    ExternalAgentInput, PluginRuntimeKind, ProductType, WorkflowFileConfig, WorkflowGeneratedFile,
+    WorkflowInputField, WorkflowInputFieldType,
 };
 use crate::services::credentials::CredentialService;
 use crate::services::planning::{PlanningProviderMode, PlanningService};
@@ -784,6 +784,7 @@ impl XingchenAgentService {
         let mut code = None;
         let mut content = String::new();
         let mut output_files: Vec<WorkflowGeneratedFile> = Vec::new();
+        let mut deferred_output_files: Vec<DeferredWorkflowFile> = Vec::new();
         let mut message = if agent.mock_mode {
             "Mock Workflow 调用成功：未访问讯飞，也未读取真实凭据。".to_string()
         } else {
@@ -866,10 +867,15 @@ impl XingchenAgentService {
             };
             match outcome {
                 WorkflowSyncOutcome::Success(success) => {
-                    let processed =
-                        process_workflow_output_content(&state.data_dir, &success.content)?;
+                    let defer_plugin_export = input.source_plugin_id.is_some()
+                        && input.source_feature.is_some();
+                    let processed = process_workflow_output_content(
+                        (!defer_plugin_export).then_some(state.data_dir.as_path()),
+                        &success.content,
+                    )?;
                     content = processed.content;
                     output_files = processed.output_files;
+                    deferred_output_files = processed.deferred_output_files;
                     remote_id = success.remote_id;
                     usage = success.usage;
                     code = Some(0);
@@ -958,6 +964,7 @@ impl XingchenAgentService {
             message,
             mock: agent.mock_mode,
             output_files,
+            deferred_output_files,
             debug_json: None,
         })
     }
@@ -1585,7 +1592,7 @@ async fn run_workflow_v1_stream(
                     remote_id = success.remote_id;
                     usage_json = success.usage;
                     let processed =
-                        process_workflow_output_content(&state.data_dir, &success.content)?;
+                        process_workflow_output_content(Some(&state.data_dir), &success.content)?;
                     final_text = PlanningService::sanitize_visible_response(&processed.content);
                     if !final_text.is_empty() {
                         emit_agent_event_ext(
@@ -2826,16 +2833,18 @@ enum WorkflowSyncOutcome {
 struct WorkflowProcessedOutput {
     content: String,
     output_files: Vec<WorkflowGeneratedFile>,
+    deferred_output_files: Vec<DeferredWorkflowFile>,
 }
 
 fn process_workflow_output_content(
-    data_dir: &Path,
+    data_dir: Option<&Path>,
     raw_content: &str,
 ) -> Result<WorkflowProcessedOutput, AppError> {
     let Some(payload) = parse_workflow_payload_value(raw_content) else {
         return Ok(WorkflowProcessedOutput {
             content: raw_content.to_string(),
             output_files: Vec::new(),
+            deferred_output_files: Vec::new(),
         });
     };
 
@@ -2843,6 +2852,7 @@ fn process_workflow_output_content(
         return Ok(WorkflowProcessedOutput {
             content: raw_content.to_string(),
             output_files: Vec::new(),
+            deferred_output_files: Vec::new(),
         });
     };
 
@@ -2883,6 +2893,31 @@ fn process_workflow_output_content(
         ));
     }
 
+    let content_type = workflow_content_type_for_extension(&ext).to_string();
+    if data_dir.is_none() {
+        let selected_name = format!("{}.{}", stem, ext);
+        let text_summary = payload
+            .get("answer")
+            .or_else(|| payload.get("text"))
+            .or_else(|| payload.get("content"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        return Ok(WorkflowProcessedOutput {
+            content: text_summary
+                .unwrap_or("Workflow 已生成待保存文件")
+                .to_string(),
+            output_files: Vec::new(),
+            deferred_output_files: vec![DeferredWorkflowFile {
+                file_name: selected_name,
+                bytes,
+                content_type,
+            }],
+        });
+    }
+
+    let data_dir =
+        data_dir.ok_or_else(|| AppError::Custom("workflow_output_target_missing".into()))?;
     let timestamped_stem = format!("{}_{}", stem, Local::now().format("%Y%m%d_%H%M%S"));
     let output_dir = data_dir.join(WORKFLOW_OUTPUTS_DIR);
     let saved_path = safe_filename::save_unique(&output_dir, &timestamped_stem, &ext, &bytes)?;
@@ -2892,7 +2927,6 @@ fn process_workflow_output_content(
         .unwrap_or(file_name)
         .to_string();
     let saved_path_text = saved_path.to_string_lossy().to_string();
-    let content_type = workflow_content_type_for_extension(&ext).to_string();
     let generated_file = WorkflowGeneratedFile {
         file_name: saved_name.clone(),
         path: saved_path_text.clone(),
@@ -2921,6 +2955,7 @@ fn process_workflow_output_content(
     Ok(WorkflowProcessedOutput {
         content,
         output_files: vec![generated_file],
+        deferred_output_files: Vec::new(),
     })
 }
 
@@ -4449,7 +4484,7 @@ mod tests {
         })
         .to_string();
 
-        let processed = process_workflow_output_content(&dir, &raw).unwrap();
+        let processed = process_workflow_output_content(Some(&dir), &raw).unwrap();
         assert_eq!(processed.output_files.len(), 1);
         assert!(!processed.content.contains(&encoded));
         assert!(processed.content.contains("learning-plan"));
@@ -4457,6 +4492,29 @@ mod tests {
         assert!(saved_path.starts_with(&dir));
         assert_eq!(std::fs::read(&saved_path).unwrap(), file_bytes);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn plugin_workflow_file_result_is_deferred_without_touching_the_filesystem() {
+        let file_bytes = b"PK\x03\x04deferred-docx";
+        let encoded = BASE64_STANDARD.encode(file_bytes);
+        let raw = json!({
+            "file_content": encoded,
+            "file_name": "learning-plan.docx",
+            "answer": "ready"
+        })
+        .to_string();
+
+        let processed = process_workflow_output_content(None, &raw).unwrap();
+        assert!(processed.output_files.is_empty());
+        assert_eq!(processed.deferred_output_files.len(), 1);
+        assert_eq!(processed.deferred_output_files[0].bytes, file_bytes);
+        assert_eq!(
+            processed.deferred_output_files[0].file_name,
+            "learning-plan.docx"
+        );
+        assert_eq!(processed.content, "ready");
+        assert!(!processed.content.contains(&encoded));
     }
 
     #[test]

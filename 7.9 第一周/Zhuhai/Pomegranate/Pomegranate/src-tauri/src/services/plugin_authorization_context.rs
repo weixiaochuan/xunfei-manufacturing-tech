@@ -33,6 +33,7 @@ pub(super) enum TrustedResourceScope {
     BoundAgent(BoundAgentScope),
     BoundCredential(BoundCredentialScope),
     XingchenService(XingchenServiceScope),
+    UserSelectedResource(UserSelectedResourceScope),
     ExactResource(ExactResourceScope),
 }
 
@@ -65,6 +66,17 @@ pub(super) struct XingchenServiceScope {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+pub(super) struct UserSelectedResourceScope {
+    plugin_id: String,
+    plugin_version: String,
+    feature_id: String,
+    contribution_fingerprint: String,
+    target_fingerprint: String,
+    allowed_extension: String,
+    allow_overwrite: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
 struct ExactResourceScope {
     scope_type: CanonicalScopeType,
     capability_id: String,
@@ -86,6 +98,54 @@ impl fmt::Debug for TrustedResourceScope {
 impl TrustedResourceScope {
     pub(super) fn global() -> Self {
         Self::Global
+    }
+
+    /// Construct the selected-file scope only from a backend-resolved current Manifest and a
+    /// canonical target fingerprint retained by the native selection registry.
+    pub(super) fn for_selected_file_export(
+        manifest: &PluginManifestV3,
+        feature_id: &str,
+        target_fingerprint: &str,
+        allowed_extension: &str,
+        allow_overwrite: bool,
+    ) -> Result<Self, AppError> {
+        let policy = canonical_capability_policy("files.writeSelected")
+            .map_err(|_| AppError::PluginAuthorizationScopeInvalid {
+                reason: "registry_scope_policy_invalid",
+            })?
+            .ok_or(AppError::PluginAuthorizationCapabilityInvalid {
+                reason: "capability_not_admitted",
+            })?;
+        if !matches!(policy.status.as_str(), "active" | "restricted")
+            || policy.scope_type != CanonicalScopeType::UserSelectedResource
+            || policy.scope_schema_version != 1
+        {
+            return Err(AppError::PluginAuthorizationScopeMismatch);
+        }
+        if !manifest
+            .permissions
+            .iter()
+            .any(|permission| permission == "files.writeSelected")
+        {
+            return Err(AppError::PluginAuthorizationManifestNotDeclared);
+        }
+        let feature = manifest
+            .contributes
+            .features
+            .iter()
+            .find(|feature| feature.id == feature_id)
+            .ok_or_else(|| AppError::InvalidInput("插件功能不存在或不可访问".into()))?;
+        let canonical_contribution =
+            serde_json::to_string(&("selected-file-export-v1", &manifest.version, feature))?;
+        Ok(Self::UserSelectedResource(UserSelectedResourceScope {
+            plugin_id: manifest.id.clone(),
+            plugin_version: manifest.version.clone(),
+            feature_id: feature.id.clone(),
+            contribution_fingerprint: sha256_hex(&canonical_contribution),
+            target_fingerprint: target_fingerprint.to_string(),
+            allowed_extension: allowed_extension.to_ascii_lowercase(),
+            allow_overwrite,
+        }))
     }
 
     /// 仅从当前可信 Manifest 中重新定位声明式 enhancement，并据此构造 feature scope。
@@ -349,6 +409,7 @@ impl TrustedResourceScope {
             Self::BoundAgent(_) => "bound-agent",
             Self::BoundCredential(_) => "bound-credential",
             Self::XingchenService(_) => "xingchen-service",
+            Self::UserSelectedResource(_) => "user-selected-resource",
             Self::ExactResource(scope) => scope.scope_type.as_str(),
         }
     }
@@ -383,6 +444,20 @@ impl TrustedResourceScope {
                 &scope.external_agent_id,
                 &scope.workflow_id,
                 &scope.configuration_fingerprint,
+            ],
+            Self::UserSelectedResource(scope) => vec![
+                "selected-file-export-v1",
+                &scope.plugin_id,
+                &scope.plugin_version,
+                &scope.feature_id,
+                &scope.contribution_fingerprint,
+                &scope.target_fingerprint,
+                &scope.allowed_extension,
+                if scope.allow_overwrite {
+                    "overwrite"
+                } else {
+                    "new-file"
+                },
             ],
             Self::ExactResource(scope) => vec![
                 "exact-resource-v1",
@@ -471,7 +546,11 @@ pub(crate) fn canonicalize_authorization_scope(
     } else {
         if !matches!(
             kind,
-            "feature" | "bound-agent" | "bound-credential" | "xingchen-service"
+            "feature"
+                | "bound-agent"
+                | "bound-credential"
+                | "xingchen-service"
+                | "user-selected-resource"
         ) {
             return Err(AppError::PluginAuthorizationScopeInvalid {
                 reason: "scope_kind_not_supported",

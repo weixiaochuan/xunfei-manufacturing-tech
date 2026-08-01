@@ -7,7 +7,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use serde::Deserialize;
 use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::account::AccountState;
 use crate::models::{
@@ -23,11 +25,100 @@ use crate::models::{
     PluginManifest, PluginPackageInspection, PluginRuntimePolicy, PluginSummaryAgentOption,
     PluginVersionInfo, ResolvedPluginContributions,
 };
+use crate::services::plugin_file_exports::{PluginFileExportService, SelectedFileExportView};
 use crate::services::plugin_platform::PluginPlatformService;
 use crate::services::plugins::PluginService;
 use crate::services::resource_ownership::resolve_resource_owner;
 use crate::services::xingchen_agent::XingchenAgentService;
 use crate::state::AppState;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginFileExportSelector {
+    plugin_id: String,
+    feature_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PluginFileExportAuthorizationInput {
+    plugin_id: String,
+    feature_id: String,
+    selection_handle: String,
+}
+
+#[tauri::command]
+pub async fn plugin_select_feature_export_target(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account: State<'_, AccountState>,
+    input: PluginFileExportSelector,
+) -> Result<Option<SelectedFileExportView>, String> {
+    let suggested = PluginFileExportService::suggested_file_name(
+        &state.db,
+        &input.plugin_id,
+        &input.feature_id,
+    )
+    .map_err(|error| error.to_string())?;
+    let Some(selected) = app
+        .dialog()
+        .file()
+        .set_file_name(&suggested)
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let target = selected
+        .into_path()
+        .map_err(|_| "无法使用所选保存位置".to_string())?;
+    PluginFileExportService::issue_selection(
+        &state.selected_file_exports,
+        &state.db,
+        &account,
+        &input.plugin_id,
+        &input.feature_id,
+        &target,
+    )
+    .await
+    .map(Some)
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn plugin_grant_feature_export(
+    state: State<'_, AppState>,
+    account: State<'_, AccountState>,
+    input: PluginFileExportAuthorizationInput,
+) -> Result<(), String> {
+    PluginFileExportService::grant(
+        &state.selected_file_exports,
+        &state.db,
+        &account,
+        &input.plugin_id,
+        &input.feature_id,
+        &input.selection_handle,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn plugin_revoke_feature_export(
+    state: State<'_, AppState>,
+    account: State<'_, AccountState>,
+    input: PluginFileExportAuthorizationInput,
+) -> Result<(), String> {
+    PluginFileExportService::revoke(
+        &state.selected_file_exports,
+        &state.db,
+        &account,
+        &input.plugin_id,
+        &input.feature_id,
+        &input.selection_handle,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
 
 /// 列出已安装插件
 #[tauri::command]
@@ -425,6 +516,25 @@ pub async fn plugin_feature_invoke_xingchen(
     .map_err(|error| error.to_string())?;
     let plugin_id = input.plugin_id.clone();
     let feature_id = input.feature_id.clone();
+    let selection_handle = input.selection_handle.clone();
+    if matches!(spec.output_kind.as_str(), "docx-base64" | "file-base64") {
+        let handle = selection_handle
+            .as_deref()
+            .ok_or_else(|| "文件输出需要先选择并授权保存目标".to_string())?;
+        PluginFileExportService::preflight_authorized(
+            &state.selected_file_exports,
+            &state.db,
+            &account,
+            &state.plugin_rate_limiter,
+            &plugin_id,
+            &feature_id,
+            handle,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    } else if selection_handle.is_some() {
+        return Err("当前功能不接受文件选择句柄".into());
+    }
     let result = XingchenAgentService::invoke_workflow(
         app,
         owner,
@@ -440,7 +550,36 @@ pub async fn plugin_feature_invoke_xingchen(
     )
     .await;
     match result {
-        Ok(workflow_result) => {
+        Ok(mut workflow_result) => {
+            if workflow_result.ok
+                && matches!(spec.output_kind.as_str(), "docx-base64" | "file-base64")
+            {
+                if workflow_result.deferred_output_files.len() != 1 {
+                    return Err("Workflow 未返回唯一可验证的文件输出".into());
+                }
+                let deferred = workflow_result.deferred_output_files.remove(0);
+                let saved = PluginFileExportService::write_authorized(
+                    &state.selected_file_exports,
+                    &state.db,
+                    &account,
+                    &state.plugin_rate_limiter,
+                    &plugin_id,
+                    &feature_id,
+                    selection_handle
+                        .as_deref()
+                        .ok_or_else(|| "文件输出需要先选择并授权保存目标".to_string())?,
+                    &deferred.file_name,
+                    &deferred.content_type,
+                    &deferred.bytes,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                workflow_result.content = format!(
+                    "{}\n\n已生成文件：{}\n\n保存位置：{}",
+                    workflow_result.content, saved.file_name, saved.path
+                );
+                workflow_result.output_files.push(saved);
+            }
             let status = if workflow_result.ok {
                 "success"
             } else {
@@ -656,4 +795,32 @@ pub fn plugin_document_summary_agent_finalize(
     input: PluginDocumentSummaryAgentFinalizeInput,
 ) -> Result<(), String> {
     PluginService::finalize_document_summary_agent(&state.db, input).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod selected_file_export_dto_tests {
+    use super::*;
+
+    #[test]
+    fn selected_file_requests_reject_paths_scope_and_actor_fields() {
+        assert!(
+            serde_json::from_value::<PluginFileExportSelector>(serde_json::json!({
+                "pluginId": "plugin",
+                "featureId": "feature",
+                "path": "C:/forged.txt"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<PluginFileExportAuthorizationInput>(serde_json::json!({
+                "pluginId": "plugin",
+                "featureId": "feature",
+                "selectionHandle": "opaque",
+                "scopeKey": "v1:forged",
+                "subject": "forged",
+                "installation": "forged"
+            }))
+            .is_err()
+        );
+    }
 }

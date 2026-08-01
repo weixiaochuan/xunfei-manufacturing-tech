@@ -1444,8 +1444,18 @@ pub struct AgentWorkflowInvokeResult {
     pub mock: bool,
     #[serde(default)]
     pub output_files: Vec<WorkflowGeneratedFile>,
+    /// Plugin exports stay in memory until the selected-file Guard authorizes final writing.
+    #[serde(skip)]
+    pub deferred_output_files: Vec<DeferredWorkflowFile>,
     #[serde(default)]
     pub debug_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DeferredWorkflowFile {
+    pub file_name: String,
+    pub bytes: Vec<u8>,
+    pub content_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

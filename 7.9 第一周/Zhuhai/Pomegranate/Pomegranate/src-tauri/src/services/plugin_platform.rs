@@ -22,9 +22,11 @@ use crate::models::{
     SignatureStatus,
 };
 use crate::services::plugin_authorization_context::TrustedResourceScope;
+#[cfg(test)]
+use crate::services::plugin_permission_guard::require_current_plugin_capabilities;
 use crate::services::plugin_permission_guard::{
-    authorize_plugin_call, require_current_plugin_capabilities, resolve_current_plugin_context,
-    AuthorizedPluginContext, PluginGuardDeny, TrustedPluginCall,
+    authorize_plugin_call, resolve_current_plugin_context, AuthorizedPluginContext,
+    PluginGuardDeny, TrustedPluginCall,
 };
 use crate::services::plugin_rate_limit::PluginRateLimiter;
 use crate::services::plugins::PluginService;
@@ -574,11 +576,6 @@ impl PluginPlatformService {
             required_permission: Some("ai.invoke".into()),
         })?;
         let output_kind = Self::validate_feature_context(db, &authorized, feature_id)?;
-        if matches!(output_kind.as_str(), "docx-base64" | "file-base64") {
-            // This batch does not migrate files.writeSelected. Preserve its existing gate instead
-            // of silently weakening file-output behavior while the four Xingchen calls use A3.
-            require_current_plugin_capabilities(db, plugin_id, &["files.writeSelected"])?;
-        }
         Ok(PluginFeatureInvocationSpec { output_kind })
     }
 
