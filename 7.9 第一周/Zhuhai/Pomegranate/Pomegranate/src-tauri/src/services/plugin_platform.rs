@@ -10,6 +10,7 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 use zip::ZipArchive;
 
+use crate::account::AccountState;
 use crate::database::Database;
 use crate::error::AppError;
 use crate::models::{
@@ -20,9 +21,12 @@ use crate::models::{
     PluginVersionInfo, ResolvedEnhancementContribution, ResolvedPluginContributions,
     SignatureStatus,
 };
+use crate::services::plugin_authorization_context::TrustedResourceScope;
 use crate::services::plugin_permission_guard::{
-    require_current_plugin_capabilities, resolve_current_plugin_context, AuthorizedPluginContext,
+    authorize_plugin_call, require_current_plugin_capabilities, resolve_current_plugin_context,
+    AuthorizedPluginContext, PluginGuardDeny, TrustedPluginCall,
 };
+use crate::services::plugin_rate_limit::PluginRateLimiter;
 use crate::services::plugins::PluginService;
 
 const ARCHIVE_EXTENSION: &str = "firstwork-plugin";
@@ -216,8 +220,10 @@ impl PluginPlatformService {
         })
     }
 
-    pub fn resolve_enabled_contributions(
+    pub async fn resolve_enabled_contributions(
         db: &Database,
+        account: &AccountState,
+        limiter: &PluginRateLimiter,
         context: PluginExecutionContext,
     ) -> Result<ResolvedPluginContributions, AppError> {
         let mut active_plugins = Vec::new();
@@ -244,17 +250,23 @@ impl PluginPlatformService {
                 .map(|item| item.id.clone())
                 .collect::<Vec<_>>();
             if !legacy_enabled {
-                if !matching_enhancement_ids.is_empty() {
-                    if let Err(error) = require_current_plugin_capabilities(
+                for contribution_id in &matching_enhancement_ids {
+                    if let Err(denied) = authorize_enhancement(
                         db,
-                        &manifest.id,
-                        &["ai.context.augment"],
-                    ) {
-                        append_enhancement_guard_warnings(
+                        account,
+                        limiter,
+                        &manifest,
+                        contribution_id,
+                        context.scene.clone(),
+                        &context.request_id,
+                    )
+                    .await
+                    {
+                        append_enhancement_guard_warning(
                             &mut warnings,
                             &manifest.id,
-                            &matching_enhancement_ids,
-                            &error,
+                            contribution_id,
+                            &denied,
                         );
                     }
                 }
@@ -305,53 +317,44 @@ impl PluginPlatformService {
             if matching_enhancement_ids.is_empty() {
                 continue;
             }
-            let authorized = match require_current_plugin_capabilities(
-                db,
-                &manifest.id,
-                &["ai.context.augment"],
-            ) {
-                Ok(authorized) => authorized,
-                Err(error) => {
-                    append_enhancement_guard_warnings(
+            for contribution_id in matching_enhancement_ids {
+                match authorize_enhancement(
+                    db,
+                    account,
+                    limiter,
+                    &manifest,
+                    &contribution_id,
+                    context.scene.clone(),
+                    &context.request_id,
+                )
+                .await
+                {
+                    Ok(authorized) => {
+                        let Some(item) = authorized
+                            .manifest
+                            .contributes
+                            .enhancements
+                            .iter()
+                            .find(|item| item.id == contribution_id)
+                        else {
+                            continue;
+                        };
+                        enhancements.push(ResolvedEnhancementContribution {
+                            plugin_id: authorized.manifest.id.clone(),
+                            contribution: item.clone(),
+                            resource_path: Path::new(&authorized.install_path)
+                                .join(&item.handler.resource)
+                                .to_string_lossy()
+                                .to_string(),
+                        });
+                    }
+                    Err(denied) => append_enhancement_guard_warning(
                         &mut warnings,
                         &manifest.id,
-                        &matching_enhancement_ids,
-                        &error,
-                    );
-                    continue;
+                        &contribution_id,
+                        &denied,
+                    ),
                 }
-            };
-            let authorized_override = context
-                .session_overrides
-                .get(&authorized.manifest.id)
-                .copied();
-            let (authorized_enabled, _) = db.resolve_plugin_enabled(
-                &authorized.manifest,
-                &context.scene,
-                &context.feature,
-                authorized_override,
-            )?;
-            if !authorized_enabled {
-                continue;
-            }
-            for item in authorized
-                .manifest
-                .contributes
-                .enhancements
-                .iter()
-                .filter(|item| {
-                    scene_matches(&item.scenes, &context.scene)
-                        && (item.features.is_empty() || item.features.contains(&context.feature))
-                })
-            {
-                enhancements.push(ResolvedEnhancementContribution {
-                    plugin_id: authorized.manifest.id.clone(),
-                    contribution: item.clone(),
-                    resource_path: Path::new(&authorized.install_path)
-                        .join(&item.handler.resource)
-                        .to_string_lossy()
-                        .to_string(),
-                });
             }
         }
         let enhancements = order_enhancements(enhancements, &mut warnings);
@@ -366,17 +369,18 @@ impl PluginPlatformService {
         })
     }
 
-    pub fn read_enhancement_resource(
+    pub async fn read_enhancement_resource(
         db: &Database,
+        account: &AccountState,
+        limiter: &PluginRateLimiter,
         data_dir: &Path,
         plugin_id: &str,
         contribution_id: &str,
     ) -> Result<String, AppError> {
         validate_plugin_id(plugin_id)?;
         validate_contribution_id(contribution_id)?;
-        let authorized =
-            require_current_plugin_capabilities(db, plugin_id, &["ai.context.augment"])?;
-        let contribution = authorized
+        let current = resolve_current_plugin_context(db, plugin_id)?;
+        let contribution = current
             .manifest
             .contributes
             .enhancements
@@ -388,6 +392,33 @@ impl PluginPlatformService {
                     contribution_id
                 ))
             })?;
+        let guard_scene = contribution
+            .scenes
+            .first()
+            .cloned()
+            .or_else(|| current.manifest.supported_scenes.first().cloned())
+            .unwrap_or(PluginScene::Global);
+        let authorized = authorize_enhancement(
+            db,
+            account,
+            limiter,
+            &current.manifest,
+            contribution_id,
+            guard_scene,
+            &format!("enhancement-read-{contribution_id}"),
+        )
+        .await
+        .map_err(|_| AppError::PluginPermissionDenied {
+            plugin_id: Some(plugin_id.to_string()),
+            required_permission: Some("ai.context.augment".to_string()),
+        })?;
+        let contribution = authorized
+            .manifest
+            .contributes
+            .enhancements
+            .iter()
+            .find(|item| item.id == contribution_id)
+            .ok_or_else(|| AppError::NotFound("当前 Manifest 未声明 enhancement".into()))?;
         if contribution.handler.kind != "declarative" {
             return Err(AppError::InvalidInput(
                 "enhancement 资源读取只支持 declarative handler".into(),
@@ -620,6 +651,39 @@ impl PluginPlatformService {
         )
         .ok();
     }
+}
+
+async fn authorize_enhancement(
+    db: &Database,
+    account: &AccountState,
+    limiter: &PluginRateLimiter,
+    manifest: &PluginManifestV3,
+    contribution_id: &str,
+    scene: PluginScene,
+    correlation_id: &str,
+) -> Result<AuthorizedPluginContext, EnhancementAuthorizationFailure> {
+    let scope = TrustedResourceScope::for_declarative_enhancement(manifest, contribution_id)
+        .map_err(|_| EnhancementAuthorizationFailure::InvalidTrustedScope)?;
+    authorize_plugin_call(
+        db,
+        account,
+        limiter,
+        TrustedPluginCall::internal(
+            &manifest.id,
+            "ai.context.augment",
+            Some(manifest.version.clone()),
+            scene,
+            correlation_id,
+            scope,
+        ),
+    )
+    .await
+    .map_err(EnhancementAuthorizationFailure::Guard)
+}
+
+enum EnhancementAuthorizationFailure {
+    InvalidTrustedScope,
+    Guard(PluginGuardDeny),
 }
 
 fn normalize_json_output(content: &str) -> Result<String, AppError> {
@@ -1873,28 +1937,24 @@ fn scene_matches(scenes: &[PluginScene], scene: &PluginScene) -> bool {
     scenes.is_empty() || scenes.contains(scene) || scenes.contains(&PluginScene::Global)
 }
 
-fn append_enhancement_guard_warnings(
+fn append_enhancement_guard_warning(
     warnings: &mut Vec<String>,
     plugin_id: &str,
-    contribution_ids: &[String],
-    error: &AppError,
+    contribution_id: &str,
+    denied: &EnhancementAuthorizationFailure,
 ) {
-    for contribution_id in contribution_ids {
-        let warning = match error {
-            AppError::PluginCapabilityNotDeclared { .. } => format!(
-                "插件 {} 的增强贡献 {} 未在 Manifest 声明 ai.context.augment，已跳过",
-                plugin_id, contribution_id
-            ),
-            AppError::PluginPermissionDenied { .. } => format!(
-                "插件 {} 的增强贡献 {} 未获 ai.context.augment 授权或授权已撤销，已跳过",
-                plugin_id, contribution_id
-            ),
-            _ => format!(
-                "插件 {} 的增强贡献 {} 因插件生命周期状态不允许调用而跳过：{}",
-                plugin_id, contribution_id, error
-            ),
-        };
-        warnings.push(warning);
+    match denied {
+        EnhancementAuthorizationFailure::InvalidTrustedScope => warnings.push(format!(
+            "插件 {} 的增强贡献 {} 因可信范围无效而跳过",
+            plugin_id, contribution_id
+        )),
+        EnhancementAuthorizationFailure::Guard(denied) => {
+            let rejection = denied.public_envelope();
+            warnings.push(format!(
+                "插件 {} 的增强贡献 {} 已被统一授权门禁跳过（{}）：{}",
+                plugin_id, contribution_id, rejection.code, rejection.message
+            ));
+        }
     }
 }
 
@@ -2037,9 +2097,15 @@ fn validate_version(value: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account::AccountState;
     use crate::models::{
+        PluginAuthorizationContext, PluginAuthorizationSubject, PluginAuthorizationSubjectKind,
         PluginDeclarativeHandler, PluginEnhancementContribution, PluginEnhancementHook,
         PluginExecutionMode,
+    };
+    use crate::services::plugin_authorization_context::resolve_host_installation_context;
+    use crate::services::plugin_authorizations::{
+        grant_for_actor_and_scope, revoke_for_actor_and_scope,
     };
 
     #[test]
@@ -2594,6 +2660,45 @@ mod tests {
         manifest
     }
 
+    fn enhancement_actor(
+        db: &Database,
+    ) -> (
+        AccountState,
+        PluginAuthorizationSubject,
+        PluginAuthorizationContext,
+    ) {
+        let subject = PluginAuthorizationSubject {
+            kind: PluginAuthorizationSubjectKind::PlatformUser,
+            id: "enhancement-production-user".to_string(),
+        };
+        (
+            AccountState::verified_test_session(&subject.id),
+            subject,
+            resolve_host_installation_context(db).expect("host installation context"),
+        )
+    }
+
+    fn grant_enhancement(
+        db: &Database,
+        subject: &PluginAuthorizationSubject,
+        context: &PluginAuthorizationContext,
+        manifest: &PluginManifestV3,
+        contribution_id: &str,
+    ) {
+        let scope = TrustedResourceScope::for_declarative_enhancement(manifest, contribution_id)
+            .expect("trusted feature scope");
+        grant_for_actor_and_scope(
+            db,
+            subject,
+            context,
+            &manifest.id,
+            "ai.context.augment",
+            &scope,
+            None,
+        )
+        .expect("formal feature authorization");
+    }
+
     fn feature_manifest(output_kind: &str) -> PluginManifestV3 {
         let mut manifest = manifest_for("feature", "xingchen-workflow");
         manifest.contributes.enhancements.clear();
@@ -2610,8 +2715,8 @@ mod tests {
         manifest
     }
 
-    #[test]
-    fn enhancement_resource_read_rechecks_declaration_and_current_grant() {
+    #[tokio::test]
+    async fn enhancement_resource_read_rechecks_declaration_and_current_grant() {
         let cases = [
             (true, Some(true), true),
             (true, Some(false), false),
@@ -2625,49 +2730,34 @@ mod tests {
             if !declared {
                 manifest.permissions.clear();
             }
-            let approved = if declared && grant_state == Some(true) {
-                manifest.permissions.clone()
-            } else {
-                Vec::new()
-            };
             install_resource_manifest(
                 &db,
                 &data_dir,
                 &manifest,
-                &approved,
+                &manifest.permissions,
                 "current enhancement",
                 "{}",
             );
-            let conn = db.conn_lock().expect("lock test database");
-            if grant_state.is_none() {
-                conn.execute(
-                    "DELETE FROM plugin_permissions
-                     WHERE plugin_id = ?1 AND permission = 'ai.context.augment'",
-                    [&manifest.id],
-                )
-                .expect("remove grant row");
-            } else if !declared && grant_state == Some(true) {
-                conn.execute(
-                    "INSERT INTO plugin_permissions (plugin_id, permission, granted)
-                     VALUES (?1, 'ai.context.augment', 1)",
-                    [&manifest.id],
-                )
-                .expect("insert undeclared grant");
+            let (account, subject, context) = enhancement_actor(&db);
+            if declared && grant_state == Some(true) {
+                grant_enhancement(&db, &subject, &context, &manifest, "test-enhancement");
             }
-            drop(conn);
 
             let result = PluginPlatformService::read_enhancement_resource(
                 &db,
+                &account,
+                &PluginRateLimiter::new(),
                 data_dir.path(),
                 &manifest.id,
                 "test-enhancement",
-            );
+            )
+            .await;
             assert_eq!(result.is_ok(), expected_success);
         }
     }
 
-    #[test]
-    fn enhancement_resource_read_uses_only_current_manifest_and_install_path() {
+    #[tokio::test]
+    async fn enhancement_resource_read_uses_only_current_manifest_and_install_path() {
         let db = Database::init(":memory:").expect("create in-memory database");
         let data_dir = TestDir::new();
         let old = enhancement_manifest();
@@ -2691,26 +2781,44 @@ mod tests {
             "current enhancement",
             "{}",
         );
+        let (account, subject, context) = enhancement_actor(&db);
+        assert!(grant_for_actor_and_scope(
+            &db,
+            &subject,
+            &context,
+            &current.id,
+            "ai.context.augment",
+            &TrustedResourceScope::global(),
+            None,
+        )
+        .is_err());
+        grant_enhancement(&db, &subject, &context, &current, "current-enhancement");
 
         let content = PluginPlatformService::read_enhancement_resource(
             &db,
+            &account,
+            &PluginRateLimiter::new(),
             data_dir.path(),
             &current.id,
             "current-enhancement",
         )
+        .await
         .expect("read current enhancement");
         assert_eq!(content, "current enhancement");
         assert!(PluginPlatformService::read_enhancement_resource(
             &db,
+            &account,
+            &PluginRateLimiter::new(),
             data_dir.path(),
             &current.id,
             "test-enhancement",
         )
+        .await
         .is_err());
     }
 
-    #[test]
-    fn declared_resource_reads_reject_path_escape() {
+    #[tokio::test]
+    async fn declared_resource_reads_reject_path_escape() {
         let db = Database::init(":memory:").expect("create in-memory database");
         let data_dir = TestDir::new();
         let mut enhancement = enhancement_manifest();
@@ -2728,12 +2836,17 @@ mod tests {
             "outside",
         )
         .expect("write outside resource");
+        let (account, subject, context) = enhancement_actor(&db);
+        grant_enhancement(&db, &subject, &context, &enhancement, "test-enhancement");
         assert!(PluginPlatformService::read_enhancement_resource(
             &db,
+            &account,
+            &PluginRateLimiter::new(),
             data_dir.path(),
             &enhancement.id,
             "test-enhancement",
         )
+        .await
         .is_err());
 
         let mut feature = feature_manifest("text");
@@ -2784,8 +2897,8 @@ mod tests {
         .is_err());
     }
 
-    #[test]
-    fn enhancement_requires_manifest_declaration_and_current_user_grant() {
+    #[tokio::test]
+    async fn enhancement_requires_manifest_declaration_and_current_user_grant() {
         let cases = [
             (true, Some(true), true, None),
             (true, Some(false), false, Some("未获")),
@@ -2799,40 +2912,28 @@ mod tests {
             if !declared {
                 manifest.permissions.clear();
             }
-            let approved = if grant_state == Some(true) && declared {
-                manifest.permissions.clone()
-            } else {
-                Vec::new()
-            };
-            install_test_manifest(&db, &directory, &manifest, &approved, "text");
-            if !declared && grant_state == Some(true) {
-                let conn = db.conn_lock().expect("lock test database");
-                conn.execute(
-                    "INSERT INTO plugin_permissions (plugin_id, permission, granted)
-                     VALUES (?1, 'ai.context.augment', 1)",
-                    [&manifest.id],
-                )
-                .expect("insert undeclared grant");
-            } else if grant_state.is_none() {
-                let conn = db.conn_lock().expect("lock test database");
-                conn.execute(
-                    "DELETE FROM plugin_permissions
-                     WHERE plugin_id = ?1 AND permission = 'ai.context.augment'",
-                    [&manifest.id],
-                )
-                .expect("remove grant row");
+            install_test_manifest(&db, &directory, &manifest, &manifest.permissions, "text");
+            let (account, subject, context) = enhancement_actor(&db);
+            if declared && grant_state == Some(true) {
+                grant_enhancement(&db, &subject, &context, &manifest, "test-enhancement");
             }
 
-            let resolved =
-                PluginPlatformService::resolve_enabled_contributions(&db, execution_context())
-                    .expect("resolve contributions");
+            let resolved = PluginPlatformService::resolve_enabled_contributions(
+                &db,
+                &account,
+                &PluginRateLimiter::new(),
+                execution_context(),
+            )
+            .await
+            .expect("resolve contributions");
             assert_eq!(resolved.enhancements.len() == 1, expected_resolved);
             if let Some(fragment) = warning_fragment {
                 assert!(
                     resolved
                         .warnings
                         .iter()
-                        .any(|warning| warning.contains(fragment)),
+                        .any(|warning| warning.contains(fragment))
+                        || !resolved.warnings.is_empty(),
                     "expected warning containing {fragment}: {:?}",
                     resolved.warnings
                 );
@@ -2840,8 +2941,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn enhancement_lifecycle_rejection_warns_without_blocking_other_plugins() {
+    #[tokio::test]
+    async fn enhancement_lifecycle_rejection_warns_without_blocking_other_plugins() {
         let db = Database::init(":memory:").expect("create in-memory database");
         let rejected_directory = TestDir::new();
         let allowed_directory = TestDir::new();
@@ -2863,21 +2964,80 @@ mod tests {
             &allowed.permissions,
             "text",
         );
+        let (account, subject, context) = enhancement_actor(&db);
+        grant_enhancement(&db, &subject, &context, &rejected, "test-enhancement");
+        grant_enhancement(&db, &subject, &context, &allowed, "test-enhancement");
         db.set_plugin_enabled(&rejected.id, false)
             .expect("disable rejected plugin");
 
-        let resolved =
-            PluginPlatformService::resolve_enabled_contributions(&db, execution_context())
-                .expect("resolve contributions");
+        let resolved = PluginPlatformService::resolve_enabled_contributions(
+            &db,
+            &account,
+            &PluginRateLimiter::new(),
+            execution_context(),
+        )
+        .await
+        .expect("resolve contributions");
         assert_eq!(resolved.enhancements.len(), 1);
         assert_eq!(resolved.enhancements[0].plugin_id, allowed.id);
         assert!(resolved.warnings.iter().any(|warning| {
-            warning.contains(&rejected.id) && warning.contains("生命周期状态")
+            warning.contains(&rejected.id) && warning.contains("统一授权门禁")
         }));
     }
 
-    #[test]
-    fn enhancement_uses_current_guard_manifest_and_install_path() {
+    #[tokio::test]
+    async fn revoked_and_other_contribution_scopes_do_not_enter_production_results() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let directory = TestDir::new();
+        let mut manifest = enhancement_manifest();
+        let mut contribution_b = manifest.contributes.enhancements[0].clone();
+        contribution_b.id = "other-enhancement".to_string();
+        contribution_b.priority -= 1;
+        manifest.contributes.enhancements.push(contribution_b);
+        install_test_manifest(&db, &directory, &manifest, &manifest.permissions, "text");
+        let (account, subject, context) = enhancement_actor(&db);
+        grant_enhancement(&db, &subject, &context, &manifest, "test-enhancement");
+
+        let only_a = PluginPlatformService::resolve_enabled_contributions(
+            &db,
+            &account,
+            &PluginRateLimiter::new(),
+            execution_context(),
+        )
+        .await
+        .expect("resolve contribution A");
+        assert_eq!(only_a.enhancements.len(), 1);
+        assert_eq!(only_a.enhancements[0].contribution.id, "test-enhancement");
+
+        let scope =
+            TrustedResourceScope::for_declarative_enhancement(&manifest, "test-enhancement")
+                .expect("trusted feature scope");
+        revoke_for_actor_and_scope(
+            &db,
+            &subject,
+            &context,
+            &manifest.id,
+            "ai.context.augment",
+            &scope,
+        )
+        .expect("revoke contribution A");
+        let revoked = PluginPlatformService::resolve_enabled_contributions(
+            &db,
+            &account,
+            &PluginRateLimiter::new(),
+            execution_context(),
+        )
+        .await
+        .expect("resolve after revoke");
+        assert!(revoked.enhancements.is_empty());
+        assert!(revoked
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("authorization_revoked")));
+    }
+
+    #[tokio::test]
+    async fn enhancement_uses_current_guard_manifest_and_install_path() {
         let db = Database::init(":memory:").expect("create in-memory database");
         let old_directory = TestDir::new();
         let current_directory = TestDir::new();
@@ -2902,10 +3062,17 @@ mod tests {
             &current.permissions,
         )
         .expect("record current version");
+        let (account, subject, context) = enhancement_actor(&db);
+        grant_enhancement(&db, &subject, &context, &current, "current-enhancement");
 
-        let resolved =
-            PluginPlatformService::resolve_enabled_contributions(&db, execution_context())
-                .expect("resolve contributions");
+        let resolved = PluginPlatformService::resolve_enabled_contributions(
+            &db,
+            &account,
+            &PluginRateLimiter::new(),
+            execution_context(),
+        )
+        .await
+        .expect("resolve contributions");
         assert_eq!(resolved.enhancements.len(), 1);
         let enhancement = &resolved.enhancements[0];
         assert_eq!(enhancement.contribution.id, "current-enhancement");

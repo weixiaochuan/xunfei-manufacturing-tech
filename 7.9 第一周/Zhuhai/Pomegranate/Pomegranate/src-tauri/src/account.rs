@@ -554,6 +554,70 @@ impl Default for AccountState {
     }
 }
 
+#[cfg(test)]
+struct FixedTestCredentialStore;
+
+#[cfg(test)]
+impl SessionCredentialStore for FixedTestCredentialStore {
+    fn save(&self, _token: &[u8]) -> Result<(), CredentialError> {
+        Ok(())
+    }
+
+    fn load(&self) -> Result<Option<Zeroizing<Vec<u8>>>, CredentialError> {
+        Ok(Some(Zeroizing::new(
+            b"test-session-token-value-with-at-least-43-bytes".to_vec(),
+        )))
+    }
+
+    fn delete(&self) -> Result<(), CredentialError> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+struct FixedTestAccountRemote {
+    platform_user_id: String,
+}
+
+#[cfg(test)]
+#[async_trait]
+impl AccountRemote for FixedTestAccountRemote {
+    async fn exchange_ticket(
+        &self,
+        _ticket: &str,
+    ) -> Result<(Zeroizing<String>, AccountUser), RemoteError> {
+        unreachable!("test session does not exchange tickets")
+    }
+
+    async fn get_session(&self, _token: &[u8]) -> Result<AccountUser, RemoteError> {
+        Ok(AccountUser {
+            platform_user_id: self.platform_user_id.clone(),
+            account_number: "POME-TEST".to_string(),
+            username: "plugin-guard-test".to_string(),
+            display_name: None,
+            email: None,
+        })
+    }
+
+    async fn logout(&self, _token: &[u8]) -> Result<(), RemoteError> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl AccountState {
+    /// 仅供 crate 内生产链测试建立可验证的后端账号会话，不进入正式构造 API。
+    pub(crate) fn verified_test_session(platform_user_id: &str) -> Self {
+        Self {
+            pending_result: Mutex::new(None),
+            credentials: Arc::new(FixedTestCredentialStore),
+            remote: Arc::new(FixedTestAccountRemote {
+                platform_user_id: platform_user_id.to_string(),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum CallbackError {
     InvalidUri,

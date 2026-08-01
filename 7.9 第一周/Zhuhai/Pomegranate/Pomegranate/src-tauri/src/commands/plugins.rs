@@ -128,17 +128,21 @@ pub fn read_plugin_asset(
 }
 
 #[tauri::command]
-pub fn plugin_read_enhancement_resource(
+pub async fn plugin_read_enhancement_resource(
     state: State<'_, AppState>,
+    account: State<'_, AccountState>,
     plugin_id: String,
     contribution_id: String,
 ) -> Result<String, String> {
     PluginPlatformService::read_enhancement_resource(
         &state.db,
+        &account,
+        &state.plugin_rate_limiter,
         &state.data_dir,
         &plugin_id,
         &contribution_id,
     )
+    .await
     .map_err(|e| e.to_string())
 }
 
@@ -371,12 +375,19 @@ pub fn plugin_set_activation_setting(
 }
 
 #[tauri::command]
-pub fn plugin_resolve_enabled_contributions(
+pub async fn plugin_resolve_enabled_contributions(
     state: State<'_, AppState>,
+    account: State<'_, AccountState>,
     context: PluginExecutionContext,
 ) -> Result<ResolvedPluginContributions, String> {
-    PluginPlatformService::resolve_enabled_contributions(&state.db, context)
-        .map_err(|error| error.to_string())
+    PluginPlatformService::resolve_enabled_contributions(
+        &state.db,
+        &account,
+        &state.plugin_rate_limiter,
+        context,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
