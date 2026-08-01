@@ -565,11 +565,19 @@ impl PluginService {
             .filter(|v| *v == "agent" || *v == "mock")
             .unwrap_or("mock")
             .to_string();
-        let external_agent_id = settings
+        let configured_external_agent_id = settings
             .get(SUMMARY_EXTERNAL_AGENT_KEY)
             .and_then(|v| v.as_str())
             .filter(|v| !v.trim().is_empty())
             .map(str::to_string);
+        // plugin settings 是全局存储；账户切换后必须用当前后端可信 owner 重新证明资源归属。
+        // 无法证明时只对外隐藏 ID，不改写存量配置，也不自动认领 legacy 资源。
+        let external_agent_id = match configured_external_agent_id {
+            Some(agent_id) if XingchenAgentService::get_agent(db, owner, &agent_id)?.is_some() => {
+                Some(agent_id)
+            }
+            _ => None,
+        };
         Ok(PluginDocumentSummaryConfig {
             plugin_id: plugin_id.to_string(),
             mode,
@@ -1377,6 +1385,7 @@ fn enrich_plugin_info(mut plugin: PluginInfo, integrity_status: Option<String>) 
 mod tests {
     use super::*;
     use crate::models::PluginManifestV3;
+    use rusqlite::params;
 
     fn fixture_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1387,6 +1396,181 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn seed_document_summary_fixture(db: &Database) {
+        let manifest = normalize_legacy_manifest(PluginManifest {
+            id: "summary-plugin".into(),
+            name: "Summary Plugin".into(),
+            version: "1.0.0".into(),
+            description: None,
+            author: Some("tests".into()),
+            main: "main.js".into(),
+            styles: None,
+            min_app_version: None,
+            permissions: Vec::new(),
+            contributes: PluginContributes::default(),
+        });
+        db.upsert_plugin(&manifest, "/tmp/summary-plugin", "test-hash")
+            .expect("insert summary plugin");
+        let conn = db.conn_lock().expect("lock database");
+        conn.execute(
+            "INSERT INTO products (id, developer_id, name, product_type, status)
+             VALUES ('summary-product', 'developer', 'Summary Product', 'xingchen-agent', 'published')",
+            [],
+        )
+        .expect("insert summary product");
+    }
+
+    fn seed_summary_agent(db: &Database, id: &str, owner: Option<&ResourceOwner>) {
+        let conn = db.conn_lock().expect("lock database");
+        conn.execute(
+            "INSERT INTO external_agents
+                (id, product_id, provider, name, endpoint, protocol_type, mock_mode, enabled)
+             VALUES (?1, 'summary-product', 'xingchen', ?1, 'mock://summary',
+                     'configurable', 1, 1)",
+            params![id],
+        )
+        .expect("insert summary agent");
+        if let Some(owner) = owner {
+            conn.execute(
+                "INSERT INTO external_agent_resource_ownership
+                    (external_agent_id, platform_subject_id, host_installation_id)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    id,
+                    owner.platform_subject_id(),
+                    owner.host_installation_id()
+                ],
+            )
+            .expect("insert summary agent ownership");
+        }
+    }
+
+    fn set_summary_agent_config(db: &Database, agent_id: &str) {
+        db.set_plugin_setting(
+            "summary-plugin",
+            SUMMARY_MODE_KEY,
+            &serde_json::Value::String("agent".into()),
+        )
+        .expect("set summary mode");
+        db.set_plugin_setting(
+            "summary-plugin",
+            SUMMARY_EXTERNAL_AGENT_KEY,
+            &serde_json::Value::String(agent_id.into()),
+        )
+        .expect("set summary agent");
+    }
+
+    #[test]
+    fn document_summary_config_only_returns_agent_id_to_its_owner() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let data_dir = fixture_dir("summary-config-owner");
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
+        seed_document_summary_fixture(&db);
+        seed_summary_agent(&db, "owned-agent", Some(&owner));
+        set_summary_agent_config(&db, "owned-agent");
+
+        let config =
+            PluginService::get_document_summary_config(&db, &data_dir, &owner, "summary-plugin")
+                .expect("load owned summary config");
+        assert_eq!(config.mode, "agent");
+        assert_eq!(config.external_agent_id.as_deref(), Some("owned-agent"));
+
+        fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn document_summary_config_hides_agent_id_from_other_owners() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let data_dir = fixture_dir("summary-config-cross-owner");
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
+        seed_document_summary_fixture(&db);
+        seed_summary_agent(&db, "private-agent", Some(&owner));
+        set_summary_agent_config(&db, "private-agent");
+
+        for denied_owner in [
+            ResourceOwner::fixture("subject-b", "installation-a"),
+            ResourceOwner::fixture("subject-a", "installation-b"),
+        ] {
+            let config = PluginService::get_document_summary_config(
+                &db,
+                &data_dir,
+                &denied_owner,
+                "summary-plugin",
+            )
+            .expect("load inaccessible summary config without leaking the agent");
+            assert_eq!(config.mode, "agent");
+            assert!(config.external_agent_id.is_none());
+            assert!(config.available_agents.is_empty());
+        }
+
+        fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn document_summary_config_hides_unowned_and_missing_agents_without_claiming_them() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let data_dir = fixture_dir("summary-config-unowned");
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
+        seed_document_summary_fixture(&db);
+        seed_summary_agent(&db, "legacy-agent", None);
+
+        for inaccessible_id in ["legacy-agent", "missing-agent"] {
+            set_summary_agent_config(&db, inaccessible_id);
+            let config = PluginService::get_document_summary_config(
+                &db,
+                &data_dir,
+                &owner,
+                "summary-plugin",
+            )
+            .expect("hide inaccessible summary agent");
+            assert_eq!(config.mode, "agent");
+            assert!(config.external_agent_id.is_none());
+        }
+        let ownership_count: i64 = db
+            .conn_lock()
+            .expect("lock database")
+            .query_row(
+                "SELECT COUNT(*) FROM external_agent_resource_ownership
+                 WHERE external_agent_id = 'legacy-agent'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count legacy ownership rows");
+        assert_eq!(ownership_count, 0);
+
+        fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn document_summary_config_save_rejects_cross_owner_agent() {
+        let db = Database::init(":memory:").expect("create in-memory database");
+        let data_dir = fixture_dir("summary-config-save-owner");
+        let owner = ResourceOwner::fixture("subject-a", "installation-a");
+        let other_owner = ResourceOwner::fixture("subject-b", "installation-a");
+        seed_document_summary_fixture(&db);
+        seed_summary_agent(&db, "private-agent", Some(&owner));
+
+        let error = PluginService::set_document_summary_config(
+            &db,
+            &data_dir,
+            &other_owner,
+            PluginDocumentSummaryConfigInput {
+                plugin_id: "summary-plugin".into(),
+                mode: "agent".into(),
+                external_agent_id: Some("private-agent".into()),
+            },
+        )
+        .expect_err("cross-owner summary config must be rejected");
+        assert!(!error.to_string().contains("private-agent"));
+        assert!(db
+            .get_plugin_settings("summary-plugin")
+            .expect("load settings")
+            .get(SUMMARY_EXTERNAL_AGENT_KEY)
+            .is_none());
+
+        fs::remove_dir_all(data_dir).ok();
     }
 
     #[test]
