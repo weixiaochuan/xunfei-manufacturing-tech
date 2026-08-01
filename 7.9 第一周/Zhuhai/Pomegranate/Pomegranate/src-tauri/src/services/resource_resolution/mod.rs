@@ -7,6 +7,7 @@ use std::fmt;
 
 use super::resource_ownership::ResourceOwner;
 
+pub(crate) mod agent_children;
 pub(crate) mod credential;
 pub(crate) mod external_agent;
 
