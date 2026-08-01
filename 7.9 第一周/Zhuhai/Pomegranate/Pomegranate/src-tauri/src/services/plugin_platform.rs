@@ -3728,10 +3728,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_permission_runtime_mismatch_but_keeps_three_compatibility_exceptions() {
+    fn planning_runtime_admission_and_compatibility_exceptions_are_exact() {
         let mut manifest = manifest_for("feature", "declarative-ui");
         manifest.contributes.enhancements.clear();
-        manifest.permissions = vec!["planning.files.write".into()];
+        for permission in [
+            "ai.context.read",
+            "ai.session.read",
+            "ui.chat.toolbar",
+            "ui.chat.panel",
+            "planning.files.read",
+            "planning.files.write",
+        ] {
+            manifest.permissions = vec![permission.into()];
+            assert!(validate_manifest(&manifest).is_ok(), "{permission}");
+        }
+        manifest.permissions = vec!["credentials.use".into()];
         assert!(validate_manifest(&manifest).is_err());
 
         for permission in ["tasks.read", "tasks.write", "mcp.connect"] {

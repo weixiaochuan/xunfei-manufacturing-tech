@@ -780,7 +780,8 @@
       ],
       "scopeType": "session",
       "runtimeKinds": [
-        "prompt-pack"
+        "prompt-pack",
+        "declarative-ui"
       ],
       "pluginSources": [
         "bundled",
@@ -974,7 +975,8 @@
       ],
       "scopeType": "session",
       "runtimeKinds": [
-        "prompt-pack"
+        "prompt-pack",
+        "declarative-ui"
       ],
       "pluginSources": [
         "bundled",
@@ -1157,7 +1159,8 @@
       ],
       "scopeType": "current-window",
       "runtimeKinds": [
-        "prompt-pack"
+        "prompt-pack",
+        "declarative-ui"
       ],
       "pluginSources": [
         "bundled",
@@ -1246,7 +1249,8 @@
       ],
       "scopeType": "current-window",
       "runtimeKinds": [
-        "prompt-pack"
+        "prompt-pack",
+        "declarative-ui"
       ],
       "pluginSources": [
         "bundled",
@@ -1335,7 +1339,8 @@
       ],
       "scopeType": "planning-workspace",
       "runtimeKinds": [
-        "prompt-pack"
+        "prompt-pack",
+        "declarative-ui"
       ],
       "pluginSources": [
         "bundled",
@@ -1426,7 +1431,8 @@
       ],
       "scopeType": "planning-workspace",
       "runtimeKinds": [
-        "prompt-pack"
+        "prompt-pack",
+        "declarative-ui"
       ],
       "pluginSources": [
         "bundled",

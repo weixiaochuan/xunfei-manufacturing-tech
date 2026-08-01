@@ -34,6 +34,8 @@ pub(super) enum TrustedResourceScope {
     BoundCredential(BoundCredentialScope),
     XingchenService(XingchenServiceScope),
     UserSelectedResource(UserSelectedResourceScope),
+    PlanningWorkspace(PlanningWorkspaceScope),
+    Session(SessionScope),
     ExactResource(ExactResourceScope),
 }
 
@@ -77,6 +79,22 @@ pub(super) struct UserSelectedResourceScope {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+pub(super) struct PlanningWorkspaceScope {
+    plugin_version: String,
+    session_kind: String,
+    session_id: String,
+    capability_id: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct SessionScope {
+    plugin_version: String,
+    session_kind: String,
+    session_id: String,
+    capability_id: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
 struct ExactResourceScope {
     scope_type: CanonicalScopeType,
     capability_id: String,
@@ -98,6 +116,70 @@ impl fmt::Debug for TrustedResourceScope {
 impl TrustedResourceScope {
     pub(super) fn global() -> Self {
         Self::Global
+    }
+
+    /// Planning scopes are derived only from the current trusted built-in Manifest and a
+    /// backend-validated session key. The capability is part of the fingerprint so read, write,
+    /// session access and context augmentation cannot be interchanged by a caller.
+    pub(super) fn for_planning_action(
+        manifest: &PluginManifestV3,
+        capability_id: &str,
+        session_kind: &str,
+        session_id: &str,
+    ) -> Result<Self, AppError> {
+        if manifest.id != "official-planning-with-files"
+            || session_kind.trim().is_empty()
+            || session_id.trim().is_empty()
+            || !manifest
+                .permissions
+                .iter()
+                .any(|permission| permission == capability_id)
+        {
+            return Err(AppError::PluginAuthorizationScopeMismatch);
+        }
+        let policy = canonical_capability_policy(capability_id)
+            .map_err(|_| AppError::PluginAuthorizationScopeInvalid {
+                reason: "registry_scope_policy_invalid",
+            })?
+            .ok_or(AppError::PluginAuthorizationCapabilityInvalid {
+                reason: "capability_not_admitted",
+            })?;
+        if !matches!(policy.status.as_str(), "active" | "restricted")
+            || policy.scope_schema_version != 1
+        {
+            return Err(AppError::PluginAuthorizationScopeMismatch);
+        }
+        match policy.scope_type {
+            CanonicalScopeType::PlanningWorkspace => {
+                Ok(Self::PlanningWorkspace(PlanningWorkspaceScope {
+                    plugin_version: manifest.version.clone(),
+                    session_kind: session_kind.to_string(),
+                    session_id: session_id.to_string(),
+                    capability_id: capability_id.to_string(),
+                }))
+            }
+            CanonicalScopeType::Session => Ok(Self::Session(SessionScope {
+                plugin_version: manifest.version.clone(),
+                session_kind: session_kind.to_string(),
+                session_id: session_id.to_string(),
+                capability_id: capability_id.to_string(),
+            })),
+            CanonicalScopeType::Feature if capability_id == "ai.context.augment" => {
+                let feature_id = format!("planning-{session_kind}-{session_id}");
+                let canonical_contribution = serde_json::to_string(&(
+                    "planning-context-augment-v1",
+                    &manifest.version,
+                    session_kind,
+                    session_id,
+                ))?;
+                Ok(Self::Feature(FeatureScope {
+                    plugin_id: manifest.id.clone(),
+                    feature_id,
+                    contribution_fingerprint: sha256_hex(&canonical_contribution),
+                }))
+            }
+            _ => Err(AppError::PluginAuthorizationScopeMismatch),
+        }
     }
 
     /// Construct the selected-file scope only from a backend-resolved current Manifest and a
@@ -410,6 +492,8 @@ impl TrustedResourceScope {
             Self::BoundCredential(_) => "bound-credential",
             Self::XingchenService(_) => "xingchen-service",
             Self::UserSelectedResource(_) => "user-selected-resource",
+            Self::PlanningWorkspace(_) => "planning-workspace",
+            Self::Session(_) => "session",
             Self::ExactResource(scope) => scope.scope_type.as_str(),
         }
     }
@@ -458,6 +542,20 @@ impl TrustedResourceScope {
                 } else {
                     "new-file"
                 },
+            ],
+            Self::PlanningWorkspace(scope) => vec![
+                "planning-workspace-v1",
+                &scope.plugin_version,
+                &scope.session_kind,
+                &scope.session_id,
+                &scope.capability_id,
+            ],
+            Self::Session(scope) => vec![
+                "planning-session-v1",
+                &scope.plugin_version,
+                &scope.session_kind,
+                &scope.session_id,
+                &scope.capability_id,
             ],
             Self::ExactResource(scope) => vec![
                 "exact-resource-v1",
@@ -551,6 +649,8 @@ pub(crate) fn canonicalize_authorization_scope(
                 | "bound-credential"
                 | "xingchen-service"
                 | "user-selected-resource"
+                | "planning-workspace"
+                | "session"
         ) {
             return Err(AppError::PluginAuthorizationScopeInvalid {
                 reason: "scope_kind_not_supported",

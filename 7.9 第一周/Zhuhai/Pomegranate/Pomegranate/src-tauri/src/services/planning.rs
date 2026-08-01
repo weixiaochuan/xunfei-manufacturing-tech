@@ -3,11 +3,19 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+use uuid::Uuid;
 
+use crate::account::AccountState;
 use crate::database::Database;
 use crate::error::AppError;
-use crate::models::{PlanningFileView, PlanningSessionKind, PlanningWorkspace};
+use crate::models::{PlanningFileView, PlanningSessionKind, PlanningWorkspace, PluginScene};
+
+use super::plugin_authorization_context::TrustedResourceScope;
+use super::plugin_permission_guard::{
+    authorize_plugin_call, resolve_current_plugin_context, GuardRateLimit, TrustedPluginCall,
+};
+use super::plugin_rate_limit::PluginRateLimiter;
 
 pub const PLANNING_PLUGIN_ID: &str = "official-planning-with-files";
 const WORKSPACE_DIR: &str = "planning-workspaces";
@@ -172,7 +180,7 @@ impl PlanningService {
         Ok(())
     }
 
-    pub fn build_context(
+    fn build_context(
         db: &Database,
         data_dir: &Path,
         kind: PlanningSessionKind,
@@ -214,6 +222,50 @@ impl PlanningService {
         })
     }
 
+    pub async fn build_context_guarded(
+        db: &Database,
+        data_dir: &Path,
+        account: &AccountState,
+        limiter: &PluginRateLimiter,
+        kind: PlanningSessionKind,
+        session_id: &str,
+        user_input: &str,
+        mode: PlanningProviderMode,
+    ) -> Result<PlanningContext, AppError> {
+        // Merely observing the host-owned enable flag does not expose session content to the
+        // plugin. Avoid invoking the plugin Guard when Planning is not active for this session.
+        if !is_session_enabled(db, &kind, session_id)? {
+            return Ok(PlanningContext {
+                enabled: false,
+                content: user_input.to_string(),
+                chars: 0,
+            });
+        }
+        authorize_planning_actions(
+            db,
+            account,
+            limiter,
+            &kind,
+            session_id,
+            &["ai.session.read"],
+        )
+        .await?;
+        authorize_planning_actions(
+            db,
+            account,
+            limiter,
+            &kind,
+            session_id,
+            &[
+                "planning.files.read",
+                "ai.context.read",
+                "ai.context.augment",
+            ],
+        )
+        .await?;
+        Self::build_context(db, data_dir, kind, session_id, user_input, mode)
+    }
+
     pub fn planning_system_message(
         db: &Database,
         data_dir: &Path,
@@ -253,7 +305,7 @@ impl PlanningService {
         emit_workspace_updated(app, workspace, changed_sections);
     }
 
-    pub fn record_completion_and_emit(
+    pub async fn record_completion_and_emit(
         app: &AppHandle,
         db: &Database,
         data_dir: &Path,
@@ -263,6 +315,20 @@ impl PlanningService {
         user_input: &str,
         assistant_output: &str,
     ) -> Result<(), AppError> {
+        if !is_session_enabled(db, &kind, session_id)? {
+            return Ok(());
+        }
+        let account = app.state::<AccountState>();
+        let state = app.state::<crate::state::AppState>();
+        authorize_planning_actions(
+            db,
+            &account,
+            &state.plugin_rate_limiter,
+            &kind,
+            session_id,
+            &["ai.session.read", "planning.files.write"],
+        )
+        .await?;
         Self::record_completion(
             db,
             data_dir,
@@ -423,6 +489,55 @@ impl PlanningService {
     }
 }
 
+async fn authorize_planning_actions(
+    db: &Database,
+    account: &AccountState,
+    limiter: &PluginRateLimiter,
+    kind: &PlanningSessionKind,
+    session_id: &str,
+    capabilities: &[&str],
+) -> Result<(), AppError> {
+    validate_session_id(kind, session_id)?;
+    let current = resolve_current_plugin_context(db, PLANNING_PLUGIN_ID)?;
+    for capability_id in capabilities {
+        let scope = TrustedResourceScope::for_planning_action(
+            &current.manifest,
+            capability_id,
+            kind_to_db(kind),
+            session_id,
+        )?;
+        let rate_limit = if *capability_id == "planning.files.write" {
+            GuardRateLimit::Write
+        } else {
+            GuardRateLimit::None
+        };
+        authorize_plugin_call(
+            db,
+            account,
+            limiter,
+            TrustedPluginCall::internal(
+                PLANNING_PLUGIN_ID,
+                *capability_id,
+                Some(current.version.clone()),
+                PluginScene::Global,
+                format!(
+                    "planning-{}-{}",
+                    capability_id.replace('.', "-"),
+                    Uuid::new_v4()
+                ),
+                scope,
+            )
+            .with_rate_limit(rate_limit),
+        )
+        .await
+        .map_err(|_| AppError::PluginPermissionDenied {
+            plugin_id: Some(PLANNING_PLUGIN_ID.to_string()),
+            required_permission: Some((*capability_id).to_string()),
+        })?;
+    }
+    Ok(())
+}
+
 fn plugin_ready(db: &Database) -> (bool, Option<String>) {
     match ensure_plugin_ready(db) {
         Ok(()) => (true, None),
@@ -436,22 +551,6 @@ fn ensure_plugin_ready(db: &Database) -> Result<(), AppError> {
         return Err(AppError::InvalidInput(
             "Planning with Files 插件尚未安装并启用".into(),
         ));
-    }
-    for permission in [
-        "ai.context.read",
-        "ai.context.augment",
-        "ai.session.read",
-        "planning.files.read",
-        "planning.files.write",
-        "ui.chat.toolbar",
-        "ui.chat.panel",
-    ] {
-        if !db.has_plugin_permission(PLANNING_PLUGIN_ID, permission)? {
-            return Err(AppError::InvalidInput(format!(
-                "Planning with Files 缺少权限：{}",
-                permission
-            )));
-        }
     }
     Ok(())
 }
@@ -1678,5 +1777,34 @@ After"#;
             "should fail",
         )
         .is_err());
+    }
+
+    #[test]
+    fn workspace_actions_do_not_require_unrelated_ui_permissions() {
+        let (db, dir) = temp_db();
+        install_ready_plugin(&db);
+        {
+            let conn = db.conn_lock().unwrap();
+            conn.execute(
+                "DELETE FROM plugin_permissions
+                 WHERE plugin_id = ?1 AND permission IN ('ui.chat.toolbar', 'ui.chat.panel')",
+                [PLANNING_PLUGIN_ID],
+            )
+            .unwrap();
+        }
+        PlanningService::set_enabled(&db, dir.path(), PlanningSessionKind::Ai, "1", true).unwrap();
+        let workspace = PlanningService::save_file(
+            &db,
+            dir.path(),
+            PlanningSessionKind::Ai,
+            "1",
+            "plan.md",
+            "only the write action is relevant",
+        )
+        .unwrap();
+        assert!(workspace
+            .files
+            .iter()
+            .any(|file| file.name == "plan.md" && file.content.contains("write action")));
     }
 }

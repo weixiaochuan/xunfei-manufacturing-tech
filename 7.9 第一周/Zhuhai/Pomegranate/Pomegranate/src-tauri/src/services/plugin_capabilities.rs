@@ -722,8 +722,23 @@ mod tests {
                 "declarative-ui"
             ));
         }
-        assert!(!is_v3_permission_runtime_allowed(
+        for permission in [
+            "ai.context.read",
+            "ai.session.read",
+            "ui.chat.toolbar",
+            "ui.chat.panel",
+            "planning.files.read",
             "planning.files.write",
+        ] {
+            assert!(is_v3_permission_runtime_allowed(permission, "prompt-pack"));
+            assert!(is_v3_permission_runtime_allowed(
+                permission,
+                "declarative-ui"
+            ));
+            assert!(!is_v3_permission_runtime_allowed(permission, "legacy-js"));
+        }
+        assert!(!is_v3_permission_runtime_allowed(
+            "credentials.use",
             "declarative-ui"
         ));
     }

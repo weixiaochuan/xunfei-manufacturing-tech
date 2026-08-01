@@ -26,8 +26,20 @@ test("ai.context.augment runtime 修正与三个兼容例外保持精确", () =>
     registry.v3Policy.runtimePermissionCompatibilityExceptions,
     ["tasks.read", "tasks.write", "mcp.connect"],
   );
+  for (const permission of [
+    "ai.context.read",
+    "ai.session.read",
+    "ui.chat.toolbar",
+    "ui.chat.panel",
+    "planning.files.read",
+    "planning.files.write",
+  ]) {
+    assert.equal(isV3PermissionRuntimeAllowed(permission, "prompt-pack", registry), true);
+    assert.equal(isV3PermissionRuntimeAllowed(permission, "declarative-ui", registry), true);
+    assert.equal(isV3PermissionRuntimeAllowed(permission, "legacy-js", registry), false);
+  }
   assert.equal(
-    isV3PermissionRuntimeAllowed("planning.files.write", "declarative-ui", registry),
+    isV3PermissionRuntimeAllowed("credentials.use", "declarative-ui", registry),
     false,
   );
 });

@@ -939,6 +939,71 @@ mod tests {
         }
     }
 
+    fn setup_planning(capability: &str, grant: bool, session_id: &str) -> Fixture {
+        let db = Database::init(":memory:").expect("database");
+        let directory =
+            std::env::temp_dir().join(format!("pomegranate-planning-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).expect("plugin directory");
+        fs::write(directory.join("ui.json"), "{}").expect("plugin asset");
+        let manifest = PluginManifestV3 {
+            schema_version: 3,
+            id: "official-planning-with-files".into(),
+            name: "Planning with Files".into(),
+            version: "1.0.0".into(),
+            author_id: "firstwork-official".into(),
+            description: None,
+            min_app_version: None,
+            classification: PluginClassification::Feature,
+            runtime_kind: PluginRuntimeKind::DeclarativeUi,
+            source: PluginSource::Internal,
+            activation_events: Vec::new(),
+            supported_scenes: vec![PluginScene::Global],
+            default_activation: Default::default(),
+            permissions: vec![capability.into()],
+            configuration_schema: None,
+            dependencies: Vec::new(),
+            conflicts_with: Vec::new(),
+            contributes: Default::default(),
+            integrity: Default::default(),
+            signature: Default::default(),
+        };
+        let hash = PluginService::calculate_integrity_for_path(&directory).expect("hash");
+        db.record_plugin_version(
+            &manifest,
+            &directory.to_string_lossy(),
+            &hash,
+            &[capability.to_string()],
+        )
+        .expect("record version");
+        db.set_plugin_enabled(&manifest.id, true).expect("enable");
+        let subject = PluginAuthorizationSubject {
+            kind: PluginAuthorizationSubjectKind::PlatformUser,
+            id: "planning-user".into(),
+        };
+        let context = resolve_host_installation_context(&db).expect("host context");
+        let scope =
+            TrustedResourceScope::for_planning_action(&manifest, capability, "agent", session_id)
+                .expect("planning scope");
+        if grant {
+            grant_formal(
+                &db,
+                &subject,
+                &context,
+                &manifest.id,
+                capability,
+                &scope,
+                None,
+            );
+        }
+        Fixture {
+            db,
+            directory,
+            subject,
+            context,
+            limiter: PluginRateLimiter::new(),
+        }
+    }
+
     fn grant_formal(
         db: &Database,
         subject: &PluginAuthorizationSubject,
@@ -1132,6 +1197,161 @@ mod tests {
         assert!(target.contains("a3-test-correlation"));
         assert!(!target.contains("test-user"));
         assert!(!target.to_ascii_lowercase().contains("token"));
+    }
+
+    #[test]
+    fn planning_actions_use_declarative_runtime_and_isolated_formal_scopes() {
+        for capability in [
+            "planning.files.read",
+            "planning.files.write",
+            "ai.context.read",
+            "ai.session.read",
+            "ai.context.augment",
+        ] {
+            let fixture = setup_planning(capability, true, "sess-a");
+            let current =
+                resolve_current_plugin_context(&fixture.db, "official-planning-with-files")
+                    .expect("current planning plugin");
+            let allowed_scope = TrustedResourceScope::for_planning_action(
+                &current.manifest,
+                capability,
+                "agent",
+                "sess-a",
+            )
+            .expect("allowed scope");
+            let call = TrustedPluginCall::internal(
+                "official-planning-with-files",
+                capability,
+                Some("1.0.0".into()),
+                PluginScene::Global,
+                format!("planning-{capability}-allow"),
+                allowed_scope,
+            );
+            assert!(authorize(&fixture, call).is_ok(), "capability={capability}");
+
+            let other_scope = TrustedResourceScope::for_planning_action(
+                &current.manifest,
+                capability,
+                "agent",
+                "sess-b",
+            )
+            .expect("isolated scope");
+            let denied = authorize(
+                &fixture,
+                TrustedPluginCall::internal(
+                    "official-planning-with-files",
+                    capability,
+                    Some("1.0.0".into()),
+                    PluginScene::Global,
+                    format!("planning-{capability}-isolated"),
+                    other_scope,
+                ),
+            )
+            .expect_err("another Planning session must not inherit the grant");
+            assert_eq!(denied.code, PluginGuardDenyCode::ScopeMismatch);
+        }
+
+        let missing = setup_planning("planning.files.write", false, "sess-a");
+        let current = resolve_current_plugin_context(&missing.db, "official-planning-with-files")
+            .expect("current planning plugin");
+        let scope = TrustedResourceScope::for_planning_action(
+            &current.manifest,
+            "planning.files.write",
+            "agent",
+            "sess-a",
+        )
+        .expect("scope");
+        let denied = authorize(
+            &missing,
+            TrustedPluginCall::internal(
+                "official-planning-with-files",
+                "planning.files.write",
+                Some("1.0.0".into()),
+                PluginScene::Global,
+                "planning-missing-authorization",
+                scope,
+            ),
+        )
+        .expect_err("legacy declaration is not a formal grant");
+        assert_eq!(denied.code, PluginGuardDenyCode::AuthorizationMissing);
+    }
+
+    #[test]
+    fn planning_write_revocation_and_lifecycle_fail_closed() {
+        let fixture = setup_planning("planning.files.write", true, "sess-a");
+        let current = resolve_current_plugin_context(&fixture.db, "official-planning-with-files")
+            .expect("current planning plugin");
+        let scope = TrustedResourceScope::for_planning_action(
+            &current.manifest,
+            "planning.files.write",
+            "agent",
+            "sess-a",
+        )
+        .expect("scope");
+        let canonical = scope.canonical_scope().expect("canonical scope");
+        let record = fixture
+            .db
+            .get_formal_plugin_capability_authorization(
+                &fixture.subject,
+                &fixture.context,
+                "official-planning-with-files",
+                "planning.files.write",
+                &canonical,
+            )
+            .expect("read grant")
+            .expect("grant");
+        fixture
+            .db
+            .revoke_granted_formal_plugin_capability_authorization(
+                &fixture.subject,
+                &fixture.context,
+                "official-planning-with-files",
+                "planning.files.write",
+                &canonical,
+                record.revision,
+            )
+            .expect("revoke");
+        let denied = authorize(
+            &fixture,
+            TrustedPluginCall::internal(
+                "official-planning-with-files",
+                "planning.files.write",
+                Some("1.0.0".into()),
+                PluginScene::Global,
+                "planning-revoked",
+                scope,
+            ),
+        )
+        .expect_err("revoked grant");
+        assert_eq!(denied.code, PluginGuardDenyCode::AuthorizationRevoked);
+
+        let disabled = setup_planning("planning.files.write", true, "sess-a");
+        disabled
+            .db
+            .set_plugin_enabled("official-planning-with-files", false)
+            .expect("disable");
+        let current = resolve_current_plugin_context(&fixture.db, "official-planning-with-files")
+            .expect("trusted manifest");
+        let scope = TrustedResourceScope::for_planning_action(
+            &current.manifest,
+            "planning.files.write",
+            "agent",
+            "sess-a",
+        )
+        .expect("scope");
+        let denied = authorize(
+            &disabled,
+            TrustedPluginCall::internal(
+                "official-planning-with-files",
+                "planning.files.write",
+                Some("1.0.0".into()),
+                PluginScene::Global,
+                "planning-disabled",
+                scope,
+            ),
+        )
+        .expect_err("disabled plugin");
+        assert_eq!(denied.code, PluginGuardDenyCode::PluginDisabled);
     }
 
     #[test]

@@ -484,14 +484,18 @@ impl XingchenAgentService {
                 ));
             }
         }
-        let planning_context = PlanningService::build_context(
+        let account = app.state::<crate::account::AccountState>();
+        let planning_context = PlanningService::build_context_guarded(
             &state.db,
             &state.data_dir,
+            &account,
+            &state.plugin_rate_limiter,
             crate::models::PlanningSessionKind::Agent,
             &input.session_id,
             &effective_content,
             PlanningProviderMode::TextPrefix,
-        )?;
+        )
+        .await?;
         let request_id = format!("req-{}", Uuid::new_v4());
         let user_msg_id = format!("msg-{}", Uuid::new_v4());
         let assistant_msg_id = format!("msg-{}", Uuid::new_v4());
@@ -1152,6 +1156,7 @@ async fn run_mock_or_configured_stream(
         &original_user_input,
         &final_text,
     )
+    .await
     .ok();
     if status == "completed" {
         emit_agent_event(
@@ -1829,6 +1834,7 @@ async fn run_workflow_v1_stream(
         &original_user_input,
         &final_text,
     )
+    .await
     .ok();
     if status == "completed" {
         emit_agent_event_ext(
