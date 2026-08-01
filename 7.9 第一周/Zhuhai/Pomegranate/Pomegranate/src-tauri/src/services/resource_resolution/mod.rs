@@ -7,6 +7,9 @@ use std::fmt;
 
 use super::resource_ownership::ResourceOwner;
 
+pub(crate) mod credential;
+pub(crate) mod external_agent;
+
 const MAX_RESOURCE_ID_BYTES: usize = 512;
 const NOT_FOUND_OR_INACCESSIBLE_MESSAGE: &str = "资源不存在或不可访问";
 
