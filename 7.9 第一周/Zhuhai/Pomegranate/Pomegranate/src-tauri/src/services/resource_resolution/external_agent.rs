@@ -10,20 +10,33 @@ use super::{ResolverError, ResourceKind, TrustedResource, UntrustedResourceRef};
 ///
 /// capability、entitlement、exact authorization 和远端健康状态仍由后续层独立判断。
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct CallableExternalAgent(TrustedResource);
+pub(crate) struct CallableExternalAgent {
+    resource: TrustedResource,
+    runtime_kind: ExternalAgentRuntimeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExternalAgentRuntimeKind {
+    Agent,
+    Workflow,
+}
 
 impl fmt::Debug for CallableExternalAgent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_tuple("CallableExternalAgent")
-            .field(&self.0)
+            .field(&self.resource)
             .finish()
     }
 }
 
 impl CallableExternalAgent {
     pub(crate) fn resource(&self) -> &TrustedResource {
-        &self.0
+        &self.resource
+    }
+
+    pub(crate) fn runtime_kind(&self) -> ExternalAgentRuntimeKind {
+        self.runtime_kind
     }
 }
 
@@ -33,7 +46,7 @@ struct AgentResolutionRow {
     unavailable_reason: Option<String>,
     owner_subject: Option<String>,
     owner_installation: Option<String>,
-    product_callable: bool,
+    callable_runtime_kind: Option<String>,
 }
 
 /// 解析当前 owner 可调用的 External Agent；不授予任何插件 capability。
@@ -53,8 +66,8 @@ pub(crate) fn resolve_external_agent(
         conn.query_row(
             "SELECT ea.enabled, ea.unavailable_reason,
                     o.platform_subject_id, o.host_installation_id,
-                    EXISTS (
-                        SELECT 1
+                    (
+                        SELECT p.product_type
                         FROM products p
                         JOIN plugin_installations pi ON pi.product_id = p.id
                         LEFT JOIN product_versions pv ON pv.id = pi.product_version_id
@@ -78,6 +91,7 @@ pub(crate) fn resolve_external_agent(
                           AND COALESCE(pv.status, 'active') != 'revoked'
                           AND COALESCE(pv.signature_status, 'unsigned') != 'revoked'
                           AND COALESCE(json_extract(pv.manifest_json, '$.deliveryMode'), 'byok') = 'byok'
+                        LIMIT 1
                     )
              FROM external_agents ea
              LEFT JOIN external_agent_resource_ownership o ON o.external_agent_id = ea.id
@@ -89,7 +103,7 @@ pub(crate) fn resolve_external_agent(
                     unavailable_reason: row.get(1)?,
                     owner_subject: row.get(2)?,
                     owner_installation: row.get(3)?,
-                    product_callable: row.get::<_, i64>(4)? != 0,
+                    callable_runtime_kind: row.get(4)?,
                 })
             },
         )
@@ -121,16 +135,19 @@ pub(crate) fn resolve_external_agent(
     if row.unavailable_reason.is_some() {
         return Err(ResolverError::invalid_state("external_agent_unavailable"));
     }
-    if !row.product_callable {
-        return Err(ResolverError::invalid_state(
-            "external_agent_product_unavailable",
-        ));
-    }
-
-    Ok(CallableExternalAgent(TrustedResource::from_resolved(
-        reference,
-        owner.clone(),
-    )))
+    let runtime_kind = match row.callable_runtime_kind.as_deref() {
+        Some("xingchen-agent") => ExternalAgentRuntimeKind::Agent,
+        Some("xingchen-workflow") => ExternalAgentRuntimeKind::Workflow,
+        _ => {
+            return Err(ResolverError::invalid_state(
+                "external_agent_product_unavailable",
+            ))
+        }
+    };
+    Ok(CallableExternalAgent {
+        resource: TrustedResource::from_resolved(reference, owner.clone()),
+        runtime_kind,
+    })
 }
 
 #[cfg(test)]
