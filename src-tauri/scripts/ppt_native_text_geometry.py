@@ -705,6 +705,14 @@ SAFE_FIX_SCRIPT = r"""
     }
     return hoisted;
   }
+  function sameComputedPresentation(left, right) {
+    const leftStyle = getComputedStyle(left);
+    const rightStyle = getComputedStyle(right);
+    return [
+      'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fill', 'stroke',
+      'letterSpacing', 'textDecoration', 'opacity',
+    ].every((property) => leftStyle[property] === rightStyle[property]);
+  }
   function shiftFirstLineY(element, delta) {
     const first = element.querySelector(':scope > tspan');
     if (first && first.hasAttribute('y')) {
@@ -764,7 +772,60 @@ SAFE_FIX_SCRIPT = r"""
   elementLoop: for (const index of targetIndexes) {
     const element = elements[index];
     if (!element || element.hasAttribute('transform')) continue;
-    const existingTspans = [...element.querySelectorAll(':scope > tspan')];
+    let existingTspans = [...element.querySelectorAll(':scope > tspan')];
+    const contractMaxLines = Math.max(
+      1,
+      Math.floor(numberAttr(element, 'data-pome-max-lines', 1)),
+    );
+    const contractMayWrap = (element.getAttribute('data-pome-wrap') || '').toLowerCase() === 'true';
+    const contractRegion = {
+      x: numberAttr(element, 'data-pome-region-x', NaN),
+      y: numberAttr(element, 'data-pome-region-y', NaN),
+      width: numberAttr(element, 'data-pome-region-width', NaN),
+      height: numberAttr(element, 'data-pome-region-height', NaN),
+    };
+    const contractWidth = numberAttr(element, 'data-pome-region-width', NaN);
+    const contractBox = rootBox(element);
+    const metadataExpansion = Object.values(contractRegion).every(Number.isFinite)
+      ? expandAllowedToBox(contractRegion, contractBox)
+      : null;
+    const requiresLineCompaction =
+      Object.values(contractRegion).every(Number.isFinite) &&
+      !fits(contractBox, contractRegion) && !metadataExpansion;
+    if (
+      contractMayWrap && Number.isFinite(contractWidth) &&
+      existingTspans.length > contractMaxLines && requiresLineCompaction
+    ) {
+      let merged = true;
+      while (existingTspans.length > contractMaxLines && merged) {
+        merged = false;
+        for (let tspanIndex = 0; tspanIndex + 1 < existingTspans.length; tspanIndex += 1) {
+          const left = existingTspans[tspanIndex];
+          const right = existingTspans[tspanIndex + 1];
+          if (!sameComputedPresentation(left, right)) continue;
+          const leftText = (left.textContent || '').trim();
+          const rightText = (right.textContent || '').trim();
+          if (!leftText || !rightText) continue;
+          const previousText = left.textContent || '';
+          left.textContent = `${leftText} ${rightText}`;
+          if (left.getComputedTextLength() > contractWidth + 0.75) {
+            left.textContent = previousText;
+            continue;
+          }
+          right.remove();
+          applied.push({
+            domIndex: index,
+            text: `${leftText} ${rightText}`,
+            action: 'merge-adjacent-compatible-tspan-lines',
+            previousLineCount: existingTspans.length,
+            lineCount: existingTspans.length - 1,
+          });
+          existingTspans = [...element.querySelectorAll(':scope > tspan')];
+          merged = true;
+          break;
+        }
+      }
+    }
     // Executor output often repeats the same presentation attributes on every
     // line while omitting a base y coordinate on the parent <text>.  The
     // browser then lays all such blocks out around y=0.  Hoisting only values
@@ -1024,6 +1085,16 @@ SAFE_FIX_SCRIPT = r"""
                 region: expanded,
               });
             }
+            if (restoredTspans.length > maxLines) {
+              element.setAttribute('data-pome-max-lines', String(restoredTspans.length));
+              applied.push({
+                domIndex: index,
+                text: normalizedText,
+                action: 'correct-authored-line-count-contract',
+                previousMaxLines: maxLines,
+                maxLines: restoredTspans.length,
+              });
+            }
             applied.push({
               domIndex: index,
               text: normalizedText,
@@ -1182,9 +1253,13 @@ SAFE_FIX_SCRIPT = r"""
         Math.min(120, Math.max(allowed.width, allowed.height) * 0.5),
       );
       const regionRole = (element.getAttribute('data-pome-role') || '').toLowerCase();
+      const isSingleLineHeading =
+        ['title', 'subtitle'].includes(regionRole) && !mayWrap && existingTspans.length <= 1;
       const maxMetadataExpansion = regionRole === 'footer'
         ? regionMaxSafeExpansion
-        : Math.min(12, regionMaxSafeExpansion);
+        : isSingleLineHeading
+          ? Math.min(160, Math.max(12, allowed.width * 0.15))
+          : Math.min(12, regionMaxSafeExpansion);
       if (
         regionExpansion > 0 && regionExpansion <= maxMetadataExpansion &&
         regionCandidate.x >= 0 && regionCandidate.y >= 0 &&
@@ -1321,7 +1396,12 @@ SAFE_FIX_SCRIPT = r"""
       // than the unchanged text, causing the whole transactional page repair
       // to be rejected.
       const relocatedRole = (element.getAttribute('data-pome-role') || '').toLowerCase();
-      const mayGrowRelocatedRegion = relocatedRole === 'footer' || relocatedRole === 'metric';
+      const mayRelocateOwnedHeading =
+        ['title', 'subtitle'].includes(relocatedRole) &&
+        Boolean(element.getAttribute('data-pome-owner')) &&
+        !mayWrap && existingTspans.length <= 1;
+      const mayGrowRelocatedRegion =
+        relocatedRole === 'footer' || relocatedRole === 'metric' || mayRelocateOwnedHeading;
       const relocatedWidth = mayGrowRelocatedRegion
         ? Math.max(allowed.width, box.width)
         : allowed.width;
@@ -1340,8 +1420,9 @@ SAFE_FIX_SCRIPT = r"""
       );
       const relocatedTextCollision = collidesWithOtherText(box, index);
       const relocatedObstacleCollision = collidesWithObstacle(relocated, index);
+      const maximumMetadataShift = mayRelocateOwnedHeading ? 640 : 120;
       if (
-        regionCenterShift > 0.75 && regionCenterShift <= 120 &&
+        regionCenterShift > 0.75 && regionCenterShift <= maximumMetadataShift &&
         relocated.x >= 0 && relocated.y >= 0 &&
         relocated.x + relocated.width <= 1280 && relocated.y + relocated.height <= 720 &&
         fits(box, relocated) &&
@@ -1598,6 +1679,7 @@ def attempt_safe_fix(
                 "text_outside_canvas",
                 "text_region_outside_canvas",
                 "text_outside_declared_region",
+                "text_exceeds_max_lines",
                 "text_text_overlap",
                 "text_obstacle_overlap",
                 "missing_text_region_metadata",
@@ -1965,6 +2047,50 @@ class GeometryBrowserFixTests(unittest.TestCase):
         finally:
             directory.cleanup()
 
+    def test_adjacent_compatible_rich_lines_merge_to_declared_limit(self) -> None:
+        directory = tempfile.TemporaryDirectory(prefix="pome-geometry-rich-line-merge-")
+        path = Path(directory.name) / "rich-lines.svg"
+        path.write_text(
+            '''<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+<rect x="0" y="0" width="1280" height="720" fill="#fff"/>
+<text text-anchor="middle" data-pome-role="body" data-pome-region-id="body"
+ data-pome-region-x="150" data-pome-region-y="158" data-pome-region-width="100"
+ data-pome-region-height="88" data-pome-min-font-size="13" data-pome-wrap="true"
+ data-pome-max-lines="5" data-pome-line-height="17" data-pome-safe-padding="6">
+ <tspan x="200" y="176" font-family="Microsoft YaHei" font-size="13" fill="#ffffff">六届六中</tspan>
+ <tspan x="200" dy="17" font-family="Microsoft YaHei" font-size="13" fill="#ffffff">全会</tspan>
+ <tspan x="200" dy="17" font-family="Microsoft YaHei" font-size="13" fill="#94a3b8">批判右倾</tspan>
+ <tspan x="200" dy="17" font-family="Microsoft YaHei" font-size="13" fill="#94a3b8">投降主义</tspan>
+ <tspan x="200" dy="17" font-family="Microsoft YaHei" font-size="13" fill="#94a3b8">确立自主</tspan>
+ <tspan x="200" dy="17" font-family="Microsoft YaHei" font-size="13" fill="#94a3b8">方针</tspan>
+</text>
+</svg>''',
+            encoding="utf-8",
+        )
+        try:
+            before = run(path, require_markers=True, auto_fix=False)
+            before_text = before["textBlocks"][0]["text"]
+            self.assertTrue(
+                any(
+                    item["rule"] == "text_exceeds_max_lines"
+                    for item in before["hardErrors"]
+                )
+            )
+            after = run(path, require_markers=True, auto_fix=True)
+            self.assertTrue(after["passed"], after)
+            self.assertEqual(before_text, after["textBlocks"][0]["text"])
+            self.assertEqual(after["textBlocks"][0]["lineCount"], 5)
+            self.assertTrue(
+                any(
+                    item.get("action") == "merge-adjacent-compatible-tspan-lines"
+                    for item in after.get("autoFixApplied", [])
+                )
+            )
+            fills = [item["fill"] for item in after["textBlocks"][0]["tspans"]]
+            self.assertEqual(len(set(fills)), 2)
+        finally:
+            directory.cleanup()
+
     def test_missing_baseline_repair_preserves_text_and_avoids_new_collision(self) -> None:
         directory = tempfile.TemporaryDirectory(prefix="pome-geometry-baseline-collision-test-")
         path = Path(directory.name) / "timeline.svg"
@@ -2117,6 +2243,36 @@ class GeometryBrowserFixTests(unittest.TestCase):
             updated = path.read_text(encoding="utf-8")
             self.assertIn('data-pome-region-id="page-number"', updated)
             self.assertIn("01 / 06", updated)
+        finally:
+            directory.cleanup()
+
+    def test_single_line_subtitle_can_expand_into_proven_empty_space(self) -> None:
+        directory = tempfile.TemporaryDirectory(prefix="pome-geometry-subtitle-width-")
+        path = Path(directory.name) / "subtitle.svg"
+        path.write_text(
+            '''<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+<rect x="0" y="0" width="1280" height="720" fill="#fff"/>
+<text x="64" y="128" text-anchor="start" font-family="Arial" font-size="16"
+ data-pome-role="subtitle" data-pome-region-id="page-subtitle"
+ data-pome-region-x="48" data-pome-region-y="100"
+ data-pome-region-width="300" data-pome-region-height="36"
+ data-pome-min-font-size="16" data-pome-wrap="false"
+ data-pome-max-lines="1" data-pome-safe-padding="6">xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</text>
+</svg>''',
+            encoding="utf-8",
+        )
+        try:
+            before_x = 'x="64"'
+            report = run(path, require_markers=True, auto_fix=True)
+            self.assertTrue(report["passed"], report)
+            self.assertIn(before_x, path.read_text(encoding="utf-8"))
+            self.assertTrue(
+                any(
+                    item.get("action") == "expand-region"
+                    and item.get("expansion", 0) > 12
+                    for item in (report.get("autoFixApplied") or [])
+                )
+            )
         finally:
             directory.cleanup()
 
@@ -2865,6 +3021,47 @@ class GeometryBrowserFixTests(unittest.TestCase):
         finally:
             directory.cleanup()
 
+    def test_owned_single_line_subtitle_can_relocate_far_metadata_only(self) -> None:
+        directory = tempfile.TemporaryDirectory(prefix="pome-geometry-owned-subtitle-")
+        path = Path(directory.name) / "owned-subtitle.svg"
+        path.write_text(
+            '''<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+<rect x="0" y="0" width="1280" height="720" fill="#fff"/>
+<g id="title-card"><rect x="56" y="28" width="1168" height="76" fill="#eef2ff"/></g>
+<text x="76" y="78" text-anchor="start" font-family="Arial" font-size="36"
+ data-pome-role="title" data-pome-region-id="page-title" data-pome-owner="title-card"
+ data-pome-region-x="70" data-pome-region-y="36"
+ data-pome-region-width="400" data-pome-region-height="64"
+ data-pome-min-font-size="32" data-pome-wrap="false"
+ data-pome-max-lines="1" data-pome-safe-padding="8">REVOLUTION ROAD</text>
+<text x="520" y="78" text-anchor="start" font-family="Arial" font-size="20"
+ data-pome-role="subtitle" data-pome-region-id="page-subtitle" data-pome-owner="title-card"
+ data-pome-region-x="70" data-pome-region-y="36"
+ data-pome-region-width="300" data-pome-region-height="30"
+ data-pome-min-font-size="18" data-pome-wrap="false"
+ data-pome-max-lines="1" data-pome-safe-padding="4">A half-century journey toward victory</text>
+</svg>''',
+            encoding="utf-8",
+        )
+        try:
+            before = run(path, require_markers=True, auto_fix=False)
+            self.assertFalse(before["passed"])
+            after = run(path, require_markers=True, auto_fix=True)
+            self.assertTrue(after["passed"], after)
+            self.assertEqual(
+                [item["text"] for item in after["textBlocks"]],
+                [item["text"] for item in before["textBlocks"]],
+            )
+            self.assertTrue(
+                any(
+                    item.get("action") == "relocate-region"
+                    and item.get("centerShift", 0) > 120
+                    for item in (after.get("autoFixApplied") or [])
+                )
+            )
+        finally:
+            directory.cleanup()
+
     def test_region_extending_below_canvas_is_shifted_inside(self) -> None:
         directory = tempfile.TemporaryDirectory(prefix="pome-geometry-canvas-region-test-")
         path = Path(directory.name) / "footer.svg"
@@ -2885,6 +3082,46 @@ class GeometryBrowserFixTests(unittest.TestCase):
             self.assertTrue(report["passed"], report)
             updated = path.read_text(encoding="utf-8")
             self.assertIn("工业机器人视觉检测系统", updated)
+        finally:
+            directory.cleanup()
+
+
+    def test_authored_four_line_body_repairs_tight_max_line_contract(self) -> None:
+        directory = tempfile.TemporaryDirectory(prefix="pome-geometry-line-contract-")
+        path = Path(directory.name) / "four-lines.svg"
+        path.write_text(
+            '''<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+<rect x="0" y="0" width="1280" height="720" fill="#fff"/>
+<text x="100" y="130" font-family="Microsoft YaHei" font-size="16"
+ data-pome-role="body" data-pome-region-id="body"
+ data-pome-region-x="92" data-pome-region-y="112"
+ data-pome-region-width="360" data-pome-region-height="70"
+ data-pome-min-font-size="14" data-pome-wrap="true"
+ data-pome-max-lines="3" data-pome-line-height="20" data-pome-safe-padding="4">
+ <tspan x="100" y="130">第一行事实文字</tspan>
+ <tspan x="100" dy="20">第二行事实文字</tspan>
+ <tspan x="100" dy="20">第三行事实文字</tspan>
+ <tspan x="100" dy="20">第四行事实文字</tspan>
+</text>
+</svg>''',
+            encoding="utf-8",
+        )
+        try:
+            original_text = "第一行事实文字第二行事实文字第三行事实文字第四行事实文字"
+            report = run(path, require_markers=True, auto_fix=True)
+            self.assertTrue(report["passed"], report)
+            updated = path.read_text(encoding="utf-8")
+            self.assertIn('data-pome-max-lines="4"', updated)
+            self.assertEqual(
+                "".join(item["text"] for item in report["textBlocks"]).replace(" ", ""),
+                original_text,
+            )
+            self.assertTrue(
+                any(
+                    item.get("action") == "correct-authored-line-count-contract"
+                    for item in report.get("autoFixApplied", [])
+                )
+            )
         finally:
             directory.cleanup()
 

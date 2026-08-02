@@ -14,6 +14,8 @@ use crate::services::ai::AiService;
 
 #[path = "ppt_master_native_quality.rs"]
 mod native_quality;
+#[path = "ppt_master_strict.rs"]
+mod strict_engine;
 
 const SVG_TO_PPTX_SCRIPT: &str = "skills/ppt-master/scripts/svg_to_pptx.py";
 const SVG_QUALITY_CHECKER_SCRIPT: &str = "skills/ppt-master/scripts/svg_quality_checker.py";
@@ -65,7 +67,7 @@ pub struct PptMasterExportResult {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PptUnderstandingDraftInput {
     #[serde(default)]
@@ -82,14 +84,14 @@ pub struct PptUnderstandingDraftInput {
     pub open_questions: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PptUnderstandingInput {
     Structured(PptUnderstandingDraftInput),
     Legacy(String),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct PptMaterialSourceInput {
@@ -98,7 +100,7 @@ pub struct PptMaterialSourceInput {
     pub title: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PptMasterGenerateInput {
     pub ppt_master_root: String,
@@ -141,7 +143,7 @@ pub struct PptMasterGenerateInput {
     pub native_quality_enabled: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PptMasterGenerateResult {
     pub success: bool,
@@ -670,6 +672,20 @@ impl PptMasterService {
         db: &Database,
         input: PptMasterGenerateInput,
     ) -> Result<PptMasterGenerateResult, AppError> {
+        if std::env::var("POME_PPT_NATIVE_ENGINE")
+            .ok()
+            .as_deref()
+            != Some("baseline")
+        {
+            let request = serde_json::to_value(&input).map_err(|error| {
+                AppError::Custom(format!("序列化严格 PPT 生成请求失败: {error}"))
+            })?;
+            let response = strict_engine::generate_native_from_value(db, request).await?;
+            return serde_json::from_value(response).map_err(|error| {
+                AppError::Custom(format!("解析严格 PPT 生成结果失败: {error}"))
+            });
+        }
+
         let started = Instant::now();
         println!("[PPT Pipeline] service entered");
         let root = parse_dir("ppt-master 根目录", &input.ppt_master_root)?;

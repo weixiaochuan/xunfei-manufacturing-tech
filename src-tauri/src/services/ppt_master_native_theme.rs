@@ -64,7 +64,7 @@ impl NativeThemeSpec {
         } else if contains_any(&explicit, &["图文", "杂志", "摄影", "编辑"]) {
             Self::photo_editorial()
         } else {
-            Self::neutral_custom(style)
+            Self::semantic_custom(style, &explicit)
         };
 
         spec.source_style = style.to_string();
@@ -194,24 +194,85 @@ impl NativeThemeSpec {
         )
     }
 
-    fn neutral_custom(style: &str) -> Self {
+    fn semantic_custom(style: &str, explicit: &str) -> Self {
+        let name = if style.trim().is_empty() {
+            "custom"
+        } else {
+            style.trim()
+        };
+        let dark = contains_any(explicit, &["深色", "暗色", "黑色", "夜色", "dark"]);
+        let fresh = contains_any(
+            explicit,
+            &[
+                "清新",
+                "教育",
+                "自然",
+                "成长",
+                "健康",
+                "生态",
+                "fresh",
+                "education",
+            ],
+        );
+        let formal = contains_any(
+            explicit,
+            &["商务", "专业", "正式", "企业", "金融", "business", "formal"],
+        );
+        let purple = contains_any(explicit, &["紫色", "薰衣草", "梦幻", "purple"]);
+        let green = contains_any(explicit, &["绿色", "青绿", "翠绿", "green"]);
+        let orange = contains_any(explicit, &["橙色", "暖橙", "活力", "orange"]);
+        let (mood, colors) = if dark {
+            (
+                "沉稳、聚焦、层次清晰",
+                [
+                    "#151A22", "#202938", "#232D3D", "#1C2532", "#5B7C99", "#7FA6C2", "#D5A24C",
+                    "#F7FAFC", "#C7D2DE", "#50657A",
+                ],
+            )
+        } else if purple {
+            (
+                "雅致、柔和、具有文化层次",
+                [
+                    "#FAF8FC", "#F0EAF7", "#FFFFFF", "#F5F0F8", "#6D4C7D", "#9A7AAF", "#C28B48",
+                    "#2D2533", "#6B5B73", "#CDBED6",
+                ],
+            )
+        } else if green || fresh {
+            (
+                "清新、亲和、成长感与清晰秩序",
+                [
+                    "#F7FBF8", "#E7F4ED", "#FFFFFF", "#EFF8F3", "#247A5A", "#4FA37C", "#E0A12B",
+                    "#173C31", "#557268", "#B9D9C9",
+                ],
+            )
+        } else if orange {
+            (
+                "温暖、积极、富有行动感",
+                [
+                    "#FFFAF4", "#FBEEDD", "#FFFFFF", "#FFF4E7", "#C45D24", "#E18A3D", "#2F7E78",
+                    "#3C291F", "#76594A", "#E8C7A9",
+                ],
+            )
+        } else if formal {
+            (
+                "专业、克制、可信且高效",
+                [
+                    "#F7F9FA", "#E9EEF1", "#FFFFFF", "#F1F4F6", "#294A5F", "#3F7C79", "#B98532",
+                    "#1D2A32", "#5E6C74", "#BFCBD1",
+                ],
+            )
+        } else {
+            (
+                "统一、克制、清晰",
+                [
+                    "#FAFAF8", "#F1F0EA", "#FFFFFF", "#F5F4EF", "#334155", "#64748B", "#C07A35",
+                    "#1F2937", "#64748B", "#CBD5E1",
+                ],
+            )
+        };
         let mut spec = Self::preset(
-            if style.trim().is_empty() {
-                "custom"
-            } else {
-                style.trim()
-            },
-            "统一、克制、清晰",
-            "#FAFAF8",
-            "#F1F0EA",
-            "#FFFFFF",
-            "#F5F4EF",
-            "#334155",
-            "#64748B",
-            "#C07A35",
-            "#1F2937",
-            "#64748B",
-            "#CBD5E1",
+            name, mood, colors[0], colors[1], colors[2], colors[3], colors[4], colors[5],
+            colors[6], colors[7], colors[8], colors[9],
         );
         spec.forbidden_visual_patterns = vec!["各页自行选择互不相关的主题色".to_string()];
         spec
@@ -497,6 +558,32 @@ mod tests {
         assert_eq!(theme.theme_name, "tech-blue");
         assert_eq!(theme.background_color, "#081426");
         assert_eq!(theme.preferred_visual_style(), "dark-tech");
+    }
+
+    #[test]
+    fn composable_style_axes_keep_business_and_fresh_education_distinct() {
+        let business = NativeThemeSpec::from_inputs("商务简约", Some("专业、正式"), None, None);
+        let education =
+            NativeThemeSpec::from_inputs("教育清新", Some("自然、成长、亲和"), None, None);
+        assert_eq!(business.primary_color, "#294A5F");
+        assert_eq!(education.primary_color, "#247A5A");
+        assert_ne!(business.primary_color, education.primary_color);
+        assert_ne!(business.background_color, education.background_color);
+        assert_ne!(business.theme_name, "tech-blue");
+        assert_ne!(education.theme_name, "tech-blue");
+    }
+
+    #[test]
+    fn arbitrary_color_language_is_composed_without_a_page_template() {
+        let theme = NativeThemeSpec::from_inputs(
+            "雅致的紫色文化感",
+            Some("柔和薰衣草与少量金色"),
+            None,
+            None,
+        );
+        assert_eq!(theme.primary_color, "#6D4C7D");
+        assert_eq!(theme.accent_color, "#C28B48");
+        assert_eq!(theme.theme_name, "雅致的紫色文化感");
     }
 
     #[test]

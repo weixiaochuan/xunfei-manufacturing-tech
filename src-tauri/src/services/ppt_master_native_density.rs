@@ -289,7 +289,7 @@ pub(super) fn run_space_utilization_check(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::ppt_master::{ContentBlock, Slide};
+    use super::super::{ContentBlock, Slide};
 
     fn slide(layout: &str, slide_type: &str, units: usize) -> Slide {
         Slide {

@@ -7,6 +7,7 @@ use chrono::Utc;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::native_design_system::NativeDesignSystemSpec;
 use super::native_theme::{validate_visible_text_fragment, NativeThemeSpec};
 use super::{default_theme, ContentBlock, Slide, SlidePlan, ThemeAllocation};
 
@@ -220,6 +221,8 @@ pub(super) struct NativePlanningCheckpoint {
     pub slide_specs: BTreeMap<String, NativePlanningArtifactState>,
     #[serde(default)]
     pub theme_spec: Option<NativeThemeSpec>,
+    #[serde(default)]
+    pub design_system_spec: Option<NativeDesignSystemSpec>,
     pub metrics: Vec<NativePlanningRequestMetric>,
     pub started_at: String,
     pub updated_at: String,
@@ -245,6 +248,7 @@ impl NativePlanningCheckpoint {
             outline: NativePlanningArtifactState::pending(deck_outline_path(project)),
             slide_specs,
             theme_spec: None,
+            design_system_spec: None,
             metrics: Vec::new(),
             started_at: started_at.clone(),
             updated_at: started_at,

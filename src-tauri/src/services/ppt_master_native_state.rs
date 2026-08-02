@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 pub(super) const NATIVE_STATE_FILE: &str = "native_generation_state.json";
 pub(super) const NATIVE_STATE_SCHEMA_VERSION: u32 = 1;
 pub(super) const NATIVE_GENERATION_SPEC_VERSION: &str =
-    "pomegranate-ppt-master-native-v4.2-page-density-contract";
+    "pomegranate-ppt-master-native-v5-cross-slide-design-system";
 pub(super) const NATIVE_CANVAS: &str = "1280x720";
 
 #[derive(Debug, Clone, Serialize)]
@@ -28,6 +28,7 @@ pub(super) struct NativeFingerprintInput {
     pub custom_style: String,
     pub visual_suggestions: String,
     pub theme_spec: String,
+    pub design_system_spec: String,
     pub mode: String,
     pub visual_style: String,
     pub layout_bias: Vec<String>,
@@ -94,6 +95,8 @@ pub(super) struct NativeArtifactState {
     pub design_spec_path: String,
     pub spec_lock_path: String,
     pub slide_plan_path: String,
+    #[serde(default)]
+    pub design_system_spec_path: String,
     pub notes_path: String,
     pub final_pptx_path: Option<String>,
 }
@@ -167,6 +170,10 @@ impl NativeGenerationState {
                 spec_lock_path: project.join("spec_lock.md").to_string_lossy().to_string(),
                 slide_plan_path: project
                     .join("slide_plan.json")
+                    .to_string_lossy()
+                    .to_string(),
+                design_system_spec_path: project
+                    .join("native_design_system_spec.json")
                     .to_string_lossy()
                     .to_string(),
                 notes_path: project.join("notes").to_string_lossy().to_string(),
@@ -399,6 +406,7 @@ mod tests {
             custom_style: String::new(),
             visual_suggestions: "深色科技线条".to_string(),
             theme_spec: "{\"themeName\":\"tech-blue\"}".to_string(),
+            design_system_spec: "{\"contractName\":\"tech-blue-cross-slide\"}".to_string(),
             mode: "technical".to_string(),
             visual_style: "dark-tech".to_string(),
             layout_bias: vec!["process".to_string()],
@@ -423,6 +431,11 @@ mod tests {
         input.prompt = "正文".to_string();
         input.custom_style = "红色情怀".to_string();
         input.theme_spec = "{\"themeName\":\"red-heritage\"}".to_string();
+        input.design_system_spec = "{\"contractName\":\"red-cross-slide\"}".to_string();
+        assert_ne!(first, input.fingerprint().expect("fingerprint"));
+        input.custom_style.clear();
+        input.theme_spec = "{\"themeName\":\"tech-blue\"}".to_string();
+        input.design_system_spec = "{\"contractName\":\"different-grid\"}".to_string();
         assert_ne!(first, input.fingerprint().expect("fingerprint"));
     }
 
