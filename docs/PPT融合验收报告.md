@@ -1,107 +1,92 @@
 # PPT 融合验收报告
 
-验收日期：2026-07-31
+验收日期：2026-08-02
 
-## 1. 项目路径
+## 1. 项目与 Git 基线
 
 - 主体项目：`D:\ag\汇总\ag-collaboration-test`
 - PPT 来源项目：`D:\ag\邹元杰融合审计\xunfei-manufacturing-tech\7.9 第一周\firstwork\Pomegranate`
 - PPT 引擎资源来源：`D:\ag\邹元杰融合审计\xunfei-manufacturing-tech\7.9 第一周\firstwork\ppt-master`
+- 统一基线分支：`baseline/ag-collaboration`
+- 统一基线提交：`e3b54266e07a37876ae4f2dcb3ca32ec9dce2254`（`chore: establish AG collaboration baseline`）
+- PPT 确认分支：`feature/ppt-integration-confirm-20260802`
 
-## 2. Git 状态
+## 2. 验收结论
 
-### 主体
+**PPT 功能已经存在主体基座，无需迁移来源实现。**
 
-`D:\ag\汇总\ag-collaboration-test` 当前不是 Git 仓库，目录内没有 `.git`，因此无法报告主体 branch、HEAD 或 `git status`。这与协作文档中“如果压缩包不包含 `.git`，需由主负责人统一初始化”的说明一致。本轮没有自行初始化 Git。
+本次验收不是“新增 PPT 功能完成”，也不表示已经完成真实 PPT 生成的人工 GUI 验收。
 
-### 来源
+## 3. 差异分析
 
-- Git 根：`D:\ag\邹元杰融合审计\xunfei-manufacturing-tech`
-- 分支：`integration/combined-product-20260724`
-- HEAD：`4c25143166d4a3b261aea87a1778f8e2d0a77156`
-- PPT 来源子树：干净，无未提交 PPT 修改。
+主体项目已经覆盖来源项目的有效 PPT 能力，并具有更完整的长素材理解、上下文预算、分块合并、状态管理、主题、页面密度和质量处理流程。
 
-## 3. 是否发生代码迁移
+| 对比项 | 审计结论 |
+|---|---|
+| `src/pages/ppt-generation` | 主体实现更完整，不覆盖 |
+| `src/store/pptGenerationDraft.ts` | 主体状态与长素材流程更完整，不覆盖 |
+| `src/lib/ppt*` | 主体已有完整实现和测试，不迁移旧版本 |
+| `src-tauri/src/services/ppt_master*.rs` | 未发现来源独有且主体缺失的有效能力 |
+| `src-tauri/src/commands/ppt_master.rs` | 无需替换 |
+| `src-tauri/resources/ppt-master` | 主体已包含运行资源并进入打包配置，无需整目录复制 |
 
-**否。**
+来源文件更多不等于需要迁移；未发现主体缺失的引擎脚本、模板、规则、视觉检查或导出能力。
 
-来源没有主体缺失的 PPT 能力。主体的页面、Store、PPT Lib、Rust service、native 子模块和运行资源均等于或超过来源。根据协作规则，本轮不创建无意义迁移提交。
+## 4. 主体当前 PPT 能力
 
-## 4. 迁移文件清单
+- PPT 页面、store、前端 lib、路由和导航入口。
+- 素材输入、AI 理解、长材料分块、提纲和生成状态管理。
+- 模板、布局、主题、图表、页面密度和质量检查。
+- SVG 与文本几何检查、修复和质量阻断。
+- Rust `ppt_master` service、Tauri command 与前端调用链。
+- 可编辑 PPTX 导出、本地输出目录选择和结果定位。
+- `src-tauri/resources/ppt-master` 随包资源及 Tauri 打包配置。
 
-无。
+## 5. 本轮变更边界
 
-本轮未覆盖任何主体文件，未复制 `firstwork/Pomegranate`，未替换主体 `ppt-master` 资源。
+本轮只新增或更新以下文档：
 
-## 5. 未迁移原因
-
-1. 来源 PPT 页面比主体少 513 行，主体增加了电脑素材读取、长素材处理和完整状态展示。
-2. 来源 PPT Store 比主体少 204 行，不包含主体完整的分块分析状态。
-3. 来源 Rust service 比主体少 700 行，没有发现来源独有而主体缺失的 service 函数。
-4. Command 完全一致。
-5. 来源多出的资源仅是 `.github` 仓库社区配置，不影响客户端功能。
-
-## 6. 当前 PPT 完整能力
-
-- PPT 页面、Store、路由、导航入口和 Tauri API 桥接。
-- 主题、素材、受众、页数、风格和额外要求输入。
-- 手工素材、电脑文件、文档、日记和账号上传文件素材。
-- AI 理解、长素材切块、并发分析、失败重试和分层合并。
-- 理解摘要、重点取舍、叙事主线、页面结构和视觉建议编辑。
-- 稳定模式和 `ppt-master` 原生实验模式。
-- 模板、布局、图表、主题、页面密度和质量检查。
-- SVG 修复、原生兼容性修复、文本溢出处理和严格质量失败阻断。
-- 可编辑 PPTX 生成、导出和本地结果定位。
-- `resources/ppt-master` 已列入 Tauri `bundle.resources`。
-
-## 7. 公共文件修改情况
+- `docs/PPT迁移报告.md`
+- `docs/PPT融合验收报告.md`
 
 未修改：
 
+- `src/pages/ppt-generation/*`
+- `src/lib/ppt*`
+- `src/store/pptGenerationDraft.ts`
+- `src-tauri/src/services/ppt_master*`
+- `src-tauri/src/commands/ppt_master.rs`
+- `src-tauri/resources/ppt-master`
 - `src/Router.tsx`
 - `src/components/layout/ActivityBar.tsx`
 - `src/components/layout/AppLayout.tsx`
-- `src/store/account.ts`
-- `src-tauri/src/account.rs`
-- `src-tauri/src/account_network.rs`
-- `src-tauri/src/lib.rs`
-- `services/account-server/*`
-- `src-tauri/tauri.conf.json`
+- 账号系统、Account Server、数据库、deep link 和云端配置。
 
-本轮没有修改账号系统、数据库 schema、deep link、identifier 或 Account Server。
+## 6. 数据边界
 
-## 8. 自动验证结果
+PPTX、临时 SVG/图片和生成项目继续保存在用户本地，不进入源码或安装包资源目录，不自动进入账号系统。若未来增加作品同步，必须由用户明确选择，并复用主体账号文件接口。
 
-| 检查 | 命令 | 结果 |
-|---|---|---|
-| 前端生产构建 | `pnpm build` | PASS，退出码 0 |
-| TypeScript | 由 `pnpm build` 中的 `tsc` 执行 | PASS |
-| Vite 构建 | 由 `pnpm build` 执行 | PASS，9,182 个模块完成转换 |
-| Rust lib 检查 | `cargo check --manifest-path src-tauri/Cargo.toml --lib` | PASS，退出码 0 |
-| PPT 路由与入口 | 静态代码检查 | PASS |
-| 助学路由与入口 | 静态代码检查 | PASS |
-| 助研路由与入口 | 静态代码检查 | PASS |
-| `ppt-master` 打包配置 | `tauri.conf.json` 静态检查 | PASS，仍包含 `resources/ppt-master` |
+## 7. 验证结果
 
-警告：
+| 检查 | 结果 |
+|---|---|
+| 前端 `pnpm build` | PASS |
+| TypeScript / Vite 构建 | PASS |
+| Rust `cargo check --manifest-path src-tauri/Cargo.toml --lib` | PASS |
+| PPT 路由和入口静态检查 | PASS |
+| 助学、助研入口静态检查 | PASS |
+| `ppt-master` 打包配置检查 | PASS |
+| 真实 PPT 生成与 GUI 验收 | MANUAL，未伪造通过 |
 
-- Vite 报告了既有的 API 动态/静态导入和大 chunk 警告，未导致构建失败。
-- Rust 检查通过，但产生 48 个未使用代码等既有 warning，本轮不清理。
-- 本轮没有启动 Tauri GUI，因此“页面可打开、登录可交互”为路由+编译静态验证，未伪造人工 GUI 验收。
+构建过程中的既有 warning 未造成失败，本次文档确认不处理无关 warning。
 
-## 9. 构建产物说明
+## 8. 后续开发边界
 
-`pnpm build` 在当前协作快照中补齐了本地 `node_modules` 并更新了 `dist`；`cargo check` 写入了 `src-tauri/target` 编译缓存。这些都是不应作为迁移源码提交的构建/缓存目录。
+- 后续 PPT 开发以主体实现为唯一基线。
+- 只进行明确功能点的增量开发，不从 `firstwork` 整目录复制。
+- 公共路由、布局、打包配置或依赖如确需修改，应先单独报告。
+- 禁止修改账号登录、session、deep link 和 Account Server 身份验证。
 
-## 10. 后续 PPT 开发建议
+## 9. 最终说明
 
-- 以主体 PPT 实现为唯一基线，不回退到 `firstwork` 旧实现。
-- 后续功能只在 PPT 允许目录内做增量开发。
-- 优先新增模块内文件，修改公共文件前单独报告原因和风险。
-- PPTX、临时 SVG/图片和生成项目继续留在用户本地，不进入源码。
-- 不修改账号登录、session、deep link、账号服务地址或 Account Server 鉴权逻辑。
-
-## 11. 结论
-
-PPT 功能已正确进入主体基座。本轮通过不迁移旧代码避免了主体 PPT 能力回退，同时保持账号系统、助学、助研入口和 Tauri 打包边界不变。
-
+本报告确认“PPT 功能融合验收完成”，含义是主体已经具备相应能力且无需迁移来源旧实现；不代表本次新增了 PPT 功能，也不替代后续真实 PPT 生成人工验收。
