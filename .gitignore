@@ -24,3 +24,9 @@ build/
 target/
 src-tauri/target/
 services/account-server/dist/
+
+# Local PPT/Python runtime artifacts. Keep tracked PPT resources and SVG templates.
+.venv/
+**/__pycache__/
+*.py[cod]
+**/.pptx-build-*/
